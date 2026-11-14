@@ -41,6 +41,8 @@ const (
 	MaxTextBytes            = 16 << 10
 	MaxPageMessages         = 1000
 	MaxPageTextBytes        = 1 << 20
+	MaxPageScanRows         = 256
+	MaxPageScanBytes        = 2 << 20
 	MaxContacts             = 32
 	Filename                = "messages.sqlite"
 	LockFilename            = "messages.lock"
@@ -74,6 +76,19 @@ type manifest struct {
 }
 
 type metadata struct {
+	Version              int    `json:"version"`
+	Epoch                string `json:"epoch"`
+	NextSequence         uint64 `json:"nextSequence"`
+	Rows                 uint64 `json:"rows"`
+	UsedBytes            uint64 `json:"usedBytes"`
+	Pending              uint64 `json:"pending"`
+	ClearThroughSequence uint64 `json:"clearThroughSequence"`
+	ReadThroughSequence  uint64 `json:"readThroughSequence"`
+	Unread               uint64 `json:"unread"`
+}
+
+// Keep the exact Phase 1 canonical shape for authenticated on-open migration.
+type metadataV1 struct {
 	Version      int    `json:"version"`
 	Epoch        string `json:"epoch"`
 	NextSequence uint64 `json:"nextSequence"`
@@ -271,7 +286,7 @@ func Open(directory string, rootKey []byte, options Options) (_ *DB, result erro
 			return nil, ErrStore
 		}
 	}
-	if err = d.verifyAll(context.Background(), d.conn); err != nil {
+	if err = d.upgradeMetadata(context.Background()); err != nil {
 		return nil, err
 	}
 	if err = d.conn.QueryRowContext(context.Background(), "PRAGMA data_version").Scan(&d.version); err != nil {
@@ -423,13 +438,30 @@ func (d *DB) loadMeta(ctx context.Context, q queryer, id string) (metadata, stri
 		return metadata{}, "", ErrCorrupt
 	}
 	var m metadata
-	if !validID(key) || d.open("metadata", id, key, 0, blob, &m) != nil || m.Version != 1 || !validID(m.Epoch) || m.NextSequence == 0 || m.NextSequence > math.MaxInt64 {
+	if !validID(key) {
+		return metadata{}, "", ErrCorrupt
+	}
+	if d.open("metadata", id, key, 0, blob, &m) != nil {
+		var old metadataV1
+		if d.open("metadata", id, key, 0, blob, &old) != nil || old.Version != 1 {
+			return metadata{}, "", ErrCorrupt
+		}
+		m = metadata{Version: 1, Epoch: old.Epoch, NextSequence: old.NextSequence, Rows: old.Rows, UsedBytes: old.UsedBytes, Pending: old.Pending}
+		// Phase 1 had no unread state. Existing history starts already read.
+		if m.NextSequence != 0 {
+			m.ReadThroughSequence = m.NextSequence - 1
+		}
+	} else if m.Version != 2 {
+		return metadata{}, "", ErrCorrupt
+	}
+	if m.Version != 1 && m.Version != 2 || !validID(m.Epoch) || m.NextSequence == 0 || m.NextSequence > math.MaxInt64 || m.Rows != m.NextSequence-1 || m.Pending > m.Rows || m.Unread > m.Rows || m.ClearThroughSequence > m.ReadThroughSequence || m.ReadThroughSequence >= m.NextSequence {
 		return metadata{}, "", ErrCorrupt
 	}
 	return m, key, nil
 }
 
 func (d *DB) saveMeta(ctx context.Context, q queryer, id, key string, m metadata) error {
+	m.Version = 2
 	blob, err := d.seal("metadata", id, key, 0, m)
 	if err != nil {
 		return err
@@ -465,7 +497,7 @@ func (d *DB) verifyAll(ctx context.Context, q queryer) error {
 			return ErrStore
 		}
 		cache := &contactCache{epoch: m.Epoch, pending: make(map[string]uint64)}
-		var count, used, last uint64
+		var count, used, last, unread uint64
 		for rows.Next() {
 			var id string
 			var seq uint64
@@ -485,13 +517,20 @@ func (d *DB) verifyAll(ctx context.Context, q queryer) error {
 			if r.Pending {
 				cache.pending[id] = seq
 			}
+			if seq <= m.ClearThroughSequence && !r.Hidden {
+				rows.Close()
+				return ErrCorrupt
+			}
+			if !r.Hidden && r.Message.Direction == message.Incoming && seq > m.ReadThroughSequence {
+				unread++
+			}
 		}
 		if err := rows.Err(); err != nil {
 			rows.Close()
 			return ErrStore
 		}
 		rows.Close()
-		if count != m.Rows || used != m.UsedBytes || last+1 != m.NextSequence || uint64(len(cache.pending)) != m.Pending {
+		if count != m.Rows || used != m.UsedBytes || last+1 != m.NextSequence || uint64(len(cache.pending)) != m.Pending || unread != m.Unread {
 			return ErrCorrupt
 		}
 		contacts[contact] = cache
@@ -592,7 +631,7 @@ func (d *DB) Scope(id string) (scope *Scope, result error) {
 		if err != nil {
 			return err
 		}
-		meta := metadata{Version: 1, Epoch: epoch, NextSequence: 1}
+		meta := metadata{Version: 2, Epoch: epoch, NextSequence: 1}
 		blob, err := d.seal("metadata", id, key, 0, meta)
 		if err != nil {
 			return err

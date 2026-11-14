@@ -17,7 +17,7 @@ func (m *Manager) ClearHistory(id string) (Snapshot, error) {
 		return m.historyFailureLocked(err)
 	}
 	m.historyCapacityRecoveredLocked()
-	m.revision++
+	m.bumpLocked()
 	return m.snapshotLocked(), nil
 }
 func (m *Manager) DeleteMessage(id, messageID string) (Snapshot, error) {
@@ -33,14 +33,14 @@ func (m *Manager) DeleteMessage(id, messageID string) (Snapshot, error) {
 		return m.historyFailureLocked(err)
 	}
 	m.historyCapacityRecoveredLocked()
-	m.revision++
+	m.bumpLocked()
 	return m.snapshotLocked(), nil
 }
 func (m *Manager) historyFailureLocked(err error) (Snapshot, error) {
 	if terminalPersistence(err) || err == chat.ErrCorrupt {
 		m.state = "failed"
 		m.cancel()
-		m.revision++
+		m.bumpLocked()
 	}
 	return m.snapshotLocked(), err
 }

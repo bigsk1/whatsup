@@ -57,3 +57,39 @@ func TestManagerCopiesShareClosureInsteadOfCopyingLocks(t *testing.T) {
 		t.Fatal("closing a copied manager left the original active")
 	}
 }
+
+func TestZeroRegistriesHaveNoContactOrMutationAuthority(t *testing.T) {
+	for _, r := range []*Registry{nil, {}} {
+		if _, err := r.Contacts(); !errors.Is(err, ErrUnavailable) {
+			t.Fatal("zero registry exposed contacts")
+		}
+		if _, err := r.Connect("synthetic"); !errors.Is(err, ErrUnavailable) {
+			t.Fatal("zero registry started networking")
+		}
+		if _, err := r.Send("synthetic", "forbidden"); !errors.Is(err, ErrUnavailable) {
+			t.Fatal("zero registry queued text")
+		}
+		if _, err := r.Page("synthetic", "", 100); !errors.Is(err, ErrUnavailable) {
+			t.Fatal("zero registry read history")
+		}
+		if _, err := r.MarkRead("synthetic", "message"); !errors.Is(err, ErrUnavailable) {
+			t.Fatal("zero registry changed unread state")
+		}
+		if err := r.Retire("synthetic"); !errors.Is(err, ErrUnavailable) {
+			t.Fatal("zero registry retired a contact")
+		}
+		r.MetadataChanged("")
+		r.Close()
+	}
+	private := &Registry{registryState: &registryState{application: &storage.ApplicationState{}}}
+	for _, value := range []any{private, *private, Registry{}, &Registry{}} {
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
+			if fmt.Sprintf(verb, value) != "[private WhatsUp contact runtimes]" {
+				t.Fatal("registry formatting traversed private runtime state")
+			}
+		}
+		if wire, err := json.Marshal(value); err == nil || len(wire) != 0 {
+			t.Fatal("registry runtime was serializable")
+		}
+	}
+}

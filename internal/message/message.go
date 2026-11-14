@@ -37,6 +37,24 @@ type Usage struct {
 	Full       bool   `json:"full"`
 }
 
+// Page carries an exclusive sequence cursor. Messages are in ascending order.
+// NextCursor is the last scanned sequence while HasMore is true, even when a
+// bounded scan found only locally hidden records. A zero input selects newest.
+type Page struct {
+	Messages   []Message `json:"messages"`
+	NextCursor uint64    `json:"nextCursor"`
+	HasMore    bool      `json:"hasMore"`
+}
+
+// PagedRepository is the optional event-driven conversation read contract.
+// MarkRead requires a visible message ID and marks incoming messages through
+// that message's sequence. It never changes delivery or acknowledgement state.
+type PagedRepository interface {
+	ReadPage(before uint64, limit int) (Page, error)
+	UnreadCount() (uint64, error)
+	MarkRead(throughMessageID string) error
+}
+
 // Repository is scoped to one approved contact by its caller. Pending pairing
 // must never receive a repository capability. Queue and receive are durable on
 // success; only Acknowledge may remove an outgoing entry from the outbox.

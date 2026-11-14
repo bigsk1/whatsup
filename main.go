@@ -6,10 +6,12 @@ import (
 	"log"
 	"net/http"
 	"runtime"
+	"sync/atomic"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"whatsup/internal/desktop"
 	"whatsup/internal/diagnostics"
+	"whatsup/internal/messaging"
 	"whatsup/internal/storage"
 )
 
@@ -57,11 +59,18 @@ func main() {
 		// Preserve the pinned Wails default for this bundled-content renderer.
 		windows.DisabledFeatures = []string{"msSmartScreenProtection"}
 	}
+	application.RegisterEvent[messaging.Hint](desktop.ContactChangedEvent)
+	var eventApp atomic.Pointer[application.App]
+	service := desktop.NewWithEvents(directory, storage.OSKeyStore{}, record, func(hint messaging.Hint) {
+		if app := eventApp.Load(); app != nil {
+			app.Event.Emit(desktop.ContactChangedEvent, hint)
+		}
+	})
 	app := application.New(application.Options{
 		Name: "WhatsUp", Description: "Private one-to-one desktop messenger",
 		Windows:        windows,
 		Linux:          application.LinuxOptions{ProgramName: desktop.LinuxProgramName},
-		Services:       []application.Service{application.NewService(desktop.New(directory, storage.OSKeyStore{}, record))},
+		Services:       []application.Service{application.NewService(service)},
 		Logger:         localDiagnostics.WailsLogger(),
 		ErrorHandler:   func(error) { record(diagnostics.RuntimeError) },
 		WarningHandler: func(string) { record(diagnostics.RuntimeWarning) },
@@ -82,6 +91,7 @@ func main() {
 			},
 		},
 	})
+	eventApp.Store(app)
 	linuxWindow := application.LinuxWindow{}
 	if *softwareRendering {
 		linuxWindow.WebviewGpuPolicy = application.WebviewGpuPolicyNever

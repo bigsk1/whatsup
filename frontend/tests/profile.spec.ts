@@ -1,3 +1,8 @@
+import {
+  contactSummary,
+  messagePage,
+  eventBackedState,
+} from './contact-events';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page, type Locator } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
@@ -19,7 +24,9 @@ const names = [
   'UnlockStorage',
   'LockStorage',
   'GetPairingStatus',
-  'GetConversation',
+  'GetContacts',
+  'GetMessages',
+  'MarkRead',
   'GetProfile',
   'SetProfile',
   'SetContactName',
@@ -51,7 +58,7 @@ function snapshot(
   };
 }
 async function fixture(page: Page) {
-  const state = {
+  const state = eventBackedState(page, {
     storage: 'unlocked',
     profile: {
       displayName: 'Synthetic owner',
@@ -63,7 +70,7 @@ async function fixture(page: Page) {
     setName: undefined as undefined | (() => Promise<void>),
     profileFailure: false,
     nameFailure: false,
-  };
+  });
   const calls: { operation: Operation; args: unknown[] }[] = [];
   const errors: string[] = [];
   const external: string[] = [];
@@ -93,8 +100,16 @@ async function fixture(page: Page) {
       });
     } else if (operation === 'GetPairingStatus')
       await route.fulfill({ json: { ...unavailablePairing, state: 'idle' } });
-    else if (operation === 'GetConversation')
-      await route.fulfill({ json: state.conversation });
+    else if (operation === 'GetContacts')
+      await route.fulfill({
+        json: state.conversation.contactID
+          ? [contactSummary(state.conversation)]
+          : [],
+      });
+    else if (operation === 'GetMessages')
+      await route.fulfill({ json: messagePage(state.conversation) });
+    else if (operation === 'MarkRead')
+      await route.fulfill({ json: contactSummary(state.conversation) });
     else if (operation === 'GetProfile') {
       const result = { ...state.profile };
       const hold = state.getProfile;
@@ -395,7 +410,7 @@ test('profile failures stay finite and malformed names cannot be submitted', asy
   expect(errors).toEqual([]);
 });
 
-test('ordinary conversation polls and a shared-name update preserve unfinished profile and contact drafts', async ({
+test('event recovery and a shared-name update preserve unfinished profile and contact drafts', async ({
   page,
 }) => {
   const { state, calls, errors } = await fixture(page);
@@ -405,12 +420,11 @@ test('ordinary conversation polls and a shared-name update preserve unfinished p
     .getByLabel('Display name', { exact: true })
     .fill('Unfinished profile draft');
   const initialPolls = calls.filter(
-    (call) => call.operation === 'GetConversation',
+    (call) => call.operation === 'GetContacts',
   ).length;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect
-    .poll(
-      () => calls.filter((call) => call.operation === 'GetConversation').length,
-    )
+    .poll(() => calls.filter((call) => call.operation === 'GetContacts').length)
     .toBeGreaterThan(initialPolls);
   await expect(
     workspace.getByLabel('Display name', { exact: true }),
@@ -431,9 +445,7 @@ test('ordinary conversation polls and a shared-name update preserve unfinished p
     'Unfinished private draft',
   );
   await expect
-    .poll(
-      () => calls.filter((call) => call.operation === 'GetConversation').length,
-    )
+    .poll(() => calls.filter((call) => call.operation === 'GetContacts').length)
     .toBeGreaterThan(initialPolls + 1);
   await expect(workspace.getByLabel('Name on this device')).toHaveValue(
     'Unfinished private draft',

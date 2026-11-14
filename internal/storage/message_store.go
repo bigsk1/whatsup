@@ -292,6 +292,17 @@ func (s *ChatStore) Page(before uint64, limit int) (items []message.Message, err
 	err = s.withScope(func(scope *messagestore.Scope) error { var e error; items, e = scope.Page(before, limit); return e })
 	return
 }
+func (s *ChatStore) ReadPage(before uint64, limit int) (page message.Page, err error) {
+	err = s.withScope(func(scope *messagestore.Scope) error { var e error; page, e = scope.ReadPage(before, limit); return e })
+	return
+}
+func (s *ChatStore) UnreadCount() (count uint64, err error) {
+	err = s.withScope(func(scope *messagestore.Scope) error { var e error; count, e = scope.UnreadCount(); return e })
+	return
+}
+func (s *ChatStore) MarkRead(throughMessageID string) error {
+	return s.withScope(func(scope *messagestore.Scope) error { return scope.MarkRead(throughMessageID) })
+}
 func (s *ChatStore) Usage() (usage message.Usage, err error) {
 	err = s.withScope(func(scope *messagestore.Scope) error { var e error; usage, e = scope.Usage(); return e })
 	return

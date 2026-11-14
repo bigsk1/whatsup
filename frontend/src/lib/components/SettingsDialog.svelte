@@ -376,7 +376,7 @@
               <section class="settings-card" aria-labelledby="forget-heading">
                 <div class="settings-card-heading">
                   <div>
-                    <h2 id="forget-heading">Start a different conversation</h2>
+                    <h2 id="forget-heading">Forget this contact</h2>
                     <p class="muted small">
                       Remove this contact and this device’s saved conversation.
                       Your device identity is kept.
@@ -519,7 +519,7 @@
               </div>
               <p class="muted small field-help">
                 {status.storageState === 'unlocked'
-                  ? 'Disconnects from your contact and locks local data. Your contact and conversation stay saved.'
+                  ? 'Disconnects from all contacts and locks local data. Saved contacts and history stay on this device.'
                   : 'Unlocks local data and reconnects to your saved contact. Without a contact, you can start a new invitation.'}
               </p>
               {#if status.identityFingerprint}<output

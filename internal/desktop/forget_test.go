@@ -60,7 +60,7 @@ func prepareDesktopForgetContact(t *testing.T, s *Service) storage.PendingRecord
 	if err := s.application.ApproveCommittedConversation(r, forgetTestPin{r}); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.GetConversation(); got.ContactID != r.ID || !got.CanSend {
+	if got := s.messages.Snapshot(r.ID); got.ContactID != r.ID || !got.CanSend {
 		t.Fatal("synthetic approved local conversation was not opened")
 	}
 	if got, err := s.SendMessage(r.ID, "synthetic queued message to discard"); err != nil || len(got.Messages) != 1 || got.Messages[0].Delivered {
@@ -89,8 +89,8 @@ func TestDesktopForgetPreservesIdentityAndEnablesFreshPairingWithoutRestart(t *t
 	if status.StorageState != "unlocked" || status.IdentityFingerprint != fingerprint || s.keys.(*testKeys).key != wrapping || !status.PairingAvailable {
 		t.Fatal("forget changed device identity, credential or unlocked pairing capability")
 	}
-	if s.messages == oldMessages || s.pairing == oldPairing || s.invitations == oldInvitations {
-		t.Fatal("forget reused retired lifecycle controllers")
+	if s.messages != oldMessages || s.pairing != oldPairing || s.invitations != oldInvitations {
+		t.Fatal("forget replaced unrelated lifecycle controllers")
 	}
 	if _, err := oldMessages.Connect(r.ID); err == nil {
 		t.Fatal("late callback restarted the retired messaging manager")
@@ -101,11 +101,8 @@ func TestDesktopForgetPreservesIdentityAndEnablesFreshPairingWithoutRestart(t *t
 	if _, err := store.Page(0, 100); err == nil {
 		t.Fatal("forget retained an old conversation handle")
 	}
-	if oldPairing.Snapshot().State != "unavailable" {
-		t.Fatal("old pairing controller remained live")
-	}
-	if _, err := oldInvitations.begin(true, time.Now().Add(time.Minute)); err == nil {
-		t.Fatal("old invitation controller admitted new work")
+	if oldPairing.Snapshot().State == "unavailable" {
+		t.Fatal("forget disabled the unrelated pairing controller")
 	}
 	// Starting a new invitation needs no build, profile reset or unlock. This
 	// uses a synthetic loopback listener, not a public service.

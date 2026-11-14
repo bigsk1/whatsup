@@ -73,14 +73,8 @@ type coordinatorState struct {
 	closed      bool
 	complete    bool
 	onCompleted func(string)
-	active      []activeContact
 	runs        sync.WaitGroup
 	actions     sync.WaitGroup
-}
-
-type activeContact struct {
-	contact     *pairing.Contact
-	credentials *transport.ContactCredentials
 }
 
 type attempt struct {
@@ -143,6 +137,29 @@ func New(local *identity.Identity, store Store, options ...Options) (*Coordinato
 }
 
 func (c *Coordinator) restoreCommitted(records []storage.PendingRecord) error {
+	// Approved conversations are managed independently by exact association ID.
+	// Only an interrupted activation needs a discard/reconciliation notice.
+	if approved, ok := c.store.(interface {
+		LocalConversation(storage.PendingRecord) (*storage.LocalContactReceipt, error)
+	}); ok {
+		unfinished := make([]storage.PendingRecord, 0, len(records))
+		for _, record := range records {
+			if storage.ValidatePendingRecord(record) != nil || !record.Local.Equal(c.local.PublicKey()) {
+				return ErrStore
+			}
+			if record.Version != 2 {
+				unfinished = append(unfinished, record)
+				continue
+			}
+			if _, err := approved.LocalConversation(record); err == nil {
+				continue
+			} else if !errors.Is(err, storage.ErrContact) {
+				return ErrStore
+			}
+			unfinished = append(unfinished, record)
+		}
+		records = unfinished
+	}
 	if err := c.restorePending(records); err != nil {
 		return err
 	}
@@ -240,7 +257,7 @@ func (c *Coordinator) begin(ctx context.Context, raw net.Conn, invite pairing.In
 		return reject()
 	}
 	c.mu.Lock()
-	if c.closed || c.current != nil || len(c.active) != 0 {
+	if c.closed || c.current != nil {
 		c.mu.Unlock()
 		return reject()
 	}
@@ -456,7 +473,10 @@ func (c *Coordinator) finish(a *attempt, runErr error) string {
 		return ""
 	}
 	if runErr == nil && a.credentials != nil && a.contact != nil {
-		c.active = append(c.active, activeContact{contact: a.contact, credentials: a.credentials})
+		// The local approval and exact credential bundle are already durable.
+		// Ongoing messaging restores a new scoped capability; pairing retains no
+		// listener, credentials or live authority that could block another pair.
+		a.revokeActive()
 		c.status, c.current = Snapshot{State: "completed"}, nil
 		return a.pendingID
 	}
@@ -599,14 +619,8 @@ func (c *Coordinator) Close() error {
 	c.mu.Lock()
 	c.closed = true
 	a := c.current
-	active := append([]activeContact{}, c.active...)
-	c.active = nil
 	c.status = Snapshot{State: "unavailable"}
 	c.mu.Unlock()
-	for _, item := range active {
-		item.contact.Revoke()
-		item.credentials.Revoke()
-	}
 	if a != nil {
 		a.closeOwned()
 	}

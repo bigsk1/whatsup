@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
-import { unavailableConversation } from '../src/lib/messaging';
 import {
   unavailablePairing,
   type InvitationShare,
@@ -13,7 +12,9 @@ type Operation =
   | 'UnlockStorage'
   | 'LockStorage'
   | 'GetPairingStatus'
-  | 'GetConversation'
+  | 'GetContacts'
+  | 'GetMessages'
+  | 'MarkRead'
   | 'GetProfile'
   | 'ApprovePairing'
   | 'DenyPairing'
@@ -31,7 +32,9 @@ for (const name of [
   'UnlockStorage',
   'LockStorage',
   'GetPairingStatus',
-  'GetConversation',
+  'GetContacts',
+  'GetMessages',
+  'MarkRead',
   'GetProfile',
   'ApprovePairing',
   'DenyPairing',
@@ -128,9 +131,9 @@ async function syntheticInvitations(page: Page, storage = 'unlocked') {
         json: { displayName: '', shareDisplayName: false },
       });
       return;
-    } else if (operation === 'GetConversation') {
+    } else if (operation === 'GetContacts') {
       await route.fulfill({
-        json: { ...unavailableConversation, state: 'none' },
+        json: [],
       });
     } else if (operation === 'GetPairingStatus') {
       await route.fulfill({ json: state.pairing });

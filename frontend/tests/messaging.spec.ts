@@ -1,3 +1,8 @@
+import {
+  contactSummary,
+  messagePage,
+  eventBackedState,
+} from './contact-events';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
@@ -21,7 +26,9 @@ type Operation =
   | 'UnlockStorage'
   | 'LockStorage'
   | 'GetPairingStatus'
-  | 'GetConversation'
+  | 'GetContacts'
+  | 'GetMessages'
+  | 'MarkRead'
   | 'GetProfile'
   | 'ConnectContact'
   | 'ForgetContact'
@@ -42,7 +49,9 @@ for (const name of [
   'UnlockStorage',
   'LockStorage',
   'GetPairingStatus',
-  'GetConversation',
+  'GetContacts',
+  'GetMessages',
+  'MarkRead',
   'GetProfile',
   'ConnectContact',
   'ForgetContact',
@@ -96,7 +105,7 @@ async function syntheticMessaging(
   page: Page,
   initial: ConversationSnapshot = approved(),
 ) {
-  const state = {
+  const state = eventBackedState(page, {
     storage: 'unlocked',
     conversation: initial as unknown,
     pairing: { ...unavailablePairing, state: 'idle' } as PairingStatus,
@@ -107,9 +116,10 @@ async function syntheticMessaging(
     lock: undefined as undefined | (() => Promise<void>),
     forget: undefined as undefined | (() => Promise<void>),
     forgetFailure: false,
+    forgetUnchangedFailure: false,
     holdPoll: undefined as undefined | (() => Promise<void>),
     pollHeld: false,
-  };
+  });
   const calls: { operation: Operation; args: unknown[] }[] = [];
   const errors: string[] = [];
   const external: string[] = [];
@@ -153,15 +163,27 @@ async function syntheticMessaging(
         json: { displayName: '', shareDisplayName: false },
       });
       return;
-    } else if (operation === 'GetConversation') {
-      const snapshot = structuredClone(state.conversation);
+    } else if (operation === 'GetContacts') {
+      const snapshot = structuredClone(
+        state.conversation,
+      ) as ConversationSnapshot;
       const hold = state.holdPoll;
       state.holdPoll = undefined;
       if (hold) {
         state.pollHeld = true;
         await hold();
       }
-      await route.fulfill({ json: snapshot });
+      await route.fulfill({
+        json: snapshot.contactID ? [contactSummary(snapshot)] : [],
+      });
+    } else if (operation === 'GetMessages') {
+      await route.fulfill({
+        json: messagePage(state.conversation as ConversationSnapshot),
+      });
+    } else if (operation === 'MarkRead') {
+      await route.fulfill({
+        json: contactSummary(state.conversation as ConversationSnapshot),
+      });
     } else if (operation === 'ConnectContact') {
       const current = state.conversation as ConversationSnapshot;
       const result = state.connect
@@ -190,8 +212,8 @@ async function syntheticMessaging(
       await route.fulfill({ json: state.conversation });
     } else if (operation === 'ForgetContact') {
       if (state.forget) await state.forget();
-      if (state.forgetFailure) {
-        state.storage = 'locked';
+      if (state.forgetFailure || state.forgetUnchangedFailure) {
+        if (!state.forgetUnchangedFailure) state.storage = 'locked';
         await route.fulfill({
           status: 503,
           json: {
@@ -663,8 +685,7 @@ for (const entry of ['header', 'settings'] as const) {
     );
     await expect
       .poll(
-        () =>
-          calls.filter((call) => call.operation === 'GetConversation').length,
+        () => calls.filter((call) => call.operation === 'GetContacts').length,
       )
       .toBeGreaterThan(1);
     expect(
@@ -677,7 +698,7 @@ for (const entry of ['header', 'settings'] as const) {
       (call) => call.operation === 'UnlockStorage',
     );
     const firstConversation = calls.findIndex(
-      (call) => call.operation === 'GetConversation',
+      (call) => call.operation === 'GetContacts',
     );
     const firstConnect = calls.findIndex(
       (call) => call.operation === 'ConnectContact',
@@ -688,7 +709,7 @@ for (const entry of ['header', 'settings'] as const) {
   });
 }
 
-test('a contact arriving through status polling never starts a new connection from the frontend', async ({
+test('a contact arriving through an event hint never starts a new connection from the frontend', async ({
   page,
 }) => {
   const { state, calls, errors } = await syntheticMessaging(page, {
@@ -702,10 +723,8 @@ test('a contact arriving through status polling never starts a new connection fr
   state.conversation = approved({ revision: 2 });
   await expect(page.locator('.approved-contact')).toBeVisible();
   await expect
-    .poll(
-      () => calls.filter((call) => call.operation === 'GetConversation').length,
-    )
-    .toBeGreaterThan(2);
+    .poll(() => calls.filter((call) => call.operation === 'GetContacts').length)
+    .toBeGreaterThan(1);
   expect(calls.filter((call) => call.operation === 'ConnectContact')).toEqual(
     [],
   );
@@ -872,9 +891,7 @@ test('confirmed forget uses the exact contact, clears memory before completion a
     page.getByRole('button', { name: 'Start a conversation', exact: true }),
   ).toBeEnabled();
   await expect
-    .poll(
-      () => calls.filter((call) => call.operation === 'GetConversation').length,
-    )
+    .poll(() => calls.filter((call) => call.operation === 'GetContacts').length)
     .toBeGreaterThan(2);
   await expect(page.getByText(incomingText, { exact: true })).toHaveCount(0);
   await expect(page.locator('.approved-contact')).toHaveCount(0);
@@ -900,6 +917,67 @@ test('confirmed forget uses the exact contact, clears memory before completion a
     }),
   ).toHaveValue('');
   expect(await page.evaluate(() => ({ ...localStorage }))).toEqual({});
+  expect(errors).toEqual([]);
+});
+
+test('a Forget failure before mutation restores the unchanged unlocked contact from a fresh backend read', async ({
+  page,
+}) => {
+  const { state, calls, errors } = await syntheticMessaging(
+    page,
+    approved({ messages: [message()] }),
+  );
+  state.forgetUnchangedFailure = true;
+  await page.goto('/');
+  await page
+    .getByRole('textbox', { name: 'Message', exact: true })
+    .fill('Discarded uncertain-removal draft');
+  await page
+    .getByRole('button', { name: 'Forget contact…', exact: true })
+    .click();
+  const dialog = page.getByRole('dialog', {
+    name: 'Forget contact and delete conversation',
+    exact: true,
+  });
+  await dialog
+    .getByRole('button', {
+      name: 'Forget contact and delete conversation',
+      exact: true,
+    })
+    .click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByRole('alert')).toContainText(
+    'Contact removal could not be confirmed.',
+  );
+  await expect(
+    page.getByText('Local storage unlocked', { exact: true }),
+  ).toBeVisible();
+  await expect(page.locator('.approved-contact')).toBeVisible();
+  await expect(page.getByRole('log', { name: 'Messages' })).toContainText(
+    incomingText,
+  );
+  await expect(
+    page.getByRole('textbox', { name: 'Message', exact: true }),
+  ).toHaveValue('');
+  expect(
+    calls.filter((call) => call.operation === 'GetContacts').length,
+  ).toBeGreaterThan(1);
+  expect(calls.filter((call) => call.operation === 'ConnectContact')).toEqual(
+    [],
+  );
+  // Retrying the confirmed action remains possible without locking/reopening.
+  state.forgetUnchangedFailure = false;
+  await page
+    .getByRole('button', { name: 'Forget contact…', exact: true })
+    .click();
+  await dialog
+    .getByRole('button', {
+      name: 'Forget contact and delete conversation',
+      exact: true,
+    })
+    .click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.locator('.approved-contact')).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
@@ -1063,11 +1141,11 @@ test('invalid conversation DTOs close the composer and remove previously display
     messages: [message(firstID, 'x'.repeat(16 * 1024 + 1))],
   };
   await expect(page.getByRole('alert')).toContainText(
-    'Conversation status could not be verified.',
+    'Conversation history could not be verified.',
   );
   await expect(page.getByText(incomingText, { exact: true })).toHaveCount(0);
   await expect(
-    page.getByRole('button', { name: 'Send message unavailable' }),
+    page.getByRole('button', { name: 'Send message', exact: true }),
   ).toBeDisabled();
   expect(errors).toEqual([]);
 });

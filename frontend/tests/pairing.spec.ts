@@ -2,14 +2,15 @@ import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
 import { unavailablePairing, type PairingStatus } from '../src/lib/pairing';
-import { unavailableConversation } from '../src/lib/messaging';
 
 type Operation =
   | 'GetStatus'
   | 'UnlockStorage'
   | 'LockStorage'
   | 'GetPairingStatus'
-  | 'GetConversation'
+  | 'GetContacts'
+  | 'GetMessages'
+  | 'MarkRead'
   | 'GetProfile'
   | 'ApprovePairing'
   | 'DenyPairing';
@@ -26,7 +27,9 @@ for (const name of [
   'UnlockStorage',
   'LockStorage',
   'GetPairingStatus',
-  'GetConversation',
+  'GetContacts',
+  'GetMessages',
+  'MarkRead',
   'GetProfile',
   'ApprovePairing',
   'DenyPairing',
@@ -118,9 +121,9 @@ async function syntheticPairing(
         json: { displayName: '', shareDisplayName: false },
       });
       return;
-    } else if (operation === 'GetConversation') {
+    } else if (operation === 'GetContacts') {
       await route.fulfill({
-        json: { ...unavailableConversation, state: 'none' },
+        json: [],
       });
       return;
     }

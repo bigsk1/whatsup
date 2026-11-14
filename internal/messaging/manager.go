@@ -62,6 +62,9 @@ type managerState struct {
 	conversation  *chat.Conversation
 	state         string
 	revision      uint64
+	targetID      string
+	revisions     *Revisions
+	onChanged     func(Hint)
 	closed        bool
 	running       bool
 	ctx           context.Context
@@ -85,8 +88,35 @@ func New(local *identity.Identity, app *storage.ApplicationState, factories ...F
 	if local == nil || app == nil || len(factories) > 1 {
 		return nil, ErrUnavailable
 	}
+	options := ContactOptions{}
+	if len(factories) == 1 {
+		options.Factories = factories[0]
+	}
+	return newManager(local, app, "", options)
+}
+
+// NewContact owns only the exact saved association. It never selects the first
+// record or inherits a replacement association for the same identity.
+func NewContact(local *identity.Identity, app *storage.ApplicationState, id string, options ...ContactOptions) (*Manager, error) {
+	if local == nil || app == nil || id == "" || len(options) > 1 {
+		return nil, ErrUnavailable
+	}
+	var selected ContactOptions
+	if len(options) == 1 {
+		selected = options[0]
+	}
+	return newManager(local, app, id, selected)
+}
+
+type ContactOptions struct {
+	Revisions *Revisions
+	OnChanged func(Hint)
+	Factories Factories
+}
+
+func newManager(local *identity.Identity, app *storage.ApplicationState, id string, options ContactOptions) (*Manager, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &Manager{managerState: &managerState{local: local, application: app, state: "none", revision: 1, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1)}}
+	m := &Manager{managerState: &managerState{local: local, application: app, targetID: id, revisions: options.Revisions, onChanged: options.OnChanged, state: "none", revision: 1, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1)}}
 	m.factories = Factories{
 		Profile: transport.FetchRelayProfile,
 		Listen: func(ctx context.Context, record storage.PendingRecord, profile *transport.RelayProfile) (Listener, error) {
@@ -96,16 +126,14 @@ func New(local *identity.Identity, app *storage.ApplicationState, factories ...F
 			return transport.DialOngoing(ctx, record, profile, transport.RelayFallback, record.RelayFallbackConsent)
 		},
 	}
-	if len(factories) != 0 {
-		if factories[0].Profile != nil {
-			m.factories.Profile = factories[0].Profile
-		}
-		if factories[0].Listen != nil {
-			m.factories.Listen = factories[0].Listen
-		}
-		if factories[0].Dial != nil {
-			m.factories.Dial = factories[0].Dial
-		}
+	if options.Factories.Profile != nil {
+		m.factories.Profile = options.Factories.Profile
+	}
+	if options.Factories.Listen != nil {
+		m.factories.Listen = options.Factories.Listen
+	}
+	if options.Factories.Dial != nil {
+		m.factories.Dial = options.Factories.Dial
 	}
 	if m.refreshLocked() != nil {
 		cancel()
@@ -120,16 +148,28 @@ func (m *Manager) refreshLocked() error {
 	}
 	records, err := m.application.CommittedContacts()
 	if err != nil {
-		m.state = "failed"
+		m.failLocked()
 		return ErrUnavailable
 	}
-	if len(records) > 1 {
-		m.state = "failed"
+	if m.targetID != "" {
+		selected := records[:0]
+		for _, record := range records {
+			if record.ID == m.targetID {
+				selected = append(selected, record)
+			}
+		}
+		records = selected
+		if len(records) != 1 {
+			m.failLocked()
+			return ErrUnavailable
+		}
+	} else if len(records) > 1 {
+		m.failLocked()
 		return ErrUnavailable
 	}
 	if m.record.ID != "" {
 		if len(records) != 1 || records[0] != m.record {
-			m.state = "failed"
+			m.failLocked()
 			if m.contact != nil {
 				m.contact.Revoke()
 			}
@@ -140,7 +180,7 @@ func (m *Manager) refreshLocked() error {
 			if receipt, err := m.application.LocalConversation(m.record); err == nil {
 				contact, err := pairing.RestoreLocalContact(receipt)
 				if err != nil || m.openConversationLocked(contact) != nil {
-					m.state = "failed"
+					m.failLocked()
 					return ErrUnavailable
 				}
 			}
@@ -148,6 +188,9 @@ func (m *Manager) refreshLocked() error {
 		return nil
 	}
 	if len(records) == 0 || records[0].Version != 2 {
+		if m.targetID != "" {
+			return ErrUnavailable
+		}
 		return nil
 	}
 	record := records[0]
@@ -155,7 +198,7 @@ func (m *Manager) refreshLocked() error {
 		return ErrUnavailable
 	}
 	m.record, m.state = record, "offline"
-	m.revision++
+	m.bumpLocked()
 	// Only a durable LOCAL conversation approval restores history/offline queue.
 	// An unfinished committed record can bootstrap fresh authentication, but has
 	// no local chat authority until that succeeds.
@@ -167,6 +210,14 @@ func (m *Manager) refreshLocked() error {
 		}
 	}
 	return nil
+}
+
+func (m *Manager) failLocked() {
+	if m.state != "failed" {
+		m.state = "failed"
+		m.bumpLocked()
+	}
+	m.cancel()
 }
 
 func (m *Manager) openConversationLocked(contact *pairing.Contact) error {
@@ -181,11 +232,11 @@ func (m *Manager) openConversationLocked(contact *pairing.Contact) error {
 		return ErrUnavailable
 	}
 	m.contact, m.conversation = contact, conversation
-	m.revision++
+	m.bumpLocked()
 	return nil
 }
 
-func (m *Manager) snapshotLocked() Snapshot {
+func (m *Manager) snapshotLocked(history ...bool) Snapshot {
 	result := Snapshot{State: m.state, Revision: m.revision, Messages: []chat.Message{}}
 	if m.closed {
 		result.State = "unavailable"
@@ -202,11 +253,14 @@ func (m *Manager) snapshotLocked() Snapshot {
 		result.CanConnect = !m.running && m.ctx.Err() == nil && m.state != "failed" && m.state != "identity-changed"
 		result.CanSend = m.conversation != nil && m.state != "failed" && !capacityFailure(m.state)
 		if m.conversation != nil && m.state != "failed" {
-			messages, pageErr := m.conversation.Page(0, chat.MaxPageMessages)
+			messages, pageErr := []chat.Message{}, error(nil)
+			if len(history) == 0 || history[0] {
+				messages, pageErr = m.conversation.Page(0, chat.MaxPageMessages)
+			}
 			usage, usageErr := m.conversation.Usage()
 			if pageErr != nil || usageErr != nil {
 				m.state = "failed"
-				m.revision++
+				m.bumpLocked()
 				m.cancel()
 				result.State = "failed"
 				result.Revision = m.revision
@@ -247,7 +301,7 @@ func (m *Manager) Connect(id string) (Snapshot, error) {
 	}
 	if !m.running {
 		m.running, m.state = true, "connecting"
-		m.revision++
+		m.bumpLocked()
 		m.workers.Add(1)
 		go m.run()
 	}
@@ -266,16 +320,16 @@ func (m *Manager) Send(id, text string) (Snapshot, error) {
 	if _, err := m.conversation.Queue(text); err != nil {
 		if errors.Is(err, chat.ErrCapacity) {
 			m.state = "capacity-reached"
-			m.revision++
+			m.bumpLocked()
 		}
 		if terminalPersistence(err) {
 			m.state = "failed"
-			m.revision++
+			m.bumpLocked()
 			m.cancel()
 		}
 		return m.snapshotLocked(), err
 	}
-	m.revision++
+	m.bumpLocked()
 	select {
 	case m.wake <- struct{}{}:
 	default:
@@ -288,7 +342,7 @@ func (m *Manager) changed(state string) {
 	defer m.mu.Unlock()
 	if !m.closed && m.state != "failed" {
 		m.state = state
-		m.revision++
+		m.bumpLocked()
 	}
 }
 
@@ -303,7 +357,7 @@ func (m *Manager) MetadataChanged() {
 	if m.closed {
 		return
 	}
-	m.revision++
+	m.bumpLocked()
 	select {
 	case m.wake <- struct{}{}:
 	default:
@@ -347,7 +401,7 @@ func retryState(err error) string {
 
 func (m *Manager) run() {
 	defer m.workers.Done()
-	defer func() { m.mu.Lock(); m.running = false; m.revision++; m.mu.Unlock() }()
+	defer func() { m.mu.Lock(); m.running = false; m.bumpLocked(); m.mu.Unlock() }()
 	var profile *transport.RelayProfile
 	for attempt := 0; m.ctx.Err() == nil; attempt++ {
 		previousAuthentication := m.authenticated
@@ -375,7 +429,7 @@ func (m *Manager) run() {
 		if errors.Is(err, sessionauth.ErrIdentityChanged) {
 			m.mu.Lock()
 			m.state = "identity-changed"
-			m.revision++
+			m.bumpLocked()
 			m.mu.Unlock()
 			m.cancel()
 			return
@@ -390,7 +444,7 @@ func (m *Manager) run() {
 		if terminalPersistence(err) {
 			m.mu.Lock()
 			m.state = "failed"
-			m.revision++
+			m.bumpLocked()
 			m.mu.Unlock()
 			m.cancel()
 			return
@@ -487,7 +541,7 @@ func (m *Manager) session(raw net.Conn) error {
 	if m.conversation == nil {
 		if m.application.ApproveCommittedConversation(m.record, contact) != nil || m.openConversationLocked(contact) != nil {
 			m.state = "failed"
-			m.revision++
+			m.bumpLocked()
 			m.mu.Unlock()
 			contact.Revoke()
 			m.cancel()
@@ -504,7 +558,7 @@ func (m *Manager) session(raw net.Conn) error {
 	m.authenticated++
 	m.state = "connected"
 	m.sessionActive = true
-	m.revision++
+	m.bumpLocked()
 	m.mu.Unlock()
 	return m.exchange(ctx, session, conversation)
 }
@@ -518,7 +572,7 @@ func (m *Manager) Close() {
 	m.mu.Lock()
 	m.closed = true
 	m.state = "unavailable"
-	m.revision++
+	m.bumpLocked()
 	raw, listener, contact := m.raw, m.listener, m.contact
 	m.mu.Unlock()
 	m.cancel()

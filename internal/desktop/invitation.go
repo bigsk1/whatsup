@@ -10,6 +10,7 @@ import (
 	"whatsup/internal/identity"
 	"whatsup/internal/pairflow"
 	"whatsup/internal/pairing"
+	"whatsup/internal/storage"
 	"whatsup/internal/transport"
 	"whatsup/internal/transport/address"
 )
@@ -296,10 +297,10 @@ func (s *Service) CreateInvitation(relayMapURL string, allowRelayFallback bool) 
 	s.mu.Lock()
 	control := s.invitations
 	available := s.state == "unlocked" && control != nil
-	occupied := available && s.messages != nil && s.messages.Snapshot().ContactID != ""
+	capacityErr := s.invitationCapacityLocked(available)
 	s.mu.Unlock()
-	if occupied {
-		return InvitationShare{}, errors.New("An approved contact already exists. Use Connect to resume it.")
+	if capacityErr != nil {
+		return InvitationShare{}, capacityErr
 	}
 	if !available {
 		return InvitationShare{}, errors.New("Unlock local storage before creating an invitation")
@@ -321,15 +322,32 @@ func (s *Service) JoinInvitation(link, relayMapURL string, allowRelayFallback bo
 	s.mu.Lock()
 	control := s.invitations
 	available := s.state == "unlocked" && control != nil
-	occupied := available && s.messages != nil && s.messages.Snapshot().ContactID != ""
+	capacityErr := s.invitationCapacityLocked(available)
 	s.mu.Unlock()
-	if occupied {
-		return pairflow.Snapshot{State: "unavailable"}, errors.New("An approved contact already exists. Use Connect to resume it.")
+	if capacityErr != nil {
+		return pairflow.Snapshot{State: "unavailable"}, capacityErr
 	}
 	if !available {
 		return pairflow.Snapshot{State: "unavailable"}, errors.New("Unlock local storage before joining an invitation")
 	}
 	return control.join(link, relayMapURL, allowRelayFallback)
+}
+
+func (s *Service) invitationCapacityLocked(available bool) error {
+	if !available {
+		return nil
+	}
+	if s.application == nil {
+		return errors.New("Saved contact capacity could not be verified")
+	}
+	contacts, err := s.application.CommittedContacts()
+	if err != nil {
+		return errors.New("Saved contact capacity could not be verified")
+	}
+	if len(contacts) >= storage.MaxCommittedContacts {
+		return errors.New("WhatsUp can save up to 32 contacts. Forget a contact before adding another.")
+	}
+	return nil
 }
 
 func (s *Service) CancelInvitation() (pairflow.Snapshot, error) {

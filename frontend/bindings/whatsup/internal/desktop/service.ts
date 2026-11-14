@@ -63,12 +63,20 @@ export function ForgetContact(contactID: string): $CancellablePromise<messaging$
     return $Call.ByID(1502447616, contactID);
 }
 
+export function GetContacts(): $CancellablePromise<messaging$0.ContactSummary[] | null> {
+    return $Call.ByID(572605814);
+}
+
 /**
  * GetConversation returns only the selected contact's bounded local history.
  * Polling never starts transport or chooses a relay service.
  */
 export function GetConversation(): $CancellablePromise<messaging$0.Snapshot> {
     return $Call.ByID(1594594120);
+}
+
+export function GetMessages(contactID: string, cursor: string, limit: number): $CancellablePromise<messaging$0.MessagePage> {
+    return $Call.ByID(1164516079, contactID, cursor, limit);
 }
 
 export function GetPairingStatus(): $CancellablePromise<pairflow$0.Snapshot> {
@@ -89,6 +97,10 @@ export function JoinInvitation(link: string, relayMapURL: string, allowRelayFall
 
 export function LockStorage(): $CancellablePromise<$models.Status> {
     return $Call.ByID(18574999);
+}
+
+export function MarkRead(contactID: string, throughMessageID: string): $CancellablePromise<messaging$0.ContactSummary> {
+    return $Call.ByID(3481817764, contactID, throughMessageID);
 }
 
 export function SendMessage(contactID: string, text: string): $CancellablePromise<messaging$0.Snapshot> {

@@ -36,7 +36,7 @@ func (s *Service) SetProfile(displayName string, shareDisplayName bool) (Profile
 	if err != nil {
 		return ProfileSnapshot{}, errors.New("Your profile could not be saved. Use a name within the supported limit or disconnect and unlock before retrying.")
 	}
-	s.messages.MetadataChanged()
+	s.messages.MetadataChanged("")
 	return ProfileSnapshot{DisplayName: local.DisplayName, ShareDisplayName: local.ShareDisplayName}, nil
 }
 
@@ -46,13 +46,13 @@ func (s *Service) SetContactName(contactID, localName string) (messaging.Snapsho
 	if s.state != "unlocked" || s.application == nil || s.messages == nil {
 		return unavailableConversation(), errors.New("Unlock local storage before naming this contact")
 	}
-	current := s.messages.Snapshot()
+	current := s.messages.Snapshot(contactID)
 	if contactID == "" || current.ContactID != contactID {
 		return current, errors.New("This contact is no longer selected. Review the current contact before naming it.")
 	}
 	if err := s.application.SetContactName(contactID, localName); err != nil {
 		return current, errors.New("The contact name could not be saved. Use a name within the supported limit or disconnect and unlock before retrying.")
 	}
-	s.messages.MetadataChanged()
-	return s.messages.Snapshot(), nil
+	s.messages.MetadataChanged(contactID)
+	return s.messages.Snapshot(contactID), nil
 }

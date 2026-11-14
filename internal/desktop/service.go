@@ -35,7 +35,9 @@ type Service struct {
 	application *storage.ApplicationState
 	pairing     *pairflow.Coordinator
 	invitations *invitationControl
-	messages    *messaging.Manager
+	messages    *messaging.Registry
+	revisions   *messaging.Revisions
+	events      *contactEvents
 	fingerprint string
 	state       string
 	record      func(diagnostics.Event)
@@ -46,16 +48,28 @@ func New(directory string, keys storage.KeyStore, listeners ...func(diagnostics.
 	if len(listeners) != 0 && listeners[0] != nil {
 		record = listeners[0]
 	}
-	return &Service{directory: directory, keys: keys, state: "locked", record: record}
+	return &Service{directory: directory, keys: keys, state: "locked", record: record, revisions: &messaging.Revisions{}}
+}
+
+// NewWithEvents adds a backend-only event sink. The renderer never receives an
+// emitter capability. Delivery runs outside Service and runtime locks.
+func NewWithEvents(directory string, keys storage.KeyStore, record func(diagnostics.Event), sink func(messaging.Hint)) *Service {
+	s := New(directory, keys, record)
+	s.events = newContactEvents(sink)
+	return s
 }
 
 func (s *Service) status() Status {
 	status := Status{Version: Version, IdentityFingerprint: s.fingerprint, StorageState: s.state, NetworkState: "unavailable", PairingAvailable: s.state == "unlocked" && s.invitations != nil}
 	if s.state == "unlocked" && s.messages != nil {
-		conversation := s.messages.Snapshot()
-		status.MessagingAvailable = conversation.CanSend
-		if conversation.ContactID != "" {
-			status.NetworkState = conversation.State
+		contacts, err := s.messages.Contacts()
+		if err == nil {
+			for _, contact := range contacts {
+				status.MessagingAvailable = status.MessagingAvailable || contact.CanSend
+				if status.NetworkState == "unavailable" || contact.State == "connected" {
+					status.NetworkState = contact.State
+				}
+			}
 		}
 	}
 	return status
@@ -71,8 +85,8 @@ func (s *Service) GetStatus() Status {
 // runtime generation. A late completion cannot select a replacement manager.
 // The callback never enters Service.mu: Lock/Forget hold that mutex while
 // joining the pairing run, and close messages before doing so.
-func makeControllers(local *identity.Identity, app *storage.ApplicationState) (*messaging.Manager, *pairflow.Coordinator, *invitationControl, error) {
-	messages, err := messaging.New(local, app)
+func makeControllers(local *identity.Identity, app *storage.ApplicationState, revisions *messaging.Revisions, notify func(messaging.Hint)) (*messaging.Registry, *pairflow.Coordinator, *invitationControl, error) {
+	messages, err := messaging.NewRegistry(local, app, messaging.RegistryOptions{Revisions: revisions, OnChanged: notify})
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -126,7 +140,7 @@ func (s *Service) UnlockStorage() (Status, error) {
 	if err != nil {
 		return fail()
 	}
-	messages, pairing, invitations, err := makeControllers(local, application)
+	messages, pairing, invitations, err := makeControllers(local, application, s.revisions, s.events.enqueue)
 	if err != nil {
 		return fail()
 	}
@@ -188,7 +202,23 @@ func (s *Service) GetConversation() messaging.Snapshot {
 	if s.state != "unlocked" || s.messages == nil {
 		return unavailableConversation()
 	}
-	return s.messages.Snapshot()
+	return s.firstConversationLocked()
+}
+
+// Kept for older bridge clients; current clients select an exact ID and request
+// paged history. Reading the contact list never loads message bodies.
+func (s *Service) firstConversationLocked() messaging.Snapshot {
+	if s.messages == nil {
+		return unavailableConversation()
+	}
+	contacts, err := s.messages.Contacts()
+	if err != nil {
+		return unavailableConversation()
+	}
+	if len(contacts) == 0 {
+		return messaging.Snapshot{State: "none", Messages: []chat.Message{}}
+	}
+	return s.messages.Snapshot(contacts[0].ContactID)
 }
 
 // ConnectContact starts automatic authentication/retry for an already approved
@@ -198,12 +228,6 @@ func (s *Service) ConnectContact(contactID string) (messaging.Snapshot, error) {
 	defer s.mu.Unlock()
 	if s.state != "unlocked" || s.messages == nil {
 		return unavailableConversation(), errors.New("Unlock local storage before connecting")
-	}
-	if s.pairing != nil {
-		state := s.pairing.Snapshot().State
-		if state == "connecting" || state == "awaiting-approval" || state == "waiting-for-peer" || state == "saving" {
-			return s.messages.Snapshot(), errors.New("Finish the current pairing before connecting")
-		}
 	}
 	status, err := s.messages.Connect(contactID)
 	if err != nil {
@@ -268,7 +292,11 @@ func (s *Service) DenyPairing(requestID string) (pairflow.Snapshot, error) {
 
 // ServiceShutdown is Wails lifecycle-only and excluded from generated bindings.
 func (s *Service) ServiceShutdown() error {
-	if s.LockStorage().StorageState != "locked" {
+	locked := s.LockStorage().StorageState == "locked"
+	// Event hooks can call back into the service. Join them only after LockStorage
+	// has released Service.mu, including on a failed shutdown.
+	s.events.close()
+	if !locked {
 		return errors.New("Local storage lock could not be released")
 	}
 	return nil

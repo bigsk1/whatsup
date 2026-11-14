@@ -5,6 +5,34 @@
 // @ts-ignore: Unused imports
 import * as chat$0 from "../chat/models.js";
 
+export interface ContactSummary {
+    "state": string;
+    "revision": number;
+    "contactID": string;
+    "peerFingerprint": string;
+    "peerDisplayName": string;
+    "localName": string;
+    "canConnect": boolean;
+    "canSend": boolean;
+    "unread": number;
+}
+
+/**
+ * Hint is an invalidation hint, never message content or runtime authority.
+ */
+export interface Hint {
+    "contactID": string;
+    "revision": number;
+}
+
+export interface MessagePage {
+    "contactID": string;
+    "revision": number;
+    "messages": chat$0.Message[] | null;
+    "nextCursor": string;
+    "hasMore": boolean;
+}
+
 export interface Snapshot {
     "state": string;
     "revision": number;

@@ -27,197 +27,104 @@
   import ForgetContactDialog from './lib/components/ForgetContactDialog.svelte';
   import HistoryDialog from './lib/components/HistoryDialog.svelte';
   import { createHistoryActions } from './lib/state/history';
+  import { createSession } from './lib/state/session';
+  import ContactList from './lib/components/ContactList.svelte';
   import {
-    hasDesktopBridge,
-    requestStatus,
-    unavailableStatus,
-    type Status,
-    type StatusMethod,
-  } from './lib/backend';
-  import {
-    approvePairing,
-    denyPairing,
-    createInvitation,
-    joinInvitation,
-    cancelInvitation,
-    hasPairingIdentity,
-    requestPairingStatus,
-    unavailablePairing,
-    type PairingStatus,
-  } from './lib/pairing';
-  import {
-    connectContact,
-    forgetContact,
-    requestConversation,
-    sendMessage,
-    unavailableConversation,
-    validMessageText,
-    type ConversationSnapshot,
-  } from './lib/messaging';
+    createContacts,
+    selectedConversation,
+    contactLabel,
+    connectionLabel as describeConnection,
+  } from './lib/state/contacts';
+  import { type StatusMethod } from './lib/backend';
+  import { hasPairingIdentity } from './lib/pairing';
+  import { createPairing } from './lib/state/pairing';
+  import { validMessageText, type ConversationSnapshot } from './lib/messaging';
   import {
     applyPreferences,
     readPreferences,
     savePreferences,
     type Preferences,
   } from './lib/themes/preferences';
-  import {
-    requestProfile,
-    saveProfile,
-    saveContactName,
-    type LocalProfile,
-  } from './lib/profile';
+  import { createProfile } from './lib/state/profile';
+  import type { LocalProfile } from './lib/profile';
 
-  let status: Status = $state({ ...unavailableStatus });
+  const session = createSession();
+  const sessionState = session.state;
+  const status = $derived($sessionState.status);
   let preferences = $state(readPreferences());
-  let native = $state(false);
-  let busy = $state(false);
+  const native = $derived($sessionState.native);
+  const busy = $derived($sessionState.busy);
   let notice = $state('');
   let search = $state('');
   let settings: SettingsDialog;
   let settingsOpen = $state(false);
-  let profile: LocalProfile | null = $state(null);
-  let profileLoading = $state(false);
-  let profileSaving = $state(false);
-  let profileNotice = $state('');
-  let profileEpoch = 0;
-  let contactSaving = $state(false);
-  let contactNotice = $state('');
+  const profiles = createProfile({
+    enabled: conversationEnabled,
+    selectedContact: () => conversation.contactID,
+    apply: (value) => contacts.apply(value),
+  });
+  const profileState = profiles.state;
+  const profile = $derived($profileState.profile);
+  const profileLoading = $derived($profileState.loading);
+  const profileSaving = $derived($profileState.saving);
+  const profileNotice = $derived($profileState.notice);
+  const contactSaving = $derived($profileState.contactSaving);
+  const contactNotice = $derived($profileState.contactNotice);
   let aboutDialog: HTMLDialogElement;
   let invitationDialog: InvitationDialog;
   let forgetDialog: ForgetContactDialog;
   let historyDialog: HistoryDialog;
   const historyActions = createHistoryActions();
   const historyState = historyActions.state;
-  let pairing: PairingStatus = $state({ ...unavailablePairing });
-  let pairingNotice = $state('');
-  let actionRequest = $state('');
-  let actionKind = $state<'approve' | 'deny' | ''>('');
   let mounted = false;
-  let pairingEpoch = 0;
-  let requestSequence = 0;
-  let acceptedSequence = 0;
-  let activePoll: number | undefined;
-  let activeAction = 0;
-  let pairingTimer: number | undefined;
-  let invitationBusy = $state(false);
-  let invitationSequence = 0;
-  let conversation: ConversationSnapshot = $state({
-    ...unavailableConversation,
+  const pairings = createPairing({
+    enabled: conversationEnabled,
+    available: () => status.pairingAvailable,
+    contactCount: () => $contactsState.contacts.length,
+    changed: () => void contacts.reload(),
   });
-  let conversationNotice = $state('');
-  let draft = $state('');
-  let sending = $state(false);
-  let connecting = $state(false);
-  let forgetting = $state(false);
+  const pairingState = pairings.state;
+  const pairing = $derived($pairingState.pairing);
+  const pairingNotice = $derived($pairingState.pairingNotice);
+  const actionRequest = $derived($pairingState.actionRequest);
+  const actionKind = $derived($pairingState.actionKind);
+  const invitationBusy = $derived($pairingState.invitationBusy);
+  const contacts = createContacts();
+  const contactsState = contacts.state;
+  const conversation = $derived(selectedConversation($contactsState));
+  const conversationNotice = $derived(
+    $contactsState.notices[conversation.contactID] || $contactsState.notice,
+  );
+  const draft = $derived($contactsState.drafts[conversation.contactID] ?? '');
+  const sending = $derived(
+    Boolean($contactsState.sending[conversation.contactID]),
+  );
+  const connecting = $derived(
+    Boolean($contactsState.connecting[conversation.contactID]),
+  );
+  const forgetting = $derived(
+    Object.values($contactsState.forgetting).some(Boolean),
+  );
   let conversationEpoch = 0;
-  let conversationPoll: number | undefined;
-  let conversationTimer: number | undefined;
-  let conversationSequence = 0;
 
   function clearConversation() {
     historyActions.reset();
     historyDialog?.close();
-    if (conversationTimer !== undefined)
-      window.clearInterval(conversationTimer);
-    conversationTimer = undefined;
     conversationEpoch += 1;
-    conversationPoll = undefined;
-    conversation = { ...unavailableConversation, messages: [] };
-    conversationNotice = '';
-    draft = '';
+    contacts.stop();
     search = '';
-    sending = false;
-    connecting = false;
-    contactSaving = false;
-    contactNotice = '';
+    profiles.resetContact();
   }
 
-  function clearProfile() {
-    profileEpoch += 1;
-    profile = null;
-    profileLoading = false;
-    profileSaving = false;
-    profileNotice = '';
-  }
-
-  async function refreshLocalProfile() {
-    if (!conversationEnabled() || profileLoading || profileSaving) return;
-    const epoch = profileEpoch;
-    profileLoading = true;
-    try {
-      const value = await requestProfile();
-      if (epoch === profileEpoch && conversationEnabled()) profile = value;
-    } catch {
-      if (epoch === profileEpoch && conversationEnabled()) {
-        profile = null;
-        profileNotice =
-          'Your profile could not be loaded. Close settings and try again.';
-      }
-    } finally {
-      if (epoch === profileEpoch) profileLoading = false;
-    }
-  }
-
-  async function updateProfile(value: LocalProfile) {
-    if (
-      !conversationEnabled() ||
-      profileLoading ||
-      profileSaving ||
-      profile === null
-    )
-      return;
-    const epoch = profileEpoch;
-    profileSaving = true;
-    profileNotice = '';
-    try {
-      const saved = await saveProfile(value);
-      if (epoch === profileEpoch && conversationEnabled()) {
-        profile = saved;
-        profileNotice = 'Profile saved on this device.';
-      }
-    } catch {
-      if (epoch === profileEpoch && conversationEnabled())
-        profileNotice =
-          'Your profile could not be saved. Unlock storage and try again.';
-    } finally {
-      if (epoch === profileEpoch) profileSaving = false;
-    }
-  }
-
-  async function updateContactName(selectedContact: string, name: string) {
-    if (
-      !conversationEnabled() ||
-      contactSaving ||
-      selectedContact !== conversation.contactID ||
-      selectedContact === ''
-    )
-      return;
-    const epoch = conversationEpoch;
-    contactSaving = true;
-    contactNotice = '';
-    try {
-      const value = await saveContactName(selectedContact, name);
-      if (acceptConversation(value, epoch, selectedContact))
-        contactNotice = 'Contact name saved only on this device.';
-    } catch {
-      if (
-        epoch === conversationEpoch &&
-        conversationEnabled() &&
-        selectedContact === conversation.contactID
-      )
-        contactNotice =
-          'The contact name could not be saved. Check the current contact and try again.';
-    } finally {
-      if (
-        epoch === conversationEpoch &&
-        selectedContact === conversation.contactID
-      )
-        contactSaving = false;
-    }
-  }
+  const clearProfile = () => profiles.stop();
+  const refreshLocalProfile = () => profiles.refresh();
+  const updateProfile = (value: LocalProfile) => profiles.save(value);
+  const updateContactName = (id: string, name: string) =>
+    profiles.saveName(id, name);
 
   function settingsChanged(open: boolean) {
     settingsOpen = open;
+    contacts.setVisible(!document.hidden && !open);
     if (open) void refreshLocalProfile();
   }
 
@@ -241,106 +148,36 @@
       !conversationEnabled() ||
       (selectedContact !== undefined &&
         (selectedContact !== conversation.contactID ||
-          value.contactID !== selectedContact)) ||
-      value.revision < conversation.revision
+          value.contactID !== selectedContact))
     )
       return false;
-    if (conversation.contactID !== value.contactID) {
-      contactSaving = false;
-      contactNotice = '';
-    }
-    conversation = value;
-    return true;
+    return contacts.apply(value);
   }
 
   async function refreshConversation() {
-    if (!conversationEnabled() || conversationPoll !== undefined) return;
-    const epoch = conversationEpoch;
-    const sequence = ++conversationSequence;
-    conversationPoll = sequence;
-    try {
-      acceptConversation(await requestConversation(), epoch);
-    } catch {
-      if (epoch === conversationEpoch && conversationEnabled()) {
-        conversation = { ...unavailableConversation, messages: [] };
-        conversationNotice =
-          'Conversation status could not be verified. No message will be sent. Try again or disconnect and lock.';
-      }
-    } finally {
-      if (conversationPoll === sequence) conversationPoll = undefined;
-    }
+    if (conversationEnabled()) await contacts.start();
   }
 
-  function startConversationPolling() {
-    if (!conversationEnabled()) return;
-    void refreshConversation();
-    if (conversationTimer === undefined)
-      conversationTimer = window.setInterval(
-        () => void refreshConversation(),
-        1000,
-      );
+  function startConversationEvents() {
+    if (conversationEnabled()) void contacts.start();
   }
 
   async function connectConversation() {
-    if (!conversationEnabled() || !conversation.canConnect || connecting)
-      return;
-    const epoch = conversationEpoch;
-    const selectedContact = conversation.contactID;
-    connecting = true;
-    conversationNotice = '';
-    try {
-      acceptConversation(
-        await connectContact(selectedContact),
-        epoch,
-        selectedContact,
-      );
-    } catch {
-      if (
-        epoch === conversationEpoch &&
-        conversationEnabled() &&
-        conversation.contactID === selectedContact
-      )
-        conversationNotice =
-          'The connection could not be started. Your saved messages remain on this device. Try Connect again.';
-    } finally {
-      if (epoch === conversationEpoch) connecting = false;
-    }
+    if (conversationEnabled()) await contacts.connect();
   }
 
   async function queueMessage() {
-    if (
-      !conversationEnabled() ||
-      !conversation.canSend ||
-      sending ||
-      !validMessageText(draft)
-    )
-      return;
-    const epoch = conversationEpoch;
-    const selectedContact = conversation.contactID;
-    const text = draft;
-    sending = true;
-    conversationNotice = '';
-    try {
-      const value = await sendMessage(selectedContact, text);
-      if (
-        epoch === conversationEpoch &&
-        conversationEnabled() &&
-        conversation.contactID === selectedContact
-      ) {
-        acceptConversation(value, epoch, selectedContact);
-        if (draft === text) draft = '';
-      }
-    } catch {
-      if (
-        epoch === conversationEpoch &&
-        conversationEnabled() &&
-        conversation.contactID === selectedContact
-      )
-        conversationNotice =
-          'The message could not be saved to the local queue. Your draft is still here; try again.';
-    } finally {
-      if (epoch === conversationEpoch) sending = false;
-    }
+    if (conversationEnabled()) await contacts.send();
+  }
+
+  function selectConversation(contactID: string) {
+    if (!conversationEnabled() || contactID === conversation.contactID) return;
+    historyActions.reset();
+    historyDialog?.close();
+    forgetDialog?.close();
+    conversationEpoch += 1;
+    profiles.resetContact();
+    contacts.select(contactID);
   }
 
   function showForgetContact() {
@@ -370,59 +207,20 @@
       selectedContact !== conversation.contactID
     )
       return;
-    // Retire all old polls and mutations before asking Go to remove the contact.
-    // A response for the old conversation must never reopen its history or draft.
-    clearPairing();
-    clearConversation();
-    clearProfile();
+    historyActions.reset();
+    historyDialog?.close();
+    conversationEpoch += 1;
     const epoch = conversationEpoch;
-    forgetting = true;
-    busy = true;
     notice = '';
-    let failed = false;
-    try {
-      const value = await forgetContact(selectedContact);
-      if (epoch === conversationEpoch && mounted) {
-        conversation = value;
-        search = '';
-      }
-    } catch {
-      failed = true;
-    } finally {
-      if (epoch === conversationEpoch && mounted) {
-        forgetting = false;
-        busy = false;
-        forgetDialog.close();
-        if (failed) {
-          // The backend may lock after an uncertain storage write. Verify its
-          // state afresh instead of restoring any snapshot from before removal.
-          await refresh();
-          notice =
-            'Contact removal could not be confirmed. Check the saved contact before trying again. No new connection was started.';
-        } else {
-          void refreshLocalProfile();
-          startPairingPolling();
-          startConversationPolling();
-        }
-      }
+    const removed = await contacts.forget(selectedContact);
+    if (epoch !== conversationEpoch || !mounted) return;
+    forgetDialog.close();
+    profiles.resetContact();
+    if (!removed) {
+      await refresh();
+      notice =
+        'Contact removal could not be confirmed. Check the saved contact before trying again. No new connection was started.';
     }
-  }
-
-  function pairingEnabled() {
-    return mounted && native && !busy && status.storageState === 'unlocked';
-  }
-
-  function clearPairing() {
-    if (pairingTimer !== undefined) window.clearInterval(pairingTimer);
-    pairingTimer = undefined;
-    pairingEpoch += 1;
-    activePoll = undefined;
-    pairing = { ...unavailablePairing };
-    pairingNotice = '';
-    actionRequest = '';
-    actionKind = '';
-    invitationSequence += 1;
-    invitationBusy = false;
   }
 
   const invitationEnabled = $derived(
@@ -435,7 +233,7 @@
     invitationEnabled &&
       !invitationBusy &&
       !hasPairingIdentity(pairing) &&
-      conversation.contactID === '' &&
+      $contactsState.contacts.length < 32 &&
       pairing.state !== 'connecting',
   );
 
@@ -451,196 +249,30 @@
       pairing.peerFingerprint === conversation.peerFingerprint &&
       pairing.state === 'reconnect-required',
   );
-  const contactMatchesSearch = $derived(
-    search === '' ||
-      contactName.toLowerCase().includes(search.toLowerCase()) ||
-      conversation.peerFingerprint.includes(search.toLowerCase()),
+  const matchingContacts = $derived(
+    $contactsState.contacts.filter(
+      (contact) =>
+        search === '' ||
+        contactLabel(contact).toLowerCase().includes(search.toLowerCase()) ||
+        contact.peerFingerprint.includes(search.toLowerCase()),
+    ),
   );
   const connectionLabel = $derived(
-    conversation.state === 'connected'
-      ? 'Connected'
-      : conversation.state === 'connecting' || connecting
-        ? 'Connecting…'
-        : conversation.state === 'identity-changed'
-          ? 'Identity could not be verified'
-          : conversation.state === 'update-required'
-            ? 'Compatible app update needed'
-            : conversation.state === 'authentication-failed'
-              ? 'Authentication needs attention'
-              : conversation.state === 'failed'
-                ? 'Connection unavailable'
-                : conversation.state === 'capacity-reached'
-                  ? 'Local message storage full'
-                  : conversation.state === 'peer-capacity-reached'
-                    ? 'Contact message storage full'
-                    : 'Offline',
+    connecting ? 'Connecting…' : describeConnection(conversation.state),
   );
 
-  async function beginInvitation(url: string, consent: boolean) {
-    if (!mounted || !canStartInvitation)
-      throw new Error('Invitation setup is unavailable.');
-    const epoch = pairingEpoch;
-    const operation = ++invitationSequence;
-    invitationBusy = true;
-    try {
-      const share = await createInvitation(url, consent);
-      if (
-        epoch !== pairingEpoch ||
-        operation !== invitationSequence ||
-        !pairingEnabled()
-      )
-        throw new Error('Invitation setup is no longer available.');
-      return share;
-    } finally {
-      if (operation === invitationSequence) invitationBusy = false;
-    }
-  }
-
-  async function openInvitation(link: string, url: string, consent: boolean) {
-    if (!mounted || !canStartInvitation)
-      throw new Error('Invitation setup is unavailable.');
-    const epoch = pairingEpoch;
-    const operation = ++invitationSequence;
-    const sequence = ++requestSequence;
-    invitationBusy = true;
-    try {
-      const value = await joinInvitation(link, url, consent);
-      if (
-        epoch !== pairingEpoch ||
-        operation !== invitationSequence ||
-        !pairingEnabled()
-      )
-        throw new Error('Invitation setup is no longer available.');
-      if (
-        sequence >= acceptedSequence &&
-        (!hasPairingIdentity(pairing) || pairing.requestID === value.requestID)
-      ) {
-        acceptedSequence = sequence;
-        pairing = value;
-      }
-    } finally {
-      if (operation === invitationSequence) invitationBusy = false;
-    }
-  }
-
-  async function stopInvitation() {
-    if (!mounted || !native || status.storageState !== 'unlocked')
-      throw new Error('Invitation cancellation is unavailable.');
-    clearPairing();
-    const epoch = pairingEpoch;
-    const operation = ++invitationSequence;
-    invitationBusy = true;
-    try {
-      const value = await cancelInvitation();
-      if (
-        epoch === pairingEpoch &&
-        operation === invitationSequence &&
-        pairingEnabled()
-      ) {
-        acceptedSequence = ++requestSequence;
-        pairing = value;
-      }
-    } finally {
-      if (operation === invitationSequence) {
-        invitationBusy = false;
-        startPairingPolling();
-      }
-    }
-  }
-
-  function startPairingPolling() {
-    if (!pairingEnabled()) return;
-    void refreshPairing();
-    if (pairingTimer === undefined)
-      pairingTimer = window.setInterval(() => void refreshPairing(), 1000);
-  }
-
-  async function refreshPairing() {
-    if (!pairingEnabled() || activePoll !== undefined) return;
-    const epoch = pairingEpoch;
-    const sequence = ++requestSequence;
-    activePoll = sequence;
-    try {
-      const value = await requestPairingStatus();
-      if (
-        epoch === pairingEpoch &&
-        pairingEnabled() &&
-        sequence >= acceptedSequence
-      ) {
-        acceptedSequence = sequence;
-        if (
-          value.requestID !== pairing.requestID ||
-          value.state !== pairing.state
-        )
-          pairingNotice = '';
-        pairing = value;
-      }
-    } catch {
-      if (
-        epoch === pairingEpoch &&
-        pairingEnabled() &&
-        sequence >= acceptedSequence
-      ) {
-        acceptedSequence = sequence;
-        pairing = { ...unavailablePairing };
-        pairingNotice = '';
-      }
-    } finally {
-      if (activePoll === sequence) activePoll = undefined;
-    }
-  }
-
-  async function decidePairing(
-    selectedRequest: string,
+  const beginInvitation = (url: string, consent: boolean) =>
+    pairings.create(url, consent);
+  const openInvitation = (link: string, url: string, consent: boolean) =>
+    pairings.join(link, url, consent);
+  const stopInvitation = () => pairings.cancel();
+  const startPairingPolling = () => pairings.start();
+  const clearPairing = () => pairings.stop();
+  const decidePairing = (
+    requestID: string,
     approve: boolean,
     fingerprint = '',
-  ) {
-    if (
-      !pairingEnabled() ||
-      selectedRequest !== pairing.requestID ||
-      selectedRequest === '' ||
-      (approve && pairing.state !== 'awaiting-approval') ||
-      (actionRequest === selectedRequest && (approve || actionKind === 'deny'))
-    )
-      return;
-    const epoch = pairingEpoch;
-    const sequence = ++requestSequence;
-    activeAction = sequence;
-    actionRequest = selectedRequest;
-    actionKind = approve ? 'approve' : 'deny';
-    pairingNotice = '';
-    try {
-      const value = approve
-        ? await approvePairing(selectedRequest, fingerprint)
-        : await denyPairing(selectedRequest);
-      if (
-        epoch === pairingEpoch &&
-        pairingEnabled() &&
-        pairing.requestID === selectedRequest &&
-        sequence >= acceptedSequence
-      ) {
-        acceptedSequence = sequence;
-        pairing = value;
-      }
-    } catch {
-      if (
-        epoch === pairingEpoch &&
-        pairingEnabled() &&
-        pairing.requestID === selectedRequest &&
-        sequence >= acceptedSequence
-      ) {
-        acceptedSequence = sequence;
-        pairingNotice = approve
-          ? 'Pairing approval could not be confirmed. Check the request before trying again.'
-          : 'Pairing cancellation could not be confirmed. Try again or lock storage to cancel.';
-      }
-    } finally {
-      if (activeAction === sequence) {
-        actionRequest = '';
-        actionKind = '';
-      }
-    }
-  }
+  ) => pairings.decide(requestID, approve, fingerprint);
 
   async function refresh(
     method: StatusMethod = 'GetStatus',
@@ -652,38 +284,24 @@
       clearConversation();
       clearProfile();
     }
-    busy = true;
     notice = '';
-    try {
-      status = await requestStatus(method);
-      if (status.storageState !== 'unlocked') {
-        clearPairing();
-        clearConversation();
-        clearProfile();
-      }
-    } catch {
-      status = { ...unavailableStatus };
+    const result = await session.refresh(method);
+    if (!mounted || result === null) return;
+    if (result.storageState !== 'unlocked') {
       clearPairing();
       clearConversation();
       clearProfile();
-      notice =
-        method === 'UnlockStorage'
-          ? 'Local storage could not be unlocked. Check that your OS credential store is available, then try again.'
-          : 'The desktop could not report its status. Local actions are unavailable. Try again.';
-    } finally {
-      busy = false;
-      if (status.storageState === 'unlocked') {
-        void refreshLocalProfile();
-        startPairingPolling();
-        if (method === 'UnlockStorage' && connectAfterUnlock) {
-          const epoch = conversationEpoch;
-          await refreshConversation();
-          if (epoch === conversationEpoch && conversationEnabled())
-            await connectConversation();
-        }
-        startConversationPolling();
-      }
+      return;
     }
+    void refreshLocalProfile();
+    startPairingPolling();
+    if (method === 'UnlockStorage' && connectAfterUnlock) {
+      const epoch = conversationEpoch;
+      await refreshConversation();
+      if (epoch === conversationEpoch && conversationEnabled())
+        await connectConversation();
+    }
+    startConversationEvents();
   }
 
   function storageAction() {
@@ -701,15 +319,8 @@
 
   onMount(() => {
     mounted = true;
-    const activateDesktop = () => {
-      if (native || !hasDesktopBridge()) return;
-      native = true;
-      void refresh();
-    };
-    // Wails injects configuration after navigation/load completion. Subscribe
-    // before checking so both early and late injection reach the same path.
-    window.addEventListener('wails:runtime-config-ready', activateDesktop);
-    activateDesktop();
+    contacts.setVisible(!document.hidden);
+    const stopSession = session.mount(() => void refresh());
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const updateSystemTheme = () => applyPreferences(preferences);
     media.addEventListener('change', updateSystemTheme);
@@ -720,14 +331,26 @@
       }
     };
     window.addEventListener('keydown', keyboard);
+    const recoverContacts = () => {
+      if (conversationEnabled()) {
+        contacts.setVisible(!document.hidden && !settingsOpen);
+        void contacts.reload();
+      }
+    };
+    window.addEventListener('focus', recoverContacts);
+    window.addEventListener('online', recoverContacts);
+    document.addEventListener('visibilitychange', recoverContacts);
     return () => {
       mounted = false;
       clearPairing();
       clearConversation();
       clearProfile();
-      window.removeEventListener('wails:runtime-config-ready', activateDesktop);
+      stopSession();
       media.removeEventListener('change', updateSystemTheme);
       window.removeEventListener('keydown', keyboard);
+      window.removeEventListener('focus', recoverContacts);
+      window.removeEventListener('online', recoverContacts);
+      document.removeEventListener('visibilitychange', recoverContacts);
     };
   });
 
@@ -812,17 +435,16 @@
         >{/if}</label
     >
     <div class="contacts-list-label">
-      <span>CONVERSATIONS</span><span class="count">{hasContact ? 1 : 0}</span>
+      <span>CONVERSATIONS</span><span class="count"
+        >{$contactsState.contacts.length}</span
+      >
     </div>
-    {#if hasContact && contactMatchesSearch}
-      <div class="approved-contact" aria-label="Approved contact">
-        <div class="contact-avatar"><Shield size={21} /></div>
-        <div>
-          <strong>{contactName}</strong>
-          <span>{connectionLabel}</span>
-          <code>{conversation.peerFingerprint.slice(0, 12)}…</code>
-        </div>
-      </div>
+    {#if matchingContacts.length > 0}
+      <ContactList
+        contacts={matchingContacts}
+        selectedID={conversation.contactID}
+        onselect={selectConversation}
+      />
     {:else}
       <div class="empty-contacts">
         <div class="contact-empty-icon">
@@ -843,7 +465,7 @@
     {/if}
     <div class="sidebar-note">
       <Shield size={17} strokeWidth={1.6} />
-      <p>One conversation.<br /><strong>Just the two of you.</strong></p>
+      <p>Every conversation.<br /><strong>Just the two of you.</strong></p>
     </div>
     <footer class="device-footer">
       <div class="mini-device"><span>Y</span></div>
@@ -913,10 +535,10 @@
       >
     </header>
 
-    {#if notice}
+    {#if notice || $sessionState.notice}
       <div class="notice" role="alert">
         <Info size={18} />
-        <p>{notice}</p>
+        <p>{notice || $sessionState.notice}</p>
         {#if native}<button
             class="text-button"
             onclick={() => refresh()}
@@ -933,10 +555,13 @@
       <div class="notice" role="alert">
         <Info size={18} />
         <p>{conversationNotice}</p>
+        <button class="text-button" onclick={() => void contacts.reloadLatest()}
+          >Try again</button
+        >
         <button
           class="icon-button"
           aria-label="Dismiss conversation notice"
-          onclick={() => (conversationNotice = '')}><X size={16} /></button
+          onclick={() => contacts.dismissNotice()}><X size={16} /></button
         >
       </div>
     {/if}
@@ -1013,9 +638,33 @@
           class="message-history"
           role="log"
           aria-label="Messages"
+          aria-busy={Boolean(
+            $contactsState.loadingPages[conversation.contactID],
+          )}
           aria-live="polite"
           aria-relevant="additions text"
         >
+          {#if conversation.messages.length > 100}
+            <button
+              type="button"
+              class="text-button"
+              disabled={$contactsState.loadingPages[conversation.contactID]}
+              onclick={() => void contacts.reloadLatest()}
+              >Reload latest messages</button
+            >
+          {/if}
+          {#if $contactsState.pages[conversation.contactID]?.hasMore}
+            <button
+              type="button"
+              class="text-button"
+              disabled={$contactsState.loadingPages[conversation.contactID]}
+              onclick={() => void contacts.loadOlder()}
+            >
+              {$contactsState.loadingPages[conversation.contactID]
+                ? 'Loading history…'
+                : 'Load older messages'}
+            </button>
+          {/if}
           {#each conversation.messages as message (message.id)}
             <article
               class="message-bubble"
@@ -1126,7 +775,12 @@
               ? 'Connect to open this conversation…'
               : 'Your next conversation starts here…'}
           disabled={!conversation.canSend || busy}
-          bind:value={draft}
+          value={draft}
+          oninput={(event) =>
+            contacts.setDraft(
+              conversation.contactID,
+              event.currentTarget.value,
+            )}
           maxlength={16 * 1024}
           onkeydown={(event) => {
             if (
@@ -1308,46 +962,6 @@
 </dialog>
 
 <style>
-  .approved-contact {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin: 22px 15px;
-    padding: 15px 12px;
-    border: 1px solid var(--border);
-    border-radius: 11px;
-    background: var(--surface);
-  }
-  .contact-avatar {
-    display: grid;
-    place-items: center;
-    flex-shrink: 0;
-    width: 39px;
-    height: 39px;
-    color: var(--accent);
-    background: var(--accent-soft);
-    border-radius: 12px;
-  }
-  .approved-contact strong,
-  .approved-contact span,
-  .approved-contact code {
-    display: block;
-  }
-  .approved-contact strong {
-    font-size: 12px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .approved-contact > div:last-child {
-    min-width: 0;
-  }
-  .approved-contact span,
-  .approved-contact code {
-    margin-top: 5px;
-    font-size: 10px;
-    color: var(--muted);
-  }
   .conversation-actions {
     display: flex;
     flex-wrap: wrap;

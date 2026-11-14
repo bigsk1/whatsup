@@ -47,6 +47,9 @@ func (s *Scope) insert(ctx context.Context, tx *sql.Tx, m *metadata, metaID stri
 	if r.Pending {
 		m.Pending++
 	}
+	if !r.Hidden && r.Message.Direction == message.Incoming && sequence > m.ReadThroughSequence {
+		m.Unread++
+	}
 	if err = s.db.saveMeta(ctx, tx, s.id, metaID, *m); err != nil {
 		return err
 	}
@@ -233,65 +236,8 @@ func (s *Scope) PendingIDs() (ids []string, result error) {
 }
 
 func (s *Scope) Page(beforeSequence uint64, limit int) (messages []message.Message, result error) {
-	if s == nil || s.db == nil {
-		return nil, ErrClosed
-	}
-	if limit < 1 || limit > MaxPageMessages {
-		return nil, ErrCapacity
-	}
-	if beforeSequence == 0 {
-		beforeSequence = math.MaxInt64
-	}
-	if beforeSequence > math.MaxInt64 {
-		return nil, ErrCorrupt
-	}
-	result = s.db.transaction(func(ctx context.Context, tx *sql.Tx) error {
-		if _, _, err := s.meta(ctx, tx); err != nil {
-			return err
-		}
-		rows, err := tx.QueryContext(ctx, "SELECT message_id,sequence,cipher FROM records WHERE contact_id=? AND sequence>0 AND sequence<? ORDER BY sequence DESC", s.id, beforeSequence)
-		if err != nil {
-			return sqlError(err)
-		}
-		defer rows.Close()
-		messages = make([]message.Message, 0, limit)
-		used := 0
-		for rows.Next() {
-			var id string
-			var seq uint64
-			var blob []byte
-			if rows.Scan(&id, &seq, &blob) != nil {
-				return ErrStore
-			}
-			var r record
-			if s.db.open("message", s.id, id, seq, blob, &r) != nil || validateRecord(id, r) != nil {
-				return ErrCorrupt
-			}
-			if r.Hidden {
-				continue
-			}
-			if used+len(r.Message.Text) > MaxPageTextBytes {
-				break
-			}
-			r.Message.Sequence = seq
-			messages = append(messages, r.Message)
-			used += len(r.Message.Text)
-			if len(messages) == limit {
-				break
-			}
-		}
-		if err = rows.Err(); err != nil {
-			return sqlError(err)
-		}
-		for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
-			messages[i], messages[j] = messages[j], messages[i]
-		}
-		return nil
-	})
-	if result != nil {
-		return nil, result
-	}
-	return messages, result
+	page, err := s.ReadPage(beforeSequence, limit)
+	return page.Messages, err
 }
 
 func (s *Scope) Usage() (usage Usage, result error) {
@@ -326,6 +272,12 @@ func (s *Scope) DeleteLocal(id string) error {
 		if r.Hidden {
 			return nil
 		}
+		if r.Message.Direction == message.Incoming && r.Message.Sequence > m.ReadThroughSequence {
+			if m.Unread == 0 {
+				return ErrCorrupt
+			}
+			m.Unread--
+		}
 		r.Hidden = true
 		if !r.Pending {
 			r.Message.Text = ""
@@ -343,7 +295,7 @@ func (s *Scope) ClearHistory() error {
 		if err != nil {
 			return err
 		}
-		var after uint64
+		after := m.ClearThroughSequence
 		for {
 			rows, err := tx.QueryContext(ctx, "SELECT message_id,sequence,cipher FROM records WHERE contact_id=? AND sequence>? ORDER BY sequence LIMIT 128", s.id, after)
 			if err != nil {
@@ -392,7 +344,10 @@ func (s *Scope) ClearHistory() error {
 				}
 			}
 		}
-		return nil
+		m.ClearThroughSequence = m.NextSequence - 1
+		m.ReadThroughSequence = m.ClearThroughSequence
+		m.Unread = 0
+		return s.db.saveMeta(ctx, tx, s.id, key, m)
 	})
 }
 
@@ -433,7 +388,9 @@ func (d *DB) ImportLegacy(contact string, messages []message.Message) error {
 				return err
 			}
 		}
-		return nil
+		m.ReadThroughSequence = m.NextSequence - 1
+		m.Unread = 0
+		return d.saveMeta(ctx, tx, contact, key, m)
 	})
 }
 

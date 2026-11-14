@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
 import { unavailablePairing } from '../src/lib/pairing';
-import { unavailableConversation } from '../src/lib/messaging';
 
 type Platform = 'windows' | 'linux';
 type Operation = 'GetStatus' | 'UnlockStorage' | 'LockStorage';
@@ -24,7 +23,7 @@ const pairingStatusID = Number(pairingBinding[1]);
 const conversationBinding = readFileSync(
   new URL('../bindings/whatsup/internal/desktop/service.ts', import.meta.url),
   'utf8',
-).match(/export function GetConversation\([\s\S]*?\$Call\.ByID\((\d+)/);
+).match(/export function GetContacts\([\s\S]*?\$Call\.ByID\((\d+)/);
 if (!conversationBinding)
   throw new Error('Missing generated conversation status binding');
 const conversationStatusID = Number(conversationBinding[1]);
@@ -69,7 +68,7 @@ async function syntheticDesktop(page: Page, failFirstStatus = false) {
       body.args?.methodID === conversationStatusID
     ) {
       await route.fulfill({
-        json: { ...unavailableConversation, state: 'none' },
+        json: [],
       });
       return;
     }

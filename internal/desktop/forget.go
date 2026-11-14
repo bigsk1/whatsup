@@ -20,41 +20,36 @@ func (s *Service) ForgetContact(contactID string) (messaging.Snapshot, error) {
 	if s.messages == nil {
 		return s.failForget()
 	}
-	current := s.messages.Snapshot()
+	current := s.messages.Snapshot(contactID)
 	if contactID == "" || current.ContactID != contactID {
-		return current, errors.New("This contact is no longer selected. Review the current contact before forgetting it.")
+		return s.firstConversationLocked(), errors.New("This contact is no longer available. Review the current contact before forgetting it.")
 	}
 	if s.pairing == nil || s.invitations == nil {
 		return s.failForget()
 	}
 	records, err := s.application.CommittedContacts()
-	if err != nil || len(records) != 1 || records[0].ID != contactID {
+	if err != nil {
 		return current, errors.New("The contact could not be removed. Disconnect and unlock before retrying.")
 	}
-	err = s.application.ForgetCommittedContact(records[0], func() error {
-		// Closing the old messaging manager first also makes a late pairing
-		// completion callback unable to reconnect this retired generation.
-		s.messages.Close()
-		s.messages = nil
-		s.invitations.close()
-		s.invitations = nil
-		err := s.pairing.Close()
-		s.pairing = nil
-		return err
+	index := -1
+	for i := range records {
+		if records[i].ID == contactID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return current, errors.New("This contact is no longer available")
+	}
+	err = s.application.ForgetCommittedContact(records[index], func() error {
+		// Retire sets a permanent generation tombstone before joining this exact
+		// runtime. A late pairing callback cannot recreate it during deletion.
+		return s.messages.Retire(contactID)
 	})
 	if err != nil {
 		return s.failForget()
 	}
-	local, err := s.application.Identity()
-	if err != nil {
-		return s.failForget()
-	}
-	messages, pairing, invitations, err := makeControllers(local, s.application)
-	if err != nil {
-		return s.failForget()
-	}
-	s.messages, s.pairing, s.invitations = messages, pairing, invitations
-	return s.messages.Snapshot(), nil
+	return s.firstConversationLocked(), nil
 }
 
 // failForget keeps a failed/uncertain deletion disconnected. Closing storage
