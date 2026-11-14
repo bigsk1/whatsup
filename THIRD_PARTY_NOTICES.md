@@ -19,12 +19,40 @@ Source: [Wails v3.1.0](https://github.com/wailsapp/wails/tree/v3.1.0),
 [upstream license](https://github.com/wailsapp/wails/blob/v3.1.0/LICENSE).
 The current icons are scaffold placeholders, not WhatsUp branding.
 
+## Tailcat
+
+A reviewed library-only source copy is retained under `third_party/tailcat` and
+selected by the root Go module's local replacement. Its upstream basis is
+`github.com/tailscale/tailcat` revision
+`e00cdde6ff787f801361ff85ed085775c775d4c5`, recorded as
+`v0.7.1-0.20261105151022-e00cdde6ff78`.
+
+Copyright (c) 2020 Tailscale Inc & contributors.
+
+Tailcat is distributed under the BSD 3-Clause License. The full copyright,
+redistribution conditions and disclaimer are retained in
+[third_party/tailcat/LICENSE](third_party/tailcat/LICENSE), including the notice
+required for future binary distributions. Its names and contributors' names do
+not endorse WhatsUp.
+
+WhatsUp's local changes add an explicit opt-out for optional DERP application
+statistics and disable bearer-address debug logging. Unneeded upstream CLI,
+web demo, release assets and upstream tests are omitted; retained library helpers
+are not exposed as WhatsUp services. The reviewed source basis, changed files,
+local test and license hashes are recorded in
+[config/tailcat-patch.json](config/tailcat-patch.json). The workflow rejects
+unexpected replacements or file changes. This limited patch does not add
+direct-only enforcement.
+
+Source: [reviewed Tailcat revision](https://github.com/tailscale/tailcat/tree/e00cdde6ff787f801361ff85ed085775c775d4c5),
+[upstream BSD-3-Clause license](https://github.com/tailscale/tailcat/blob/e00cdde6ff787f801361ff85ed085775c775d4c5/LICENSE).
+
 ## Dependency and binary distribution boundary
 
 Go/npm dependencies are resolved through their manifests, lockfiles and checksum
-records; their full source is not vendored here. Tailcat is BSD-3-Clause, and the
-other dependencies retain their own licenses. This source notice is not a complete
-binary license inventory or SBOM. Before distributing binaries, inventory direct
+records. Apart from the reviewed Tailcat library copy above, their full source is
+not vendored here. Other dependencies retain their own licenses. This source
+notice is not a complete binary license inventory or SBOM. Before distributing binaries, inventory direct
 and transitive dependencies, retain all required copyright/license notices, and
 complete the release gates documented in `docs/development.md`. The current
 development build and this initial Git baseline do not authorize publication.

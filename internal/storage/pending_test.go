@@ -176,7 +176,7 @@ func TestSchemaTwoMigrationPreservesIdentityPinsAndChat(t *testing.T) {
 	}
 	restored, _ := app.Identity()
 	restoredSeed := restored.Seed()
-	if app.state.Version != 3 || app.state.PendingContacts == nil || len(app.state.PendingContacts) != 0 || !bytes.Equal(restoredSeed[:], seed) || !bytes.Equal(readChat(t, app, pin), chat) {
+	if app.state.Version != ApplicationSchemaVersion || app.state.PendingContacts == nil || len(app.state.PendingContacts) != 0 || !bytes.Equal(restoredSeed[:], seed) || !bytes.Equal(readChat(t, app, pin), chat) {
 		t.Fatal("schema two migration changed existing state")
 	}
 	_ = app.Close()

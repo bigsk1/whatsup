@@ -11,7 +11,7 @@ import (
 	"whatsup/internal/storage"
 )
 
-const Version = "0.0.2"
+const Version = "0.0.3"
 
 type Status struct {
 	Version              string `json:"version"`
@@ -31,6 +31,7 @@ type Service struct {
 	vault       *storage.Vault
 	application *storage.ApplicationState
 	pairing     *pairflow.Coordinator
+	invitations *invitationControl
 	fingerprint string
 	state       string
 	record      func(diagnostics.Event)
@@ -45,7 +46,7 @@ func New(directory string, keys storage.KeyStore, listeners ...func(diagnostics.
 }
 
 func (s *Service) status() Status {
-	return Status{Version: Version, IdentityFingerprint: s.fingerprint, StorageState: s.state, NetworkState: "unavailable"}
+	return Status{Version: Version, IdentityFingerprint: s.fingerprint, StorageState: s.state, NetworkState: "unavailable", PairingAvailable: s.state == "unlocked" && s.invitations != nil}
 }
 
 func (s *Service) GetStatus() Status {
@@ -92,7 +93,7 @@ func (s *Service) UnlockStorage() (Status, error) {
 	if err != nil {
 		return fail()
 	}
-	pairing, err := pairflow.New(local, application)
+	pairing, err := pairflow.New(local, application, pairflow.Options{CompleteActivation: true})
 	if err != nil {
 		return fail()
 	}
@@ -100,6 +101,7 @@ func (s *Service) UnlockStorage() (Status, error) {
 	s.vault = vault
 	s.application = application
 	s.pairing = pairing
+	s.invitations = newInvitationControl(local, pairing)
 	s.state = "unlocked"
 	s.record(diagnostics.StorageUnlocked)
 	return s.status(), nil
@@ -108,6 +110,10 @@ func (s *Service) UnlockStorage() (Status, error) {
 func (s *Service) LockStorage() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.invitations != nil {
+		s.invitations.close()
+		s.invitations = nil
+	}
 	if s.pairing != nil {
 		// Join every pairing/persistence callback before closing the vault. This
 		// also closes its owned TLS session and retires any invitation transport.
@@ -137,6 +143,9 @@ func (s *Service) GetPairingStatus() pairflow.Snapshot {
 	defer s.mu.Unlock()
 	if s.state != "unlocked" || s.pairing == nil {
 		return pairflow.Snapshot{State: "unavailable"}
+	}
+	if s.invitations != nil {
+		return s.invitations.snapshot()
 	}
 	return s.pairing.Snapshot()
 }

@@ -4,11 +4,12 @@ Recorded 2026-11-14 (America/Los_Angeles).
 
 ## Implemented
 
-- Native Wails v3 entry point and six generated typed bridge methods:
-  GetStatus, UnlockStorage, LockStorage, GetPairingStatus, ApprovePairing and
-  DenyPairing. Only public status and reserved-request decisions cross the bridge.
-  No identity/contact/vault objects,
-  secrets, general filesystem API or transport operations are bound.
+- Native Wails v3 entry point and nine generated typed bridge methods:
+  GetStatus, UnlockStorage, LockStorage, GetPairingStatus, ApprovePairing,
+  DenyPairing, CreateInvitation, JoinInvitation and CancelInvitation. Status and
+  decision DTOs contain no bearer or transport secrets. Only explicit Create
+  returns a private invitation link for transient sharing. Identity/contact/vault
+  objects, general filesystem access, messages and files remain unbound.
 - Svelte 5/TypeScript/Tailwind interface with an empty conversation layout,
   search, keyboard-accessible settings/About dialogs, dark/light/system appearance
   and teal/blue/rose accents. No sample people/messages or fake delivery indicators.
@@ -22,45 +23,63 @@ Recorded 2026-11-14 (America/Los_Angeles).
 - A backend-only TLS 1.3 pairing channel authenticates both Ed25519 identities
   over a supplied connection, pins the invitation owner and exact invitation ID,
   and requires reciprocal fingerprint confirmation. Its opaque live consent
-  capability grants no chat or transport activation. Authenticated invitation
+  capability alone grants no chat or transport activation. Authenticated invitation
   reservation derives the candidate from that channel, retains bearer/expiry/
   single-use checks and rejects legacy immediate approval/teardown. A typed
   reservation ACK precedes fingerprint presentation on both sides. The coordinator
-  owns joint TLS/invitation cancellation and starts no listener or dialer.
+  owns joint TLS/invitation cancellation; the desktop invitation controller owns
+  explicit transport creation and dialing.
   See [pairing protocol](pairing-protocol.md).
 - Reserved requests drive a simple Approve/Deny confirmation dialog with both
   full fingerprints. Deny has default focus, Escape denies, and stale request IDs
   or async responses cannot approve/restore another request. Polling stops on
   storage lock/unmount. No sample prompt or browser-persisted pairing state exists.
-  A restored pending setup has a nonmodal Discard notice, never an approval prompt.
+  Restored pending or committed setup has a nonmodal Discard/reconnection notice,
+  never a renewed approval prompt or automatic connection.
 - After reserved mutual consent, the transport creates distinct node keys and
   one inviter-generated shared PSK/contact ID. Typed session-bound exchange saves
   encrypted pending records before prepared ACKs. Cancel joins in-flight saves
   before removal; shutdown joins runs/actions before vault closure. Pending records
   remain inert across reopen and grant no Contact, chat or transport authority.
-  Durable active completion/reconciliation and actual two-device pairing remain
-  unfinished. Initiate-pairing controls and Tailcat startup remain disabled.
+  Durable completion commits the exact identity/node/PSK association on both sides
+  before one-shot runtime promotion. Matching terminal receipts, TLS close-notify
+  and bounded supported TCP drain preserve queued final frames before invitation
+  teardown. Denial is acknowledged in either direction, including after one prior
+  approval. Malformed traffic, shutdown and cancellation retain immediate abort.
+  A lost connection or crash can leave inert pending/committed state; this is not
+  an atomic transaction across machines. Restored-session reconfirmation remains
+  unfinished.
+- Native Create/Paste invitation controls require unlocked storage, a separately
+  selected trusted HTTPS relay-map URL and unchecked-by-default relay consent.
+  Launch, unlock and opening the dialog do not fetch a map or start Tailcat. The
+  form has no default service; this checkout deploys none. The private one-use
+  link and URL are session-only; only an explicit Copy action writes the link to
+  the clipboard. Cancel, expiry and storage lock retire owned work. Completion is
+  contact setup only: messaging, files and ongoing contact networking remain off.
 - Bounded local diagnostic recorder, warning/error/panic redaction, and private
   per-app WebView profiles on Windows and Linux. Linux startup prepares private
   data/cache roots and verifies the paths selected by the actual WebKit session;
   mismatched cached paths, shared modes and foreign ownership fail closed.
   Go telemetry is off on the Windows/WSL development hosts; automatic
   npm version/install-audit requests are disabled. Supported upstream transport
-  collector controls are configured; live transport stays disabled pending its
-  remaining privacy and security gates.
+  collector controls are configured. The reviewed local Tailcat privacy patch
+  disables optional DERP application statistics and bearer-address debug logging.
+  Supported build tags omit inherited proxies, router port mapping and captive-
+  portal probes; a custom build missing these controls cannot start invitations.
   WebView2's documented vendor diagnostics are an explicitly accepted exception.
   See [privacy controls and local log locations](privacy.md).
 - OS-credential-protected encrypted application snapshot: explicit unlock, AES-256-GCM,
   random nonces, bounded authenticated reads, ciphertext-only temporary writes,
   file flush, process writer exclusion and fail-closed credential/corruption behavior.
-  Schema 3 coordinates identity, locally approved contact pins and per-contact
-  chat sections under one vault mutex. Scoped adapters prevent cross-section
-  replacement; raw access and stale writes are rejected; uncertain saves poison
-  the coordinator until reopen. Exact schema 1/2 state migrates without changing
-  its seed, wrapping credential, pins or chat. A separate bounded pending section
-  validates credential associations but cannot restore transport authority.
-  Older 0.0.2 binaries reject migrated schema 3; installed apps and owner state
-  have not been changed. See [storage design and limits](storage.md).
+  Schema 4 coordinates identity, locally approved contact pins, per-contact chat,
+  pending setup and committed contact credentials under one vault mutex. Scoped
+  adapters prevent cross-section replacement; raw access and stale writes are rejected; uncertain saves poison
+  the coordinator until reopen. Exact schema 1/2/3 state migrates without changing
+  its seed, wrapping credential, pins or chat. Bounded pending/committed sections
+  validate credential associations but cannot restore live transport authority.
+  Older binaries reject migrated schema 4. The historical 0.0.2 owner QA does not
+  validate this migration; native 0.0.3 QA is pending. See
+  [storage design and limits](storage.md).
 - Backend identity/invitation domain: Ed25519 fingerprints; canonical bounded private
   links; random expiring one-use invitations; atomic single-candidate reservation;
   full fingerprint approval; denial/replay/restart invalidation; synchronous listener
@@ -76,14 +95,20 @@ Recorded 2026-11-14 (America/Los_Angeles).
   remain valid. Join controls are currently rejected too. Actual chat-domain tests
   exercise the coordinated encrypted adapter. It is not connected to the desktop
   messenger controls or a network session.
-- Narrow unbound Tailcat adapter with enabled per-contact PSK, exact peer admission
-  and recheck, one accepted stream, and pending/live stream revocation. Relay fallback
-  needs explicit consent and an explicit operator-selected HTTPS relay map.
-  One opaque transport node-key/PSK bundle is prepared per local approval; the
-  same bundle supplies the adapter's PSK. Production reciprocal activation is
-  unavailable. Start rejects before network I/O while Tailcat's optional DERP
-  statistics label cannot be disabled. Strict direct-only is unavailable and fails closed.
-  Adapter tests use synthetic listeners/net.Pipe, not actual WireGuard/DERP traffic.
+- Dedicated live Tailcat invitation adapter with separate ephemeral node/PSK,
+  fixed TCP port 48730, bounded bootstrap peer admission, one accepted stream and
+  joint revocation. No SSH, forwarding, UDP proxy or public content service is
+  enabled. Explicit HTTPS operator profiles use normal TLS, bounded maps, vetted
+  public IPs pinned before startup, no redirects and no inherited proxy. Unknown
+  regions, private targets and mismatched peer-embedded relay metadata are
+  rejected before dialing; no default public map is fetched. Runtime profiles
+  are opaque and immutable. Strict direct-only remains unavailable and fails closed.
+- Ongoing-contact transport remains unbound and unavailable. Its existing narrow
+  adapter requires an enabled per-contact PSK, exact peer admission/recheck and
+  one accepted stream; promotion receives the exact mutually committed bundle,
+  rather than generating another PSK. Real invitation integration now exercises
+  Tailcat/WireGuard against a disposable in-process TLS relay; this does not prove
+  ongoing contact delivery, two-device operation or forced relay/direct paths.
 - One command runner for frozen setup, dev, workflow/component checks, native
   development builds, deliberate updates and blocked full/package/release gates.
   Exact CLI versions are verified from build metadata and isolated per platform.
@@ -96,12 +121,17 @@ Recorded 2026-11-14 (America/Los_Angeles).
   No remote repository exists and no GitHub CI has run.
 - The owner recorded the first local main-branch commit, 27e4c48. No remote is
   configured. Repository text uses explicit LF endings; copied Wails build assets
-  retain their upstream MIT notice. See [baseline notes](first-commit.md).
+  retain their upstream MIT notice. The library-only Tailcat source replacement
+  retains its BSD-3-Clause license and an upstream/local file-hash manifest; the
+  workflow rejects unexpected source/replacement changes. See [baseline notes](first-commit.md).
   The owner authorized the subsequent local native integration checkpoint,
-  ef3e142. Later protocol work is a separate reviewable change.
+  ef3e142. The next pairing workflow checkpoint is 7a0132f. Current integration
+  work remains a separate reviewable change; no remote or publication was added.
 - The first application/test version is 0.0.1. Patch increments identify new
   delivered test revisions; rebuilds use separate timestamp/source build IDs.
-  Minor and major changes are deliberate milestones. Native metadata and runtime
+  Private 0.0.3 is the next delivered pairing-test revision; the previously
+  installed 0.0.2 apps establish historical native evidence only. Minor and major
+  changes are deliberate milestones. Native metadata and runtime
   versions are checked together. See [version policy](versioning.md).
 - A build:review command preserves immutable Windows/Linux development candidates
   under artifacts/development with checksums, manifests, base commit, dirty-source
@@ -182,18 +212,68 @@ Recorded 2026-11-14 (America/Los_Angeles).
 
 ## Validation and advisory gates
 
-The native integration and subsequent pairing-channel batches completed the
-Windows and Linux component workflows. Functional gates pass on both platforms,
-including all twelve Go test packages and Linux race testing. Both commands return
-nonzero solely for the documented frontend advisory. The Linux run verified source equality before and
-after validation. Full product/release readiness remains blocked separately.
+### Current 0.0.3 integration evidence
+
+- Full-stack Windows integration passed five repetitions: 25 real pairings in
+  81.570 seconds. Each uses actual Tailcat/WireGuard TCP, a disposable in-process
+  TLS DERP server, identity TLS and separate encrypted temporary vaults. Five
+  mutual completions produce reciprocal committed records with the exact shared
+  PSK and two identity-bound nodes, with no pending records. Twenty denials cover
+  both roles, before approval and after the other person approved; both stores
+  remain empty, remote prompts clear and stale approvals fail. Invitation
+  publication/admission retires exactly once. The wrapping-key providers are
+  disposable test doubles; this does not revalidate the OS keyring.
+- The real adapter regression suite passed in 16.610 seconds, including bidirectional
+  streams, context cancellation, one-stream admission, concurrent close, pending
+  Accept cancellation, graceful FIN/ACK drain and immediate abort during drain.
+  The loopback profile exists only in test builds and pins the exact TLS server
+  certificate; production rejects private targets and insecure test overrides.
+  The plain-build test proves networking stays closed without supported omission
+  tags. Targeted Windows vet and formatting checks pass.
+- Repeated integration exposed dropped terminal data when an in-process Tailcat
+  engine was destroyed immediately after Close. The regression now exercises
+  authenticated completion/denial receipts, TLS close-notify and role-ordered,
+  deadline-bounded supported TCP draining. No grace sleeps or relaxed assertions
+  were used. Immediate abort remains available when graceful retirement fails.
+- The complete 0.0.3 checks run through `npm run test:app` on Windows and
+  `npm run wsl -- test:app` for synchronized Linux race validation. Each records
+  a private, source-digest-bound `.local/validation-<platform>-x64.json` only
+  after all functional gates pass, with separate results for all five advisory
+  scans. A failed scan still makes the command fail. Earlier platform passes
+  below are historical evidence; use the current matching reports for this
+  snapshot. Native 0.0.3 owner QA and two-machine pairing remain unrecorded.
+  No public relay was contacted or deployed by the integration tests.
+- The completed Windows and synchronized WSL component runs passed 32 workflow
+  tests, seven frontend unit tests, 32 browser tests, frontend formatting/types,
+  production frontend builds, vet, all twelve application Go test packages and
+  the nested Tailcat privacy tests. Linux used the race detector; Windows did not.
+  Both source-bound reports identify digest
+  `4c95ff1352e5199b84d600294b2f7d714b5b6337064dc0e327bd53a0a6119f59`.
+  Each command returned nonzero only for the unsuppressed frontend deepmerge
+  advisory; the other four scanner gates passed. Both frozen native 0.0.3 builds
+  and retained artifact checksums passed. Synthetic bridge/browser results remain
+  separate from native Wails, OS credentials and real two-machine pairing evidence.
+- Local runtime inspection observed 0.0.3 startup and storage unlock on both the
+  Windows host and Ubuntu Desktop VM. The deliberately redacted logs do not record
+  pairing decisions, so this does not establish native mutual approval or messaging.
+- Full product/release readiness remains blocked. applicationReady and
+  transportIntegrationVerified remain false; local loopback success does not
+  establish forced direct/relay, NAT/path-change or ongoing message delivery.
+
+### Previous foundation validation
+
+The native integration and earlier pending-pairing batches completed the Windows
+and Linux component workflows, including twelve Go test packages and Linux race
+testing. Those commands returned nonzero for the documented frontend advisory.
+The Linux run verified source equality before and after validation. The following
+results describe that earlier source unless a current result is recorded above.
 
 - Twenty-five workflow safety tests cover runtime/dependency/tool-graph selection, review
   snapshot integrity/provenance, application-version alignment and workflow
   safety. Node syntax checks pass.
 - Backend identity, invitation, chat, transport admission, desktop and storage tests
   pass on Windows. Windows has no configured C compiler and runs without -race.
-- The new pairing-channel suite passes on Windows and with the Linux race
+- The earlier pairing-channel suite passed on Windows and with the Linux race
   detector. Real TLS tests reject wrong identities, invitation context, missing/
   malformed/expired certificates, TLS downgrade, unilateral consent, denial,
   duplicate decisions, malformed/replayed frames and cancellation. Expiry and
@@ -206,7 +286,7 @@ after validation. Full product/release readiness remains blocked separately.
 - All implemented Go component/process tests and vet pass on Ubuntu with the race
   detector, including storage, desktop and local diagnostics. This is separate
   from actual peer transport QA.
-- Current-source bounded fuzzing passes: 388,069 invitation parser executions and
+- Earlier bounded fuzzing passed: 388,069 invitation parser executions and
   120,174 chat frame executions. These exercise the updated typed endpoint/display
   control paths; they are not exhaustive protocol review or live-network evidence.
 - Storage checks include nonplaintext persistence, nonce uniqueness, wrong/missing
@@ -285,7 +365,7 @@ after validation. Full product/release readiness remains blocked separately.
   application govulncheck, Wails CLI binary and govulncheck's own binary.
 - Full check/package/native packaging and verify:release correctly fail closed.
   applicationReady and transportIntegrationVerified remain false.
-- Current Windows/Linux development binaries build from frozen dependencies. The
+- The previous Windows/Linux development binaries built from frozen dependencies. The
   Linux binary, checksum file, run instructions and disposable credential test
   were copied to the owner's VM shared folder for private review. Checksums and
   all native runtime-library resolutions pass on the VMware Ubuntu Desktop VM.
@@ -299,7 +379,8 @@ after validation. Full product/release readiness remains blocked separately.
   successful Ubuntu Desktop 0.0.2 native unlock and restart identity continuity
   after installing the scoped sandbox integration and selecting software rendering.
   Earlier native process startup checks did not catch this frontend lifecycle
-  bug. Visual redesign remains deferred.
+  bug. These historical native results do not validate 0.0.3, schema 4 or the new
+  invitation controls. Visual redesign remains deferred.
 - The Windows native process was additionally verified to use the dedicated
   WhatsUp webview directory; local logs contained only the six allowed fields.
   The Linux npm dev command started Vite on loopback and the native app under
@@ -311,15 +392,16 @@ after validation. Full product/release readiness remains blocked separately.
 
 ## Not implemented or verified
 
-- Native reciprocal pairing, identity-to-WireGuard binding, and durable contact
-  activation/revocation integrated with live sessions. The backend TLS/consent
-  channel is an implemented subcomponent, not a complete pairing flow.
-- A reviewed Tailcat hook/patch to suppress its optional DERP application-statistics
-  label before live networking is bound. No transport starts in the current app.
-- Completed activation, credential reconciliation/live restoration and revocation
-  through the coordinated schema. Pending credentials are saved/restored as inert
-  setup; neither pending data nor persisted pins grant live authority. Chat remains
-  unbound.
+- Native owner QA of private 0.0.3 on Windows and the Ubuntu Desktop VM, including
+  schema 4 migration and actual two-machine Create/Join/Approve/Deny/restart.
+  Local automated transport success does not establish native or public-service
+  pairing reliability.
+- Fresh authenticated reconfirmation and crash reconciliation of restored contact
+  credentials, ongoing contact transport and revocation across reconnects. Pending
+  and committed records restore only inert notices, without live authority.
+- Binding exactly one active conversation and connecting chat queue/history/
+  acknowledgement adapters to authenticated ongoing sessions. Durable setup
+  completion is not message-delivery availability.
 - Real two-process/device direct and forced-relay delivery, network reconnect,
   lost acknowledgements, NAT/path changes or retransmission tests.
 - Strict direct-only packet enforcement. Never label direct-preferred as strict.
@@ -339,12 +421,13 @@ and frontend/src/app.css remain. No further cleanup action is required.
 
 ## Next integration sequence
 
-1. Resolve invitation transport privacy/outbound relay controls before native
-   creation/link handling/dialing. The reserved confirmation and pending-storage
-   workflow is implemented, but no live invitation can reach it yet.
-2. Complete durable reciprocal activation and crash reconciliation before history
-   access, then connect the queue/deduplication/acknowledgement adapters to
-   authenticated sessions. Pending setup alone must never activate.
+1. Review matching Windows/WSL validation reports and complete native 0.0.3 migration/UI QA.
+   Then exercise pairing between the Windows host and Ubuntu Desktop VM using a
+   separately approved trusted service, without publishing or deploying a relay.
+2. Add fresh authenticated reconfirmation and crash reconciliation before restored
+   history access; bind one conversation, then connect the queue/deduplication/
+   acknowledgement adapters to ongoing authenticated sessions. Saved records alone
+   must never activate.
 3. Investigate supported upstream packet hooks or a reviewed minimal direct-only
    patch, retain discovery and prove zero relayed payload during failure-path tests.
 4. Add files/images, native background behavior, backup/update verification and QA.

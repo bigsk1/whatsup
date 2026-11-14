@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { archiveReviewBuild } from './lib/review-build.mjs';
 import { captureReviewSource } from './lib/review-source.mjs';
+import { verifyTailcatPatch } from './lib/tailcat-patch.mjs';
 import {
   assertNodeRuntime, assertReviewedGoGraph, assertToolBuildInfo, atLeast, checksums, collectArtifacts, collectSourceFiles,
   latestLtsNode, parseVersion, privateToolEnvironment, readJson, requireApp, requireFrontendScripts, requireFullReadiness,
@@ -22,7 +23,7 @@ const flags = process.argv.slice(3);
 const toolDirectory = path.join(root, '.local/tools', `${process.platform}-${process.arch}`);
 // Supported by the reviewed Tailcat/Tailscale revision. Own redacted local
 // diagnostics are independent from these upstream collectors/uploaders.
-const privacyTags = 'ts_omit_logtail,ts_omit_netlog,ts_omit_clientmetrics,ts_omit_usermetrics,ts_omit_runtimemetrics';
+const privacyTags = 'ts_omit_logtail,ts_omit_netlog,ts_omit_clientmetrics,ts_omit_usermetrics,ts_omit_runtimemetrics,ts_omit_useproxy,ts_omit_portmapper,ts_omit_captiveportal';
 const commands = new Set([
   'doctor', 'tooling-test', 'setup', 'dev', 'test-app', 'test-credentials', 'native-check', 'wsl', 'build', 'build-review', 'check', 'update', 'package', 'verify-release',
   // Reviewed Wails Taskfiles delegate to these same cross-platform implementations.
@@ -30,6 +31,7 @@ const commands = new Set([
 ]);
 
 function run(executable, args, { cwd = root, capture = false, timeout = 120000, env = {}, mutableGo = false } = {}) {
+  verifyTailcatPatch(root, policy.reviewedGoPins);
   const childEnvironment = privateToolEnvironment({ ...process.env, GOTOOLCHAIN: 'local', GOFLAGS: `${mutableGo ? '' : '-mod=readonly '}-tags=${privacyTags}`, ...env });
   for (const name of Object.keys(childEnvironment)) if (name.toLowerCase() === 'path') delete childEnvironment[name];
   childEnvironment[process.platform === 'win32' ? 'Path' : 'PATH'] = [
@@ -102,7 +104,7 @@ function requirePinnedTool(name, module, version) {
   if (!existsSync(filename)) throw new Error(`Pinned ${name} missing for ${process.platform}-${process.arch}; run npm run setup in this platform's Node environment`);
   const info = run('go', ['version', '-m', filename], { capture: true });
   const graph = run('go', ['list', '-m', '-f', '{{.Path}} {{.Version}}{{with .Replace}} => {{.Path}} {{.Version}}{{end}}', 'all'], { capture: true, timeout: 300000 });
-  assertToolBuildInfo(info, module, version, graph, policy.minimumGo);
+  assertToolBuildInfo(info, module, version, graph, policy.minimumGo, verifyTailcatPatch(root, policy.reviewedGoPins));
   return filename;
 }
 
@@ -172,7 +174,7 @@ async function installTool(module, version, name) {
 function assertTransportPins() {
   validateReviewedGoPins(policy.reviewedGoPins);
   const graph = run('go', ['list', '-m', '-f', '{{.Path}} {{.Version}}{{with .Replace}} => {{.Path}} {{.Version}}{{end}}', 'all'], { capture: true, timeout: 300000 });
-  assertReviewedGoGraph(graph, policy.reviewedGoPins);
+  assertReviewedGoGraph(graph, policy.reviewedGoPins, verifyTailcatPatch(root, policy.reviewedGoPins));
 }
 
 async function frozenInstall() {
@@ -252,6 +254,9 @@ async function implementedCheck() {
   const race = raceAvailable();
   if (!race && process.platform !== 'win32') throw new Error('Linux application tests require CGO and a compatible C compiler for the race detector');
   run('go', ['test', '-mod=readonly', ...(race ? ['-race'] : []), '-count=1', './...'], { timeout: 600000 });
+  // The reviewed replacement is a nested module, so ./... does not include its
+  // narrowly scoped offline regression tests. Compile it with this locked graph.
+  run('go', ['test', '-mod=readonly', ...(race ? ['-race'] : []), '-count=1', 'github.com/tailscale/tailcat'], { timeout: 600000 });
   if (!race) console.log('Windows Go unit tests passed WITHOUT the race detector: no configured CGO C compiler. Ubuntu race validation remains required.');
   const scans = [];
   for (const [name, scan] of [
@@ -278,7 +283,7 @@ async function implementedCheck() {
     scans, applicationReady: false, transportIntegrationVerified: false,
   });
   if (scans.some((scan) => !scan.passed)) throw new Error(`Security scans failed: ${scans.filter((scan) => !scan.passed).map((scan) => scan.name).join(', ')}. No advisory exception was applied. Local report: ${report}`);
-  console.log('Implemented-component checks completed. These do not establish working peer messaging, real transport integration, native GUI QA, or release readiness.');
+  console.log('Implemented-component checks completed. These do not establish working peer messaging, complete transport security verification, native GUI QA, or release readiness.');
 }
 
 async function applicationCheck() {
@@ -584,6 +589,7 @@ try {
   const allowedFlags = command === 'doctor' ? ['--network'] : [];
   if (!['wsl', 'build-review'].includes(command) && flags.some((flag) => !allowedFlags.includes(flag))) throw new Error('Unsupported command option');
   assertNodeRuntime(process.versions.node, policy.minimumNode);
+  verifyTailcatPatch(root, policy.reviewedGoPins);
   if (command === 'doctor') await doctor();
   if (command === 'tooling-test') await toolingTest();
   if (command === 'setup') await setup();

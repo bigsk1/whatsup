@@ -1,6 +1,6 @@
-// Package pairflow coordinates reserved pairing and explicit user decisions.
-// It owns supplied connections, never listens/dials, and creates only inert
-// encrypted pending records. There is no contact or network activation API.
+// Package pairflow coordinates reserved pairing, explicit user decisions and
+// optional durable contact completion. It owns supplied connections and never
+// listens or dials. Restored records remain inert; ongoing transport is separate.
 package pairflow
 
 import (
@@ -43,19 +43,37 @@ type Store interface {
 	RemovePendingContact(string) error
 }
 
+type completionStore interface {
+	Store
+	CommitPendingContact(storage.PendingRecord) (*storage.CommitReceipt, error)
+	CommittedContacts() ([]storage.PendingRecord, error)
+	RemoveCommittedContact(string) error
+}
+
+// Options selects the reviewed coordinator stage; it is not a permission proof.
+// Completed activation still requires both TLS and durable one-shot receipts.
+type Options struct{ CompleteActivation bool }
+
 // Copies share closure and request ownership; value formatting never traverses
 // locks, identities, stores or pending credentials.
 type Coordinator struct{ *coordinatorState }
 
 type coordinatorState struct {
-	mu      sync.Mutex
-	local   *identity.Identity
-	store   Store
-	current *attempt
-	status  Snapshot
-	closed  bool
-	runs    sync.WaitGroup
-	actions sync.WaitGroup
+	mu       sync.Mutex
+	local    *identity.Identity
+	store    Store
+	current  *attempt
+	status   Snapshot
+	closed   bool
+	complete bool
+	active   []activeContact
+	runs     sync.WaitGroup
+	actions  sync.WaitGroup
+}
+
+type activeContact struct {
+	contact     *pairing.Contact
+	credentials *transport.ContactCredentials
 }
 
 type attempt struct {
@@ -75,24 +93,55 @@ type attempt struct {
 	explicitDeny bool // protected by Coordinator.mu
 	// The single run owns these until done closes. Deny waits for done before
 	// removing the record, so a late persistence callback cannot resurrect it.
-	pendingID string
-	saved     bool
+	pendingID   string
+	saved       bool
+	committed   bool
+	contact     *pairing.Contact
+	credentials *transport.ContactCredentials
+	durable     *storage.CommitReceipt
 }
 
 func (Coordinator) String() string               { return "[private WhatsUp pairing workflow]" }
 func (Coordinator) GoString() string             { return "[private WhatsUp pairing workflow]" }
 func (Coordinator) MarshalJSON() ([]byte, error) { return nil, ErrUnavailable }
 
-func New(local *identity.Identity, store Store) (*Coordinator, error) {
+func New(local *identity.Identity, store Store, options ...Options) (*Coordinator, error) {
 	if local == nil || store == nil {
 		return nil, ErrUnavailable
 	}
 	c := &Coordinator{&coordinatorState{local: local, store: store, status: Snapshot{State: "idle"}}}
+	if len(options) != 0 {
+		c.complete = options[0].CompleteActivation
+	}
+	if c.complete {
+		if _, ok := store.(completionStore); !ok {
+			return nil, ErrStore
+		}
+	}
 	records, err := store.PendingContacts()
 	if err != nil || c.restorePending(records) != nil {
 		return nil, ErrStore
 	}
+	if c.current == nil {
+		if committed, ok := store.(completionStore); ok {
+			records, err := committed.CommittedContacts()
+			if err != nil || c.restoreCommitted(records) != nil {
+				return nil, ErrStore
+			}
+		}
+	}
 	return c, nil
+}
+
+func (c *Coordinator) restoreCommitted(records []storage.PendingRecord) error {
+	if err := c.restorePending(records); err != nil {
+		return err
+	}
+	if len(records) != 0 {
+		c.current.committed = true
+		c.status.State = "reconnect-required"
+	}
+	return nil
 }
 
 func requestID() (string, error) {
@@ -188,7 +237,7 @@ func (c *Coordinator) begin(ctx context.Context, raw net.Conn, invite pairing.In
 	}
 	work, cancel := context.WithDeadline(ctx, invite.ExpiresAt())
 	a := &attempt{raw: raw, manager: manager, invite: invite, id: id, ctx: work,
-		cancel: cancel, done: make(chan struct{}), decisions: make(chan channel.Decision, 1)}
+		cancel: cancel, done: make(chan struct{}), decisions: make(chan channel.Decision, 2)}
 	c.current, c.status = a, Snapshot{State: "connecting"}
 	c.runs.Add(1)
 	c.mu.Unlock()
@@ -292,8 +341,54 @@ func (c *Coordinator) run(ctx context.Context, raw net.Conn, invite pairing.Invi
 	if err != nil {
 		return ErrProtocol
 	}
-	pending.Revoke() // The encrypted pending record is inert; no live owner escapes.
+	defer pending.Revoke()
+	if c.complete {
+		record, err := pending.RecordForEncryptedStorage()
+		if err != nil {
+			return ErrStore
+		}
+		association, err := pairing.AssociationForRecord(record)
+		if err != nil {
+			return ErrProtocol
+		}
+		var durable *storage.CommitReceipt
+		completedStore := c.store.(completionStore)
+		completion, err := approval.CompleteActivation(a.ctx, reservation, association, func() error {
+			if !c.setState(a, "saving") {
+				return ErrRequest
+			}
+			var commitErr error
+			durable, commitErr = completedStore.CommitPendingContact(record)
+			if commitErr != nil {
+				return ErrStore
+			}
+			a.committed = true
+			a.durable = durable
+			return a.ctx.Err()
+		})
+		if err != nil {
+			return ErrProtocol
+		}
+		a.contact, err = pairing.FinalizeAuthenticated(manager, completion, durable)
+		if err != nil {
+			return ErrProtocol
+		}
+		a.credentials, err = transport.PromotePendingCredentials(pending, a.contact, completion, durable)
+		if err != nil || a.ctx.Err() != nil {
+			a.revokeActive()
+			return ErrProtocol
+		}
+	}
 	return nil
+}
+
+func (a *attempt) revokeActive() {
+	if a.contact != nil {
+		a.contact.Revoke()
+	}
+	if a.credentials != nil {
+		a.credentials.Revoke()
+	}
 }
 
 func (c *Coordinator) finish(a *attempt, runErr error) {
@@ -305,11 +400,18 @@ func (c *Coordinator) finish(a *attempt, runErr error) {
 	expires := a.invite.ExpiresAt()
 	a.invite = pairing.Invite{} // Retain no known bearer copy in saved pending UI state.
 	if c.closed {
+		a.revokeActive()
 		c.status = Snapshot{State: "unavailable"}
 		return
 	}
 	if a.explicitDeny {
+		a.revokeActive()
 		c.status = Snapshot{State: "canceled"}
+		return
+	}
+	if runErr == nil && a.credentials != nil && a.contact != nil {
+		c.active = append(c.active, activeContact{contact: a.contact, credentials: a.credentials})
+		c.status, c.current = Snapshot{State: "completed"}, nil
 		return
 	}
 	if a.saved {
@@ -317,6 +419,9 @@ func (c *Coordinator) finish(a *attempt, runErr error) {
 		// No invitation is restarted and no "active" capability is constructed.
 		c.status = Snapshot{State: "pending", RequestID: a.id,
 			LocalFingerprint: c.local.PublicKey().Fingerprint(), PeerFingerprint: a.peer.Fingerprint()}
+		if a.committed {
+			c.status.State = "reconnect-required"
+		}
 		return
 	}
 	state := "failed"
@@ -346,9 +451,9 @@ func (c *Coordinator) Approve(id, fingerprint string) (Snapshot, error) {
 	return c.status, nil
 }
 
-// Deny closes transport immediately, waits for its one persistence callback to
-// finish, then discards any local pending record. Removing before that join
-// would let a late successful save resurrect the canceled record.
+// Deny sends an authenticated refusal while a prompt is pending, with a bounded
+// abort fallback. It joins persistence before discard so a late save cannot
+// resurrect the canceled record. Cancellation during saving aborts immediately.
 func (c *Coordinator) Deny(id string) (Snapshot, error) {
 	if c == nil || c.coordinatorState == nil {
 		return Snapshot{State: "unavailable"}, ErrUnavailable
@@ -361,15 +466,43 @@ func (c *Coordinator) Deny(id string) (Snapshot, error) {
 		return status, ErrRequest
 	}
 	c.actions.Add(1)
+	graceful := c.status.State == "awaiting-approval" || c.status.State == "waiting-for-peer"
 	a.explicitDeny = true
 	c.status = Snapshot{State: "canceled"}
+	if graceful {
+		select {
+		case a.decisions <- channel.Decision{Approve: false}:
+		default:
+			graceful = false
+		}
+	}
 	c.mu.Unlock()
 	defer c.actions.Done()
-	a.closeOwned()
+	if graceful {
+		timer := time.NewTimer(3 * time.Second)
+		select {
+		case <-a.done:
+		case <-a.ctx.Done():
+			a.closeOwned()
+		case <-timer.C:
+			a.closeOwned()
+		}
+		timer.Stop()
+	} else {
+		a.closeOwned()
+	}
 	<-a.done
 	var err error
 	if a.pendingID != "" {
-		err = c.store.RemovePendingContact(a.pendingID)
+		if a.committed {
+			if a.durable != nil {
+				err = a.durable.CancelAfterRevocation(a.revokeActive)
+			} else {
+				err = c.store.(completionStore).RemoveCommittedContact(a.pendingID)
+			}
+		} else {
+			err = c.store.RemovePendingContact(a.pendingID)
+		}
 	}
 	var remaining []storage.PendingRecord
 	if err == nil {
@@ -380,10 +513,28 @@ func (c *Coordinator) Deny(id string) (Snapshot, error) {
 	if !c.closed && c.current == a {
 		c.current = nil
 		if err != nil {
-			c.status = Snapshot{State: "failed"}
+			// Keep the exact inert discard request on a failed write. Clearing
+			// it would let a second Cancel falsely report success while the
+			// encrypted record still exists. No runtime authority survives.
+			a.revokeActive()
+			c.current = a
+			c.status = Snapshot{State: "pending", RequestID: a.id,
+				LocalFingerprint: c.local.PublicKey().Fingerprint(), PeerFingerprint: a.peer.Fingerprint()}
+			if a.committed {
+				c.status.State = "reconnect-required"
+			}
 		} else if c.restorePending(remaining) != nil {
 			err = ErrStore
 			c.status = Snapshot{State: "failed"}
+		}
+		if err == nil && c.current == nil {
+			if committed, ok := c.store.(completionStore); ok {
+				records, readErr := committed.CommittedContacts()
+				if readErr != nil || c.restoreCommitted(records) != nil {
+					err = ErrStore
+					c.status = Snapshot{State: "failed"}
+				}
+			}
 		}
 	}
 	if err != nil {
@@ -401,8 +552,14 @@ func (c *Coordinator) Close() error {
 	c.mu.Lock()
 	c.closed = true
 	a := c.current
+	active := append([]activeContact{}, c.active...)
+	c.active = nil
 	c.status = Snapshot{State: "unavailable"}
 	c.mu.Unlock()
+	for _, item := range active {
+		item.contact.Revoke()
+		item.credentials.Revoke()
+	}
 	if a != nil {
 		a.closeOwned()
 	}

@@ -1,9 +1,10 @@
 # Private native test handoff
 
-The current apps test startup, appearance and encrypted local identity storage.
-Pairing, messaging and attachments remain disabled. Opening the Windows and Linux
-apps together does not establish a chat connection yet. GUI testing belongs to
-the owner; the development workflow does not automate their browser or desktop.
+The retained 0.0.2 apps test startup, appearance and encrypted local identity
+storage. New source adds explicit invitation pairing, but messaging and attachments
+remain disabled. Opening two apps does not establish a chat connection. GUI
+testing belongs to the owner; the development workflow does not automate their
+browser or desktop.
 
 ## Versions and retained builds
 
@@ -11,9 +12,12 @@ The first test version is 0.0.1. Use patch increments for later delivered test
 revisions as needed; see [versioning](versioning.md). Do not increment minor/major
 versions for every edit or build.
 The current Linux startup-fix test revision is 0.0.2.
-The installed 0.0.2 executables have not been replaced by the newer pairing source
-work. No application-version increment was made for that work. A future native
-handoff must identify the selected source/build ID and repeat the relevant checks.
+
+The next private pairing candidate is planned as 0.0.3, with retained builds,
+source provenance and checksums. No owner-driven native pairing QA is recorded
+for it yet. Installed 0.0.2 executables remain selected until an explicit reviewed
+launch/upgrade. A new handoff must identify its source/build ID and repeat the
+relevant checks; the older 0.0.2 results do not transfer to it.
 
 The owner has verified native Windows unlock/restart identity continuity and the
 same Ubuntu Desktop 0.0.2 workflow after the scoped Linux integration setup, using
@@ -92,7 +96,7 @@ does keep its watcher running until stopped with Ctrl+C.
 
 ## Owner checklist
 
-1. Launch the selected build. Confirm its expected version (currently 0.0.2),
+1. Launch the selected build. Confirm its expected version and retained build ID,
    Desktop development build, Local storage locked and enabled Unlock storage.
 2. Open Settings and unlock storage. If the OS asks for credential access, handle
    that prompt yourself. Confirm a fingerprint appears; compare it locally rather
@@ -108,45 +112,59 @@ Send pass/fail observations and the build ID. If something fails, leave the stat
 and credential intact for diagnosis. Do not delete a vault or credential to make
 a restart check pass.
 
-## Pairing source and future native handoff
+## Pairing source and planned 0.0.3 handoff
 
-The current source has six typed desktop methods: GetStatus, UnlockStorage,
-LockStorage, GetPairingStatus, ApprovePairing and DenyPairing. The additional
-methods expose a bounded public request snapshot and act on the current request
-ID; they do not expose invitation secrets, transport credentials or a network API.
+The source has nine typed methods: GetStatus, UnlockStorage, LockStorage,
+GetPairingStatus, ApprovePairing, DenyPairing, CreateInvitation, JoinInvitation and
+CancelInvitation. Ordinary status never contains a bearer. Create returns a
+private share link only after the explicit user action; paste/Join does not
+navigate a browser. No OS URI handler or QR flow is registered yet.
 
-A confirmation popup appears only for a request the backend has authenticated
-and reserved. Both sides must have the reservation result before fingerprints
-are presented. There is no sample request or manual popup trigger. Native
-initiate-pairing controls remain disabled while Tailcat's privacy/start gate is
-closed, so opening the two installed apps cannot initiate this flow yet.
+Use the following only with the new candidate after its migration/recovery
+preparation. This is a proposed Windows/Ubuntu owner check, not a recorded pass:
 
-When a future native transport handoff can deliver a reserved request, check that
-the popup shows the full peer fingerprint and defaults to Deny. Compare the
-fingerprint with the other person through a trusted channel before approving.
-Escape must deny; waiting for the other person's approval must not imply an
-active contact or allow messages. Mutual approval currently saves only inert,
-encrypted pending setup. It does not activate a contact or open a tunnel.
+1. Unlock each app and open Start a conversation. Confirm the connection-service
+   HTTPS URL is empty and relay consent unchecked. Opening the dialog must not
+   start public networking. The operator learns IP/availability and can relay
+   encrypted pairing setup; strict direct-only is unavailable.
+2. Enter a trusted operator's relay-map URL explicitly on both devices and give
+   separate consent. Upstream's documented `https://tailcat.dev/derpmap.json` is
+   a manual example only, not an app default or a service-availability guarantee.
+   No public relay has been contacted by the disposable network integration tests.
+3. Choose Create on one device, then explicitly Copy and privately share the
+   one-use link. Choose Paste on the other device and Open. Do not put a live
+   invitation in logs, screenshots, fixtures, Git or a public/shared artifact.
+   A copied invitation remains in the clipboard until replaced.
+4. Confirm the identity popup appears only after backend reservation on both
+   devices. Compare full fingerprints through a trusted channel. Deny has initial
+   focus; Escape denies. Test denial before trying a fresh invitation for approval.
+5. Approve both sides. Waiting or saving is not completion. On success the UI says
+   Contact approved and messaging not ready. It must not enable the composer,
+   open an ongoing conversation tunnel or claim strict direct-only delivery.
+6. Test cancel, expiry, storage lock and quit during setup. Share/paste text must
+   clear and stale responses must not restore it. Reservation hides the share
+   dialog without canceling the request being confirmed.
 
-After reopening storage, an incomplete saved setup has a nonmodal notice with
-Discard setup. It must not revive an invitation or automatically show another
-approval popup. Discard removes the pending setup; a fresh invitation is needed
-for another attempt. Lock, denial, expiry and shutdown must cancel the associated
-live pairing session. These are future native QA instructions, not recorded owner
-verification of the new popup.
+After restart, pending setup remains incomplete; committed setup is inert and
+requires reconnection. Both have an explicit Discard action and neither revives
+an invitation, consent proof or live connection. Fresh ongoing-session
+reconfirmation is not implemented. Discard removes the selected inert setup;
+runtime cancellation must revoke authority before durable deletion.
 
-The browser suite has 19 tests, including confirmation and stale-response checks
-against synthetic Wails HTTP responses. Those tests are separate from backend
-tests using real TLS connections and the pairing coordinator. Neither establishes
-native window behavior or two-device Tailcat pairing. The owner-reported native
-checks above cover the retained 0.0.2 shell/storage binaries only.
+The 32 browser tests include real generated-binding calls with synthetic Wails
+HTTP responses. Backend tests separately compose actual Tailcat/WireGuard over a
+disposable loopback TLS DERP fixture with real pairing TLS, reservation, two
+decisions and encrypted schema-4 completion. These do not prove two native
+devices/VMs, forced-relay payload paths or direct-only packet exclusion. The native
+owner results above remain limited to the retained 0.0.2 shell/storage binaries.
 
 ## State migration before a newer binary
 
-The new source migrates canonical schema 1/2 application state to schema 3,
-preserving identity and existing contact/chat sections while adding pending setup.
+The new source migrates canonical schema 1/2/3 application state to schema 4,
+preserving identity, the wrapping credential, pending records and existing
+contact/chat sections while adding committed contacts.
 The earlier installed 0.0.2 executables understand schema 2 and cannot read schema
-3. Selecting an older executable alone is therefore not a rollback after migration.
+4. Selecting an older executable alone is therefore not a rollback after migration.
 
 Use a disposable OS account/profile for initial migration QA. Before a later
 binary opens existing state, establish a reviewed recovery plan for the compatible

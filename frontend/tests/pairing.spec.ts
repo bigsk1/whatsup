@@ -396,3 +396,58 @@ test('expired requests remove the fingerprint and approval controls', async ({
   expect(await page.evaluate(() => ({ ...localStorage }))).toEqual({});
   expect(errors).toEqual([]);
 });
+
+test('completed pairing closes approval and reports approval without messaging readiness', async ({
+  page,
+}) => {
+  const { state, errors } = await syntheticPairing(page, pending());
+  await page.goto('/');
+  await expect(
+    page.getByRole('dialog', { name: 'Pairing request' }),
+  ).toBeVisible();
+  state.pairing = { ...unavailablePairing, state: 'completed' };
+  await expect(
+    page.getByText('Contact approved. Messaging is not ready yet.', {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('dialog', { name: 'Pairing request' }),
+  ).toHaveCount(0);
+  await expect(page.getByText(peerA, { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Send message unavailable' }),
+  ).toBeDisabled();
+  expect(errors).toEqual([]);
+});
+
+test('restored committed setup requires reconnection and offers inert discard only', async ({
+  page,
+}) => {
+  const { calls, errors } = await syntheticPairing(page, {
+    ...pending(),
+    state: 'reconnect-required',
+    expiresAt: '',
+  });
+  await page.goto('/');
+  await expect(
+    page.getByText(
+      'Contact approved. Reconnection and messaging are not ready in this build.',
+      { exact: false },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('dialog', { name: 'Pairing request' }),
+  ).toHaveCount(0);
+  await page.getByRole('button', { name: 'Discard setup' }).click();
+  await expect(page.getByRole('button', { name: 'Discard setup' })).toHaveCount(
+    0,
+  );
+  expect(calls.find((call) => call.operation === 'DenyPairing')?.args).toEqual([
+    requestA,
+  ]);
+  await expect(
+    page.getByRole('button', { name: 'Send message unavailable' }),
+  ).toBeDisabled();
+  expect(errors).toEqual([]);
+});

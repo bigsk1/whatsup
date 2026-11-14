@@ -7,5 +7,6 @@ export {
 };
 
 export type {
+    InvitationShare,
     Status
 } from "./models.js";

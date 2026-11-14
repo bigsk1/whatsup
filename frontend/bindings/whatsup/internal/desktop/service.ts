@@ -21,6 +21,14 @@ export function ApprovePairing(requestID: string, peerFingerprint: string): $Can
     return $Call.ByID(1516693078, requestID, peerFingerprint);
 }
 
+export function CancelInvitation(): $CancellablePromise<pairflow$0.Snapshot> {
+    return $Call.ByID(3037999004);
+}
+
+export function CreateInvitation(relayMapURL: string, allowRelayFallback: boolean): $CancellablePromise<$models.InvitationShare> {
+    return $Call.ByID(3777505958, relayMapURL, allowRelayFallback);
+}
+
 export function DenyPairing(requestID: string): $CancellablePromise<pairflow$0.Snapshot> {
     return $Call.ByID(2165699649, requestID);
 }
@@ -31,6 +39,10 @@ export function GetPairingStatus(): $CancellablePromise<pairflow$0.Snapshot> {
 
 export function GetStatus(): $CancellablePromise<$models.Status> {
     return $Call.ByID(3129447825);
+}
+
+export function JoinInvitation(link: string, relayMapURL: string, allowRelayFallback: boolean): $CancellablePromise<pairflow$0.Snapshot> {
+    return $Call.ByID(862877042, link, relayMapURL, allowRelayFallback);
 }
 
 export function LockStorage(): $CancellablePromise<$models.Status> {

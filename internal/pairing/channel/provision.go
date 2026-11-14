@@ -256,6 +256,7 @@ func (a *Approval) ExchangePending(ctx context.Context, reservation *Reservation
 		return ContactAgreement{}, ErrClosed
 	}
 	state.provisioned = true
+	state.activation = associationForAgreement(state, result)
 	return result, nil
 }
 

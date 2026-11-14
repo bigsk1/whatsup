@@ -81,6 +81,12 @@
         Both approvals are received. Contact setup is being saved privately on
         this device.
       </p>
+    {:else if status.state === 'reconnect-required'}
+      <p id="pairing-description" role="status">
+        This contact was approved, but reconnection and messaging are not
+        available in this build. You can discard its saved setup to use a new
+        invitation.
+      </p>
     {:else}
       <p id="pairing-description" role="status">
         Setup is incomplete. This contact is not active yet. You can cancel and

@@ -15,9 +15,10 @@
     "node": "26.13.1"
   },
   "unresolved": [
-    "Mutual authenticated approval and durable contact activation integrated with the native app",
+    "Native two-machine pairing QA for private 0.0.3, including forward-only schema migration and restart behavior",
     "Packet-boundary direct-only support and real direct/forced-relay/path-change tests",
-    "Reciprocal activation and transport credential persistence/restoration through the coordinated schema",
+    "Fresh authenticated reconfirmation of restored contact credentials and ongoing contact transport",
+    "One active conversation binding and chat queue/acknowledgement integration with authenticated live sessions",
     "Unpatched development dependency advisory GHSA-gcqx-w48m-w2h4 (deepmerge via Svelte Vite plugin)",
     "Bounded file transfer, tray/notifications, backups, native installers, SBOM/signatures and updater verification"
   ],

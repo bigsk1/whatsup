@@ -62,8 +62,8 @@ func TestStorageChildProcess(t *testing.T) {
 	if err != nil || status.IdentityFingerprint != in.Fingerprint {
 		t.Fatal("independent restart did not restore identity")
 	}
-	if status.MessagingAvailable || status.PairingAvailable {
-		t.Fatal("unimplemented network enabled")
+	if status.MessagingAvailable || !status.PairingAvailable || status.NetworkState != "unavailable" {
+		t.Fatal("invitation controls or unavailable messaging boundary changed")
 	}
 }
 

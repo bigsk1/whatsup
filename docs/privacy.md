@@ -1,6 +1,6 @@
 # Privacy controls and local troubleshooting
 
-Policy recorded 2026-11-13. Application and development-tool telemetry are off by
+Policy updated 2026-11-14. Application and development-tool telemetry are off by
 default. The owner explicitly accepts the documented Windows WebView2 diagnostic
 limitation. WhatsUp's own diagnostics stay local; no automatic upload or remote
 crash-reporting service is configured.
@@ -99,25 +99,55 @@ These test-browser flags do not control Windows WebView2.
 Dependency and browser downloads, Go checksum verification, requested doctor
 network checks, explicit advisory queries and deliberate update discovery remain
 functional network operations. The service operators observe normal request
-metadata such as source IP/User-Agent. Future live pairing needs peer discovery
-and approved payload traffic. Privacy controls do not claim anonymity.
+metadata such as source IP/User-Agent. Explicitly requested live pairing uses
+peer discovery and approved encrypted setup traffic. Privacy controls do not
+claim anonymity.
 
-## Future transport privacy gate
+## Explicit pairing connections and reviewed transport controls
 
 The shared workflow uses the reviewed upstream tags ts_omit_logtail,
 ts_omit_netlog, ts_omit_clientmetrics, ts_omit_usermetrics and
-ts_omit_runtimemetrics. Transport additionally sets the supported no-logs/no-support
-process control and disables normal logtail uploads. These controls do not disable
+ts_omit_runtimemetrics, plus ts_omit_useproxy, ts_omit_portmapper and
+ts_omit_captiveportal. The latter omit inherited proxy routing, automatic router
+mapping and captive-portal probing. Transport additionally sets the supported
+no-logs/no-support process control and disables normal logtail uploads. These controls do not disable
 WhatsUp's independent local diagnostic recorder.
 
-No transport starts in the current application. The adapter's Start method fails
-before network I/O, independently of the desktop's disabled controls. Before
-binding it, resolve another
-source-review finding: pinned Tailcat hardcodes an optional DERP application name
-advertised for statistics. Its public API has no opt-out; omission tags do not
-remove that field. Live integration needs a reviewed immutable upstream hook/patch
-that clears it, in addition to mutual authentication and direct-only policy gates.
-An explicit operator-selected HTTPS relay map is also required; an empty setting
-is rejected instead of silently selecting Tailcat's public discovery service.
-See [the transport review](transport-review.md). A source audit and an empty browser
-request list do not substitute for eventual process-level traffic verification.
+The reviewed copy under third_party/tailcat is based on immutable upstream
+revision e00cdde6ff787f801361ff85ed085775c775d4c5. Its narrow patch adds
+DisableDERPApplicationStats, set true on both invitation endpoints, and fixes
+debugAddr to false so an inherited debug switch cannot log bearer addresses.
+config/tailcat-patch.json records upstream and patched file hashes, and the
+workflow verifies the exact allowed replacement. The BSD-3-Clause source and
+notice are retained. See [the transport review](transport-review.md).
+
+The invitation URL field is empty by default. Create/Join require an explicit
+HTTPS operator URL and a separate unchecked-by-default relay-consent checkbox.
+Go validates consent before any map request or socket. The operator can observe
+the device's IP address, availability and ordinary connection metadata; DERP can
+relay encrypted pairing setup. Strict direct-only is unavailable and is never
+silently weakened. Merely opening or unlocking WhatsUp makes no pairing connection.
+
+The supported map fetch rejects redirects, credentials, query/fragment additions
+and private destinations, bypasses environment proxies and bounds its response.
+Relay destinations are resolved and pinned to the selected profile. A peer's
+embedded relay metadata cannot introduce another outbound service. No public
+service is silently selected. Upstream documents `https://tailcat.dev/derpmap.json`
+as its default in the
+[pinned source](https://github.com/tailscale/tailcat/blob/e00cdde6ff787f801361ff85ed085775c775d4c5/tailcat.go#L106-L109).
+It is a manual operator-choice example only, with the same
+metadata/relay consent. WhatsUp does not promise that service's availability.
+
+The private bearer link is returned only for explicit Create/share, stays in
+session memory, is copied only by a Copy action, and is cleared on handoff,
+cancel, expiry, lock and unmount. A copied link remains in the OS clipboard until
+the user replaces it; cancellation/expiry invalidates its server-side authority.
+Paste does not navigate a browser or register an operating-system URL handler.
+Ordinary status responses, local preferences and diagnostics never contain it.
+
+The ongoing ContactServer.Start gate remains closed for endpoint/reconfirmation
+integration, independently of invitation networking. No chat or file traffic is
+enabled. The real Tailcat integration fixture is disposable and loopback-only;
+it does not contact a public relay. Source checks, browser request lists and this
+fixture do not establish a complete process-wide traffic audit, anonymity,
+forced-relay delivery or strict direct-only enforcement.

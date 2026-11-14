@@ -170,6 +170,8 @@ type Manager struct {
 	// activation. The channel stays owned by its caller and must be closed on
 	// cancellation/shutdown alongside this manager. It is never a Wails binding.
 	authenticatedChannel *channel.Session
+	completionClaimed    bool
+	completionDone       chan struct{}
 }
 
 func NewManager(local identity.PublicKey, options Options) (*Manager, error) {
@@ -212,6 +214,8 @@ func (m *Manager) Create(endpoint string, lifetime time.Duration) (Invite, error
 	m.invite = invite
 	m.candidate = identity.PublicKey{}
 	m.authenticatedChannel = nil
+	m.completionClaimed = false
+	m.completionDone = nil
 	m.state = Created
 	inviteID := invite.id
 	m.timer = time.AfterFunc(invite.expires.Sub(m.now()), func() {
@@ -356,6 +360,13 @@ func (m *Manager) Snapshot() Snapshot {
 // reduces retention; Go does not promise that prior value/string copies vanish.
 func (m *Manager) Close() error {
 	m.mu.Lock()
+	if m.completionDone != nil {
+		m.closed = true
+		done := m.completionDone
+		m.mu.Unlock()
+		<-done
+		m.mu.Lock()
+	}
 	defer m.mu.Unlock()
 	if m.closed {
 		return m.closeErr

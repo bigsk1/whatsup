@@ -111,6 +111,11 @@ func (a *ApplicationState) SavePendingContact(record PendingRecord) error {
 	if err != nil || !record.Local.Equal(local.PublicKey()) {
 		return ErrPending
 	}
+	for _, committed := range a.state.CommittedContacts {
+		if committed.ID == record.ID || committed.Peer.Equal(record.Peer) {
+			return ErrPendingConflict
+		}
+	}
 	for _, old := range a.state.PendingContacts {
 		if old.ID == record.ID {
 			if PendingRecord(old) == record {

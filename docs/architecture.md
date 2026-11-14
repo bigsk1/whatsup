@@ -11,7 +11,7 @@ Component layout (see docs/status.md for which parts are connected to the app):
 - `frontend/src/lib/components/`: contact sidebar, chat pane, composer, dialogs.
 - `frontend/src/lib/themes/`: dark/light themes and user-selected accent tokens.
 - `internal/pairing/`: invitations, approval, and single-use state transitions.
-- `internal/pairflow/`: reserved request lifetime, user decisions and inert pending persistence.
+- `internal/pairflow/`: reserved request lifetime, user decisions and durable contact completion.
 - `internal/identity/`: long-lived identity and approved contact key bindings.
 - `internal/chat/`: framing, acknowledgements, deduplication, and local outbox.
 - `internal/transfer/`: bounded, approved attachment transfers.
@@ -21,21 +21,31 @@ Component layout (see docs/status.md for which parts are connected to the app):
 
 The root `AGENTS.md`, this contract, and `docs/status.md` are the handover points.
 
-The desktop bridge exposes GetStatus, UnlockStorage, LockStorage, GetPairingStatus,
-ApprovePairing and DenyPairing. Only bounded public status/decision DTOs cross it.
-Invitation creation, dialing, contact activation, transport and chat domain objects
-remain unbound while the remaining integration gates are closed.
-No runtime listener starts in this implementation. A locally approved Contact
-object alone does not establish a mutual, authenticated live session.
+The desktop bridge exposes nine typed methods: GetStatus, UnlockStorage,
+LockStorage, GetPairingStatus, ApprovePairing, DenyPairing, CreateInvitation,
+JoinInvitation and CancelInvitation. Status/decision DTOs contain no bearer or
+transport secrets. The explicit Create action returns a private invitation link
+for session-only sharing; ordinary polling never returns it. Transport, vault and
+chat objects remain unbound. A locally approved Contact alone is insufficient
+to establish a mutual authenticated session.
 
 ## One-to-one pairing
 
 The authenticated channel uses standard TLS 1.3 with the existing Ed25519
 identities and exact invitation context. The coordinator requires reservation ACK
-before fingerprints, explicit decisions on both sides, and encrypted pending
-credential writes before prepared ACKs. It operates on supplied connections in
-backend tests; invitation initiation, durable activation and live transport remain
-closed. See [implemented protocol and next integration](pairing-protocol.md).
+before fingerprints, explicit decisions on both sides, encrypted pending writes
+before prepared ACKs, and matching local/peer durable completion before issuing
+runtime authority. It promotes the exact agreed node keys and shared PSK, then
+retires invitation credentials. See [implemented protocol](pairing-protocol.md).
+
+Native Create/Join first require an operator-selected HTTPS connection-service
+URL and separate explicit consent to discovery and encrypted pairing relay. The
+URL starts empty and consent starts unchecked. Neither launch, unlock nor opening
+the invitation dialog starts public networking. Strict direct-only remains
+unavailable; declining relay consent fails before any map fetch or socket opens.
+The reviewed Tailcat privacy patch permits the dedicated invitation service only.
+Ongoing contact transport, restored-session reconfirmation, messaging and files
+remain closed.
 
 An invitation has a cryptographically random secret, expiry, protocol version,
 ephemeral transport address, and identity binding. Encode it in a private app
@@ -52,11 +62,16 @@ expiry. A denied/aborted attempt burns that invite; a fresh invite is needed.
 Concurrent attempts cannot both succeed. No history or file access before approval.
 Both people verify a fingerprint/QR identity match over a trusted channel.
 
-After mutual approval, persist the approved identity and provision separate
-contact/session credentials. Tear down the invite listener and erase its secrets.
+After mutual approval, provision separate contact/session credentials, save the
+exact pending bundle, commit both sides and authenticate their completion evidence.
+Only then publish the runtime Contact/credential capabilities and retire the
+invitation listener. Interrupted pending or committed disk records are inert on
+restore; a committed record requires a future fresh reconfirmation path.
 Restarting the app, reopening a deep link, or restoring a history backup must not
 revive an invite. A contact session admits exactly one pinned peer and provides
-no group membership or implicit fan-out. An invite alone does not prove a person's
+no group membership or implicit fan-out. The current UI uses explicit link copy
+and paste; operating-system URI registration and QR presentation are not implemented.
+An invite alone does not prove a person's
 real-world identity; the verification/approval step provides that binding.
 
 ## Delivery policy

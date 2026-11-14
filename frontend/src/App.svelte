@@ -22,6 +22,7 @@
   } from '@lucide/svelte';
   import SettingsDialog from './lib/components/SettingsDialog.svelte';
   import PairingDialog from './lib/components/PairingDialog.svelte';
+  import InvitationDialog from './lib/components/InvitationDialog.svelte';
   import {
     hasDesktopBridge,
     requestStatus,
@@ -32,6 +33,10 @@
   import {
     approvePairing,
     denyPairing,
+    createInvitation,
+    joinInvitation,
+    cancelInvitation,
+    hasPairingIdentity,
     requestPairingStatus,
     unavailablePairing,
     type PairingStatus,
@@ -51,6 +56,7 @@
   let search = $state('');
   let settings: SettingsDialog;
   let aboutDialog: HTMLDialogElement;
+  let invitationDialog: InvitationDialog;
   let pairing: PairingStatus = $state({ ...unavailablePairing });
   let pairingNotice = $state('');
   let actionRequest = $state('');
@@ -62,6 +68,8 @@
   let activePoll: number | undefined;
   let activeAction = 0;
   let pairingTimer: number | undefined;
+  let invitationBusy = $state(false);
+  let invitationSequence = 0;
 
   function pairingEnabled() {
     return mounted && native && !busy && status.storageState === 'unlocked';
@@ -76,6 +84,93 @@
     pairingNotice = '';
     actionRequest = '';
     actionKind = '';
+    invitationSequence += 1;
+    invitationBusy = false;
+  }
+
+  const invitationEnabled = $derived(
+    native &&
+      !busy &&
+      status.storageState === 'unlocked' &&
+      status.pairingAvailable,
+  );
+  const canStartInvitation = $derived(
+    invitationEnabled &&
+      !invitationBusy &&
+      !hasPairingIdentity(pairing) &&
+      pairing.state !== 'connecting',
+  );
+
+  async function beginInvitation(url: string, consent: boolean) {
+    if (!mounted || !canStartInvitation)
+      throw new Error('Invitation setup is unavailable.');
+    const epoch = pairingEpoch;
+    const operation = ++invitationSequence;
+    invitationBusy = true;
+    try {
+      const share = await createInvitation(url, consent);
+      if (
+        epoch !== pairingEpoch ||
+        operation !== invitationSequence ||
+        !pairingEnabled()
+      )
+        throw new Error('Invitation setup is no longer available.');
+      return share;
+    } finally {
+      if (operation === invitationSequence) invitationBusy = false;
+    }
+  }
+
+  async function openInvitation(link: string, url: string, consent: boolean) {
+    if (!mounted || !canStartInvitation)
+      throw new Error('Invitation setup is unavailable.');
+    const epoch = pairingEpoch;
+    const operation = ++invitationSequence;
+    const sequence = ++requestSequence;
+    invitationBusy = true;
+    try {
+      const value = await joinInvitation(link, url, consent);
+      if (
+        epoch !== pairingEpoch ||
+        operation !== invitationSequence ||
+        !pairingEnabled()
+      )
+        throw new Error('Invitation setup is no longer available.');
+      if (
+        sequence >= acceptedSequence &&
+        (!hasPairingIdentity(pairing) || pairing.requestID === value.requestID)
+      ) {
+        acceptedSequence = sequence;
+        pairing = value;
+      }
+    } finally {
+      if (operation === invitationSequence) invitationBusy = false;
+    }
+  }
+
+  async function stopInvitation() {
+    if (!mounted || !native || status.storageState !== 'unlocked')
+      throw new Error('Invitation cancellation is unavailable.');
+    clearPairing();
+    const epoch = pairingEpoch;
+    const operation = ++invitationSequence;
+    invitationBusy = true;
+    try {
+      const value = await cancelInvitation();
+      if (
+        epoch === pairingEpoch &&
+        operation === invitationSequence &&
+        pairingEnabled()
+      ) {
+        acceptedSequence = ++requestSequence;
+        pairing = value;
+      }
+    } finally {
+      if (operation === invitationSequence) {
+        invitationBusy = false;
+        startPairingPolling();
+      }
+    }
   }
 
   function startPairingPolling() {
@@ -291,9 +386,10 @@
       </div>
       <button
         class="icon-button"
-        aria-label="New conversation unavailable"
-        disabled
-        title="Pairing is not available in this build"
+        aria-label="New conversation"
+        disabled={!canStartInvitation}
+        onclick={() => invitationDialog.show()}
+        title="Unlock storage to create or join a private invitation"
         ><CirclePlus size={22} strokeWidth={1.7} /></button
       >
     </header>
@@ -382,12 +478,14 @@
       </div>
     {/if}
 
-    {#if pairing.state === 'pending'}
+    {#if pairing.state === 'pending' || pairing.state === 'reconnect-required'}
       <div class="notice" role="status">
         <Shield size={18} />
         <p>
           {pairingNotice ||
-            'Contact setup is incomplete. No conversation is active. Discard this setup to use a new invitation.'}
+            (pairing.state === 'reconnect-required'
+              ? 'Contact approved. Reconnection and messaging are not ready in this build. Discard saved setup to use a new invitation.'
+              : 'Contact setup is incomplete. No conversation is active. Discard this setup to use a new invitation.')}
         </p>
         <button
           class="text-button"
@@ -396,6 +494,12 @@
           onclick={() => void decidePairing(pairing.requestID, false)}
           >Discard setup</button
         >
+      </div>
+    {/if}
+    {#if pairing.state === 'completed'}
+      <div class="notice" role="status">
+        <Shield size={18} />
+        <p>Contact approved. Messaging is not ready yet.</p>
       </div>
     {/if}
 
@@ -427,13 +531,18 @@
       <div class="welcome-action">
         <button
           class="primary-button"
-          disabled
-          title="Pairing is not available in this build"
+          disabled={!canStartInvitation}
+          onclick={() => invitationDialog.show()}
+          title="Unlock storage to create or join a private invitation"
           ><CirclePlus size={18} /> Start a conversation <ArrowUpRight
             size={16}
           /></button
         >
-        <p>Pairing and messaging are not available in this build.</p>
+        <p>
+          {native && status.storageState === 'unlocked'
+            ? 'Create or join a private invitation. Messaging and files are not available yet.'
+            : 'Unlock storage in the desktop app to pair. Messaging and files are not available yet.'}
+        </p>
       </div>
       <div class="welcome-details">
         <span><Users size={15} /> Always one to one</span><span
@@ -449,7 +558,7 @@
           aria-label="Attach file unavailable"
           disabled><Paperclip size={21} strokeWidth={1.6} /></button
         ><textarea
-          aria-label="Message unavailable until pairing is implemented"
+          aria-label="Message unavailable until messaging is implemented"
           placeholder="Your next conversation starts here…"
           disabled
           rows="1"></textarea><button
@@ -467,10 +576,12 @@
       </p>
     </div>
     <footer class="network-footer">
-      <span><WifiOff size={13} /> No network session</span><span
-        class="footer-divider"
-      ></span><span><LockKeyhole size={12} /> {storageLabel}</span><span
-        class="build-label"
+      <span
+        ><WifiOff size={13} />
+        {native ? 'No conversation session' : 'No network session'}</span
+      ><span class="footer-divider"></span><span
+        ><LockKeyhole size={12} /> {storageLabel}</span
+      ><span class="build-label"
         >{native
           ? `Development · v${status.version}`
           : 'Browser preview · desktop actions unavailable'}</span
@@ -502,6 +613,15 @@
   ondeny={(requestID) => void decidePairing(requestID, false)}
 />
 
+<InvitationDialog
+  bind:this={invitationDialog}
+  enabled={invitationEnabled}
+  {pairing}
+  oncreate={beginInvitation}
+  onjoin={openInvitation}
+  oncancel={stopInvitation}
+/>
+
 <dialog
   bind:this={aboutDialog}
   aria-labelledby="about-title"
@@ -529,13 +649,16 @@
     <div class="build-notice">
       <Info size={18} />
       <p>
-        This is a development build. Pairing, chat, attachments, and direct-only
-        delivery are not ready for use.
+        This is a development build. Pairing requires your chosen connection
+        service and explicit consent. Chat, attachments and strict direct-only
+        delivery are not available yet.
       </p>
     </div>
     <p class="muted small">
-      Both devices will need to be running to exchange messages. This build does
-      not open a messaging listener or deliver messages.
+      Both devices need to be running to pair. Your selected connection service
+      learns your IP address and availability and may relay encrypted pairing
+      setup. Nothing connects automatically. This build does not deliver
+      messages.
     </p>
     <p class="muted small">
       WhatsUp keeps redacted troubleshooting logs locally and has no analytics

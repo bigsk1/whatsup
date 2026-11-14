@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"whatsup/internal/identity"
+	"whatsup/internal/pairing/channel"
 )
 
 var ErrPeer = errors.New("authenticated peer is not the approved contact")
@@ -22,6 +23,7 @@ type contactState struct {
 	peer              identity.PublicKey
 	revoked           bool
 	preparedTransport bool
+	completion        *channel.Completion
 }
 
 func (Contact) String() string   { return "[private WhatsUp contact credentials]" }
@@ -49,6 +51,17 @@ func (c *Contact) Peer() identity.PublicKey {
 		return identity.PublicKey{}
 	}
 	return c.state.peer
+}
+
+// MatchesCompletion is a backend association check, not restored authority.
+// Only authenticated finalization can install this private completion pointer.
+func (c *Contact) MatchesCompletion(completion *channel.Completion) bool {
+	if c == nil || c.state == nil || completion == nil {
+		return false
+	}
+	c.state.mu.RLock()
+	defer c.state.mu.RUnlock()
+	return !c.state.revoked && c.state.completion == completion
 }
 
 // AuthorizeAuthenticatedPeer must be applied to the actual peer from a completed

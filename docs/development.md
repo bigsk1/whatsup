@@ -163,9 +163,11 @@ SSH connection is test infrastructure, not a service exposed by WhatsUp.
 
 The configured Ubuntu Desktop VM is the intended second app machine. Native
 checks should cover settings, appearance, About/privacy text, local unlock/lock,
-quit/reopen identity continuity and private WebKit directories. Later, once live
-pairing is implemented, use independent Windows/Ubuntu processes and identities
-for the real direct/relay/restart tests below. No current binary can exchange chat.
+quit/reopen identity continuity and private WebKit directories. The planned 0.0.3
+handoff additionally needs explicit-consent invitation/approval/cancellation QA on
+independent Windows/Ubuntu processes. No owner pairing pass is recorded yet, and
+no candidate can exchange chat. Direct/forced-relay/restart delivery gates remain
+separate from pairing setup.
 
 The native startup correction is covered by four browser regressions that use the
 actual application, generated bindings and Wails HTTP transport with synthetic
@@ -198,33 +200,47 @@ source work. Backend tests do not make those installed apps usable messengers.
 
 ## Pairing source and test scope
 
-The current source exposes six typed desktop methods: GetStatus, UnlockStorage,
-LockStorage, GetPairingStatus, ApprovePairing and DenyPairing. Pairing snapshots
-contain public request state, an opaque request ID, fingerprints and expiry.
-Approve/Deny act only on the current request. No invitation bearer, private key,
-PSK or generic transport operation crosses those methods.
+The source exposes nine typed methods: GetStatus, UnlockStorage, LockStorage,
+GetPairingStatus, ApprovePairing, DenyPairing, CreateInvitation, JoinInvitation and
+CancelInvitation. Ordinary snapshots contain public state, request ID,
+fingerprints and expiry. Only the explicit Create/share result returns a private
+bearer link; it stays in session memory, is copied only on request and never
+enters preferences, diagnostics or browser navigation. Other private keys/PSKs
+and generic transport objects are not bound. Copy/paste is the initial handoff;
+OS URI registration and QR presentation are not implemented.
 
 The confirmation popup requires an authenticated, backend-reserved request;
 fingerprints are not presented merely because a TLS handshake succeeded. There
-is no mock/sample trigger in the app. The native initiate-pairing controls remain
-disabled because Tailcat's privacy/start gate is still closed. Source-level popup
-support does not claim a complete two-device pairing route.
+is no mock/sample trigger in the app. Native Create/Join require an explicit HTTPS
+operator relay-map URL, empty by default, and separate unchecked relay consent
+before any fetch or socket. Changing the URL clears consent. Merely opening or
+unlocking the app does not start pairing networking. Upstream's documented
+`https://tailcat.dev/derpmap.json` is a manual example, not a WhatsUp default or
+availability promise; using it requires the same IP/availability and encrypted
+setup-relay consent. Strict direct-only remains unavailable.
 
-Mutual consent saves encrypted pending setup only. Pending is not an active
-contact and cannot open chat or a tunnel. Reopening storage can show an inert
-incomplete-setup notice with Discard setup; it does not restore an invitation or
-repeat approval automatically. This UI is separate from eventual durable
-activation and transport integration.
+After consent, the exact agreed credentials are written pending, then committed
+with matching peer evidence. Runtime Contact/credential capabilities become
+available only after completion and invitation retirement. Pending remains
+incomplete, and a restored committed record is inert reconnect-required. Both
+offer Discard and neither reconnects automatically. The ongoing contact endpoint/
+reconfirmation path, chat and files remain closed; Contact approved is not a
+messaging-ready signal.
 
 Use the existing `npm run test:app` and `npm run wsl -- test:app` commands. The
-browser suite now has 19 tests, including pairing interactions through actual
+browser suite now has 28 tests, including invitation/pairing interactions through actual
 generated bindings and synthetic Wails HTTP responses. Keep that evidence
 separate from real-TLS/coordinator backend tests and owner-driven native checks.
+The external transport integration test additionally uses a disposable loopback
+TLS DERP fixture, actual Tailcat/WireGuard and encrypted schema-4 completion with
+two explicit decisions. It contacts no public relay. It is not two-machine,
+forced-relay-path or strict direct-only evidence.
 The native owner checks recorded for 0.0.2 do not verify the newer confirmation
 popup, credential exchange or two-device behavior.
 
-No app-version bump or installed-binary refresh follows from these source tests.
-The new source does migrate schema 1/2 vaults to schema 3 when opened. Earlier
+The next retained private candidate is planned as 0.0.3. Its owner/native pairing
+QA is pending; installed 0.0.2 apps remain unchanged until explicit launch/upgrade.
+The new source migrates schema 1/2/3 vaults to schema 4 when opened. Earlier
 0.0.2 binaries cannot read that newer schema, so an executable-only rollback is
 insufficient. Start migration QA with a disposable OS account/profile; establish
 a reviewed recovery plan for existing encrypted state and its matching OS
@@ -249,6 +265,9 @@ silently accepted; document any requested exception and its scope explicitly.
 
 Tailcat's reviewed post-release revision needs a source/API/security review before
 it moves. Go updates do not automatically select arbitrary latest-main code.
+The reviewed local subset at third_party/tailcat and config/tailcat-patch.json
+also form part of the frozen graph. Builds verify its copied/patched file hashes;
+an update cannot silently bypass that verification or drop its BSD-3-Clause notice.
 shadcn-svelte component sources are checked-in application code: bumping its CLI
 does not update copied components. Review/regenerate and test those deliberately.
 Review scanner/toolchain and transitive updates too. Refresh minimum patched

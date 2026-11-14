@@ -70,6 +70,8 @@ type sessionState struct {
 	mu                 sync.Mutex
 	raw                net.Conn
 	tls                *tls.Conn
+	tlsInput           *eofTrackingConn
+	transportRetired   bool
 	local              identity.PublicKey
 	peer               identity.PublicKey
 	role               Role
@@ -82,6 +84,10 @@ type sessionState struct {
 	reserved           bool
 	provisionStarted   bool
 	provisioned        bool
+	activation         ActivationAssociation
+	completionStarted  bool
+	completed          bool
+	completionConsumed bool
 }
 
 // Approval proves only live reciprocal consent on one exact authenticated TLS
@@ -244,10 +250,11 @@ func newSession(ctx context.Context, raw net.Conn, local *identity.Identity, exp
 		}
 		return err
 	}
+	state.tlsInput = &eofTrackingConn{Conn: raw}
 	if role == Joiner {
-		state.tls = tls.Client(raw, config)
+		state.tls = tls.Client(state.tlsInput, config)
 	} else {
-		state.tls = tls.Server(raw, config)
+		state.tls = tls.Server(state.tlsInput, config)
 	}
 	deadline := earlier(expiresAt, now.Add(MaxHandshakeTime))
 	if userDeadline, ok := ctx.Deadline(); ok {

@@ -3,18 +3,19 @@
 A private, one-to-one desktop messenger in development for Windows and Linux, using
 Go, Wails, Svelte, TypeScript, Tailwind, and Tailcat.
 
-**Current state:** a native desktop shell with themes and OS-protected encrypted
-local identity, plus tested invitation, transport-admission and durable chat
-components. A versioned encrypted envelope coordinates identity, contact pins and
-chat sections. Live peer pairing and message delivery are still disabled.
-This is development software, not a usable or audited private messenger yet.
+**Current state:** private test revision **0.0.3** adds explicit invitation creation
+and joining, mutual identity confirmation and durable encrypted contact setup to
+the native desktop shell. Live invitation setup uses a separately selected,
+trusted connection service and requires relay consent. Messaging, files and
+ongoing contact connections remain unavailable. This is development software,
+not a usable or audited private messenger yet.
 See [current status](docs/status.md) and the [architecture](docs/architecture.md).
 
-Backend protocol work includes TLS 1.3 identity authentication, bearer reservation,
-mutual consent and encrypted pending credential exchange over supplied connections.
-A confirmation dialog is wired to reserved backend requests. Invitation creation
-and live networking remain disabled, and saved pending setup is not an active
-contact. See the [pairing protocol boundary](docs/pairing-protocol.md).
+The backend reserves the one-use invitation before showing either fingerprint,
+authenticates both Ed25519 identities through TLS 1.3, and requires both people to
+approve. It commits the exact agreed contact keys before retiring the separate
+invitation transport. Saved setup cannot resume a live session after restart.
+See the [pairing protocol boundary](docs/pairing-protocol.md).
 
 ## Consistent development commands
 
@@ -48,8 +49,9 @@ patch increments such as 0.0.2; rebuilds use a separate timestamp/source build I
 Minor and major versions are deliberate milestones. See [versioning](docs/versioning.md).
 Review candidates stay under `artifacts/development/<version>/<build-id>/`;
 they are unsigned executables, not release installers. See [native testing](docs/native-testing.md).
-Test revision **0.0.2** adds Linux sandbox integration and an explicit software
-rendering mode. Linux runtime requirements and tested scope are documented in
+Test revision **0.0.2** established Linux sandbox integration and an explicit
+software rendering mode. The new **0.0.3** pairing flow still needs native owner
+QA on both machines. Linux runtime requirements and tested scope are documented in
 [Linux support](docs/linux-support.md).
 
 Windows remains the authoritative source workspace. The WSL command creates a
@@ -65,11 +67,52 @@ preferences are the only data stored in frontend local storage. Unlocking does n
 start a listener or enable messaging. Native windows close normally; tray behavior
 is not implemented.
 
-The current source adds schema 3 for encrypted pending contact setup. It migrates
-schema 1/2 without changing identity or the wrapping credential, but older 0.0.2
-executables reject the migrated schema. Installed review apps remain unchanged;
-see the [native migration test guidance](docs/native-testing.md) before running a
-future build against existing state.
+The current source uses encrypted schema 4 for identity, contact pins, chat,
+pending setup and committed contact credentials. It migrates schemas 1/2/3
+without changing identity or the wrapping credential. Older executables reject
+the newer schema; preserve existing state and its OS credential, and follow the
+[native migration test guidance](docs/native-testing.md) before trying this build
+against existing data. Restored pending or committed records remain inert;
+reconnection requires fresh authenticated peer confirmation, which is unfinished.
+
+## Try the private pairing flow
+
+Run `npm run dev` for the native development loop, or build with `npm run build`
+and launch `build/bin/whatsup.exe` on Windows or `build/bin/whatsup` on Linux.
+`npm run build:review` retains a versioned executable for repeatable private QA.
+Linux installation and desktop integration use the
+[native review instructions](docs/native-testing.md), including the supported
+sandbox setup. Browser preview cannot unlock storage or create invitations.
+
+Pairing needs a trusted operator's **HTTPS Tailcat relay-map URL**. This checkout
+does not supply, choose or deploy a service. An example placeholder is not a
+working endpoint. The service learns your IP address and availability and can
+carry encrypted pairing traffic; accepting that disclosure is a separate choice
+on each device. Strict direct-only pairing is unavailable.
+
+1. Launch WhatsUp on both devices and unlock local storage in Settings.
+2. On one device, open **Start a conversation**, choose **Create invitation**,
+   enter the trusted connection-service URL and explicitly allow encrypted relay
+   fallback. Continue to create the ten-minute, one-use invitation.
+3. Use **Copy invitation** and send it privately to the intended person. The link
+   is a bearer secret; keep it out of screenshots, issue reports and logs.
+4. On the other device, choose **Paste invitation**, paste the link, independently
+   enter the same trusted service URL and give relay consent.
+5. Both devices show an Approve/Deny dialog only after authenticated reservation.
+   Compare the full reciprocal fingerprints through a trusted channel, then
+   approve on both devices. Either person can deny, including after the other
+   person has approved.
+6. Completion means the exact contact credentials were committed and the
+   invitation transport was retired. Sending messages is still disabled. After
+   restarting, saved setup shows that reconnection is required; it does not
+   automatically contact a peer. Discard saved setup before starting over.
+
+Launch, unlock and opening the invitation dialog do not contact a relay. The
+service URL, unchecked consent and private link stay in transient UI state; only
+an explicit Copy action writes the invitation to the clipboard. Automated tests
+have exercised this protocol over a disposable local TLS relay. Two-machine
+native pairing, public-service operation and forced direct/relay paths remain
+unverified.
 
 Normal builds consume exact versions recorded in the manifests and lockfiles. Updating dependencies is a
 separate, explicit operation. See the [development and release workflow](docs/development.md).
@@ -99,6 +142,12 @@ Go telemetry is set to off on Windows and Ubuntu, including local tool counters,
 and the workflow verifies that setting. Automatic npm version checks and install-
 time audit submissions are disabled. Explicit vulnerability scans, dependency
 downloads and requested environment/network checks still contact their services.
+The reviewed local Tailcat patch disables its optional DERP application statistics
+and bearer-address debug logging. Supported build tags omit inherited proxies,
+router port mapping and captive-portal probes; invitation startup fails closed
+when those controls are absent. See the
+[transport review](docs/transport-review.md) and
+[third-party notices](THIRD_PARTY_NOTICES.md).
 
 ## Intended experience
 

@@ -230,7 +230,8 @@ func NewContactServer(options ServerOptions) (*ContactServer, error) {
 		DERPMapURL:     options.DERPMapURL,
 		// Upstream diagnostic strings can contain addresses. Do not forward them
 		// into application logs; provide only generic typed errors to the caller.
-		Logf: func(string, ...any) {},
+		Logf:                        func(string, ...any) {},
+		DisableDERPApplicationStats: true,
 	}
 	c.peerKey = c.server.PeerKey
 	return c, nil
@@ -249,8 +250,9 @@ func (c *ContactServer) admits(peer key.NodePublic) bool {
 	return !s.revoked && s.approval != nil && s.boundTo(peer) && s.approval.AuthorizeAuthenticatedPeer(s.approval.Peer()) == nil
 }
 
-// Start remains unavailable until reviewed privacy controls and reciprocal
-// authenticated activation are implemented. It performs no network IO.
+// Start remains unavailable until ongoing-contact endpoint/reconfirmation and
+// operator-profile policy are integrated. Invitation transport is separate.
+// Constructing an activated binding alone does not start a messaging tunnel.
 func (c *ContactServer) Start(_ context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -266,9 +268,9 @@ func (c *ContactServer) Start(_ context.Context) error {
 	if !c.admits(c.peer) {
 		return ErrMutualApprovalUnavailable
 	}
-	// The pinned upstream hardcodes DERP application statistics labels. Until a
-	// reviewed patch/control is installed and verified, fail before StartContext,
-	// relay-map fetches, UDP sockets or any listener can identify this application.
+	// The reviewed fork supplies privacy controls, but this older ongoing adapter
+	// still lacks trusted-profile/endpoint restoration. Keep it closed while the
+	// dedicated invitation adapter supports only the pairing service.
 	return ErrPrivacyUnavailable
 }
 

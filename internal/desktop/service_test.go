@@ -41,8 +41,8 @@ func TestIdentityIsDurableAndBridgeNeverReportsMessaging(t *testing.T) {
 	if err != nil || len(first.IdentityFingerprint) != 64 {
 		t.Fatalf("identity unavailable: %v", err)
 	}
-	if first.DirectOnlyAvailable || first.PairingAvailable || first.MessagingAvailable || first.AttachmentsAvailable || first.NetworkState != "unavailable" {
-		t.Fatal("unimplemented capabilities enabled")
+	if first.DirectOnlyAvailable || !first.PairingAvailable || first.MessagingAvailable || first.AttachmentsAvailable || first.NetworkState != "unavailable" {
+		t.Fatal("invitation capability or unavailable messaging boundaries are incorrect")
 	}
 	if s.LockStorage().IdentityFingerprint != "" {
 		t.Fatal("locked public identity retained")

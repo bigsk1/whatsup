@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { lstat, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { isApprovedReplacement } from './tailcat-patch.mjs';
 
 export function parseVersion(value) {
   const match = /^(?:v|go)?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(value);
@@ -131,13 +132,27 @@ export function validateReviewedGoPins(pins) {
   return modules;
 }
 
-export function assertReviewedGoGraph(output, pins) {
+function selectedGoGraph(output, approvedReplacement) {
+  const rows = output.split(/\r?\n/).filter((line) => line.trim()).map((line) => line.trim().split(/\s+/));
+  for (const row of rows) {
+    if (row.includes('=>') && !(row.length === 4 && row[2] === '=>'
+        && isApprovedReplacement(row[0], row[1], row[3], approvedReplacement))) {
+      throw new Error('Unreviewed selected graph replacement is not permitted for pinned tools or transport');
+    }
+  }
+  return rows;
+}
+
+export function assertReviewedGoGraph(output, pins, approvedReplacement) {
   for (const module of validateReviewedGoPins(pins)) {
-    const line = output.split(/\r?\n/).find((value) => value.split(' ')[0] === module);
-    if (line !== `${module} ${pins[module]}`) {
+    const line = output.split(/\r?\n/).map((value) => value.trim()).find((value) => value.split(/\s+/)[0] === module);
+    if (line !== `${module} ${pins[module]}`
+        && !(line === `${module} ${pins[module]} => ${approvedReplacement?.path}`
+          && isApprovedReplacement(module, pins[module], approvedReplacement?.path, approvedReplacement))) {
       throw new Error(`Reviewed transport dependency moved or was replaced: ${module}. Review upstream separately before changing its pin.`);
     }
   }
+  selectedGoGraph(output, approvedReplacement);
 }
 
 export function stableNpmVersion(metadata, major) {
@@ -186,16 +201,17 @@ export function assertNodeRuntime(actual, required) {
   }
 }
 
-export function assertToolBuildInfo(info, module, version, graph, minimumGo) {
+export function assertToolBuildInfo(info, module, version, graph, minimumGo, approvedReplacement) {
   const compiler = /\bgo(\d+\.\d+\.\d+)\b/.exec(info)?.[1];
   if (!compiler || !atLeast(compiler, minimumGo)) throw new Error('Installed tool uses an outdated Go compiler; run npm run setup');
   const rows = info.split(/\r?\n/).map((line) => line.trim().split('\t'));
   const main = rows.find((row) => row[0] === 'mod');
   if (main?.[1] !== module || main?.[2] !== version) throw new Error('Installed tool version does not match the reviewed pin; run npm run setup');
   if (rows.some((row) => row[0] === '=>')) throw new Error('Installed tool has an unreviewed module replacement');
-  const selectedRows = graph.split(/\r?\n/).map((line) => line.split(' '));
-  if (selectedRows.some((row) => row.includes('=>'))) throw new Error('Unreviewed selected graph replacement is not permitted for pinned tools');
-  const selected = new Map(selectedRows);
+  // The selected root graph may include the verified app-private Tailcat fork.
+  // Actual tool binaries must still contain no replacement: a path in buildinfo
+  // cannot prove which local bytes were compiled into an old tool binary.
+  const selected = new Map(selectedGoGraph(graph, approvedReplacement).map((row) => [row[0], row[1]]));
   for (const row of rows.filter((row) => row[0] === 'mod' || row[0] === 'dep')) {
     if (selected.get(row[1]) !== row[2]) throw new Error(`Installed tool dependency differs from the locked graph: ${row[1]}. Run npm run setup`);
   }

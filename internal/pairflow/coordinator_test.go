@@ -67,6 +67,7 @@ type testPair struct {
 	retired       atomic.Int32
 	ownerResult   chan error
 	joinerResult  chan error
+	retireFailure atomic.Bool
 }
 
 func newTestPair(t *testing.T, ownerStore, joinerStore Store, lifetime time.Duration) *testPair {
@@ -76,19 +77,26 @@ func newTestPair(t *testing.T, ownerStore, joinerStore Store, lifetime time.Dura
 	return connectTestPair(t, owner, joiner, ownerStore, joinerStore, lifetime, false)
 }
 
-func connectTestPair(t *testing.T, owner, joiner *identity.Identity, ownerStore, joinerStore Store, lifetime time.Duration, wrongBearer bool) *testPair {
+func connectTestPair(t *testing.T, owner, joiner *identity.Identity, ownerStore, joinerStore Store, lifetime time.Duration, wrongBearer bool, complete ...bool) *testPair {
 	t.Helper()
 	p := &testPair{ownerStore: ownerStore, joinerStore: joinerStore, ownerResult: make(chan error, 1), joinerResult: make(chan error, 1)}
 	var err error
-	p.owner, err = New(owner, ownerStore)
+	options := Options{CompleteActivation: len(complete) != 0 && complete[0]}
+	p.owner, err = New(owner, ownerStore, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.joiner, err = New(joiner, joinerStore)
+	p.joiner, err = New(joiner, joinerStore, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.manager, err = pairing.NewManager(owner.PublicKey(), pairing.Options{CloseInvitation: func() error { p.retired.Add(1); return nil }})
+	p.manager, err = pairing.NewManager(owner.PublicKey(), pairing.Options{CloseInvitation: func() error {
+		p.retired.Add(1)
+		if p.retireFailure.Load() {
+			return errors.New("synthetic retirement failure")
+		}
+		return nil
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

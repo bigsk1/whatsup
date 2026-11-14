@@ -155,8 +155,9 @@ func TestEncryptedApplicationEnvelopeChatIdentityAndIndependentRestart(t *testin
 	// Desktop unlock uses the same envelope and cannot replace chat while
 	// loading identity. The existing bridge still advertises no messenger.
 	service := desktop.New(dir, keys)
+	defer service.ServiceShutdown()
 	status, err := service.UnlockStorage()
-	if err != nil || status.IdentityFingerprint != fingerprint || status.MessagingAvailable || status.PairingAvailable {
+	if err != nil || status.IdentityFingerprint != fingerprint || status.MessagingAvailable || !status.PairingAvailable || status.NetworkState != "unavailable" {
 		t.Fatal("desktop did not preserve coordinated state boundary")
 	}
 	if err := service.ServiceShutdown(); err != nil {

@@ -27,7 +27,7 @@ test('starts with empty conversations and unavailable delivery actions', async (
   ).toBeDisabled();
   await expect(
     page.getByRole('textbox', {
-      name: 'Message unavailable until pairing is implemented',
+      name: 'Message unavailable until messaging is implemented',
     }),
   ).toBeDisabled();
   await expect(

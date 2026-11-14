@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestPairingBridgeIsLockedAndCannotInitiateNetworking(t *testing.T) {
+func TestPairingDecisionsStayLockedAndCannotStartNetworking(t *testing.T) {
 	service := New(filepath.Join(t.TempDir(), "private"), &testKeys{})
 	defer service.ServiceShutdown()
 	if status := service.GetPairingStatus(); status.State != "unavailable" || status.PeerFingerprint != "" || status.RequestID != "" {
@@ -35,7 +35,7 @@ func TestPairingBridgeIsLockedAndCannotInitiateNetworking(t *testing.T) {
 	if json.Unmarshal(public, &fields) != nil || len(fields) != 5 {
 		t.Fatal("pairing bridge exported more than the fixed public DTO")
 	}
-	if status := service.GetStatus(); status.PairingAvailable || status.MessagingAvailable || status.AttachmentsAvailable || status.NetworkState != "unavailable" {
+	if status := service.GetStatus(); !status.PairingAvailable || status.MessagingAvailable || status.AttachmentsAvailable || status.NetworkState != "unavailable" {
 		t.Fatal("decision bridge enabled an initiating or messaging capability")
 	}
 	controller := service.pairing

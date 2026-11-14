@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	ApplicationSchemaVersion = 3
+	ApplicationSchemaVersion = 4
 	MaxContacts              = 32
 	maxChatBytes             = 2 << 20
 	maxChatMessages          = 256
@@ -47,6 +47,15 @@ type contactSection struct {
 }
 
 type applicationEnvelope struct {
+	Version           int                 `json:"version"`
+	Identity          identitySection     `json:"identity"`
+	Contacts          []contactSection    `json:"contacts"`
+	PendingContacts   []pendingRecordDisk `json:"pendingContacts"`
+	CommittedContacts []pendingRecordDisk `json:"committedContacts"`
+}
+
+// Schema 3 is decoded exactly before adding the committed section.
+type applicationEnvelopeV3 struct {
 	Version         int                 `json:"version"`
 	Identity        identitySection     `json:"identity"`
 	Contacts        []contactSection    `json:"contacts"`
@@ -92,14 +101,16 @@ type ApplicationState struct {
 	failed bool
 	// Uses Vault.saveLocked in production. Injectable only inside this package
 	// for deterministic failures before/after a durable replacement in tests.
-	save func([]byte) error
+	save                 func([]byte) error
+	commitReceipts       map[string]*commitReceiptState
+	nextCommitGeneration uint64
 }
 
 func (a ApplicationState) String() string   { return "[private WhatsUp application state]" }
 func (a ApplicationState) GoString() string { return a.String() }
 
 // OpenApplication creates a new identity only when no vault snapshot exists.
-// Schema 1/2 snapshots migrate without changing the seed or existing chat. Unsupported,
+// Schema 1/2/3 snapshots migrate without changing the seed or existing chat. Unsupported,
 // duplicate-field, noncanonical, or malformed state is preserved and rejected.
 func OpenApplication(vault *Vault) (*ApplicationState, error) {
 	if vault == nil {
@@ -116,7 +127,7 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 		}
 		return vault.application, nil
 	}
-	a := &ApplicationState{vault: vault, save: vault.saveLocked}
+	a := &ApplicationState{vault: vault, save: vault.saveLocked, commitReceipts: make(map[string]*commitReceiptState)}
 	payload, err := vault.loadLocked()
 	defer clear(payload)
 	write := false
@@ -126,7 +137,7 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 			return nil, generateErr
 		}
 		seed := local.Seed()
-		a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: identitySection{Version: 1, Seed: bytes.Clone(seed[:])}, Contacts: []contactSection{}, PendingContacts: []pendingRecordDisk{}}
+		a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: identitySection{Version: 1, Seed: bytes.Clone(seed[:])}, Contacts: []contactSection{}, PendingContacts: []pendingRecordDisk{}, CommittedContacts: []pendingRecordDisk{}}
 		clear(seed[:])
 		write = true
 	} else if err != nil {
@@ -149,7 +160,7 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 				clear(old.Seed)
 				return nil, ErrState
 			}
-			a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: identitySection{Version: 1, Seed: old.Seed}, Contacts: []contactSection{}, PendingContacts: []pendingRecordDisk{}}
+			a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: identitySection{Version: 1, Seed: old.Seed}, Contacts: []contactSection{}, PendingContacts: []pendingRecordDisk{}, CommittedContacts: []pendingRecordDisk{}}
 			write = true
 		case 2:
 			var old applicationEnvelopeV2
@@ -160,7 +171,19 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 				}
 				return nil, ErrState
 			}
-			a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: old.Identity, Contacts: old.Contacts, PendingContacts: []pendingRecordDisk{}}
+			a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: old.Identity, Contacts: old.Contacts, PendingContacts: []pendingRecordDisk{}, CommittedContacts: []pendingRecordDisk{}}
+			write = true
+		case 3:
+			var old applicationEnvelopeV3
+			if decodeCanonical(payload, &old) != nil {
+				clear(old.Identity.Seed)
+				for index := range old.Contacts {
+					clear(old.Contacts[index].Chat)
+				}
+				clear(old.PendingContacts)
+				return nil, ErrState
+			}
+			a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: old.Identity, Contacts: old.Contacts, PendingContacts: old.PendingContacts, CommittedContacts: []pendingRecordDisk{}}
 			write = true
 		case ApplicationSchemaVersion:
 			if decodeCanonical(payload, &a.state) != nil {
@@ -341,6 +364,7 @@ func (a *ApplicationState) cloneLocked() applicationEnvelope {
 	next := a.state
 	next.Contacts = append([]contactSection{}, a.state.Contacts...)
 	next.PendingContacts = append([]pendingRecordDisk{}, a.state.PendingContacts...)
+	next.CommittedContacts = append([]pendingRecordDisk{}, a.state.CommittedContacts...)
 	return next
 }
 
@@ -370,11 +394,13 @@ func (a *ApplicationState) clearLocked() {
 		clear(a.state.Contacts[index].Chat)
 	}
 	clear(a.state.PendingContacts)
+	clear(a.state.CommittedContacts)
+	clear(a.commitReceipts)
 	a.state = applicationEnvelope{}
 }
 
 func validateEnvelope(state applicationEnvelope) error {
-	if state.Version != ApplicationSchemaVersion || state.Identity.Version != 1 || len(state.Identity.Seed) != 32 || state.Contacts == nil || len(state.Contacts) > MaxContacts || state.PendingContacts == nil || len(state.PendingContacts) > MaxPendingContacts {
+	if state.Version != ApplicationSchemaVersion || state.Identity.Version != 1 || len(state.Identity.Seed) != 32 || state.Contacts == nil || len(state.Contacts) > MaxContacts || state.PendingContacts == nil || len(state.PendingContacts) > MaxPendingContacts || state.CommittedContacts == nil || len(state.CommittedContacts) > MaxCommittedContacts {
 		return ErrState
 	}
 	local, err := identity.FromSeed(state.Identity.Seed)
@@ -393,6 +419,16 @@ func validateEnvelope(state applicationEnvelope) error {
 	}
 	if err := validatePendingContacts(state.PendingContacts, local.PublicKey()); err != nil {
 		return ErrState
+	}
+	if err := validatePendingContacts(state.CommittedContacts, local.PublicKey()); err != nil {
+		return ErrState
+	}
+	for _, pending := range state.PendingContacts {
+		for _, committed := range state.CommittedContacts {
+			if pending.ID == committed.ID || pending.Peer.Equal(committed.Peer) {
+				return ErrState
+			}
+		}
 	}
 	return nil
 }

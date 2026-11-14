@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 1,
+  "module": "github.com/tailscale/tailcat",
+  "version": "v0.7.1-0.20261105151022-e00cdde6ff78",
+  "upstreamRepository": "https://github.com/tailscale/tailcat",
+  "upstreamRevision": "e00cdde6ff787f801361ff85ed085775c775d4c5",
+  "patchVersion": 1,
+  "replacement": "./third_party/tailcat",
+  "purpose": [
+    "derp_application_stats_opt_out",
+    "disable_bearer_debug_logging"
+  ],
+  "omittedUpstream": [
+    "readme.go and README.md embedded only for the upstream CLI",
+    "cmd/",
+    "internal/",
+    "tool/",
+    "web/",
+    "webdemo/",
+    "upstream tests and release assets"
+  ],
+  "files": [
+    {
+      "path": "android_linux.go",
+      "size": 913,
+      "upstreamSHA256": "8fdaac0ddd936439fc8f5e2411158a15b44593a4f6b11ad62fbfc4ca148d5acf",
+      "sha256": "8fdaac0ddd936439fc8f5e2411158a15b44593a4f6b11ad62fbfc4ca148d5acf"
+    },
+    {
+      "path": "connblob_deprecated.go",
+      "size": 916,
+      "upstreamSHA256": "034a1354fd59b2967ba51ebaee0d89cebec688f4328729b6f0e90071d0f7a9ba",
+      "sha256": "034a1354fd59b2967ba51ebaee0d89cebec688f4328729b6f0e90071d0f7a9ba"
+    },
+    {
+      "path": "disco.go",
+      "size": 2306,
+      "upstreamSHA256": "b5b970d0c76a6126504b9a1e130676dd97e2e88d0f460d0646c1daf023de2892",
+      "sha256": "b5b970d0c76a6126504b9a1e130676dd97e2e88d0f460d0646c1daf023de2892"
+    },
+    {
+      "path": "go.mod",
+      "size": 5834,
+      "upstreamSHA256": "3687ce7512de7d61b1d38d368f5fd138bde9dd2195509abdc41a48bf263398a8",
+      "sha256": "3687ce7512de7d61b1d38d368f5fd138bde9dd2195509abdc41a48bf263398a8"
+    },
+    {
+      "path": "go.sum",
+      "size": 27620,
+      "upstreamSHA256": "52ce5fc33db529da4eb2e0d8e88e1e495e740df396d4c0af5afd9fe990b0ef52",
+      "sha256": "52ce5fc33db529da4eb2e0d8e88e1e495e740df396d4c0af5afd9fe990b0ef52"
+    },
+    {
+      "path": "keyset.go",
+      "size": 1282,
+      "upstreamSHA256": "12d35639f5d90bd1736bd0a7a3fe3250e65948c12f4e93c4c672464be69a2e59",
+      "sha256": "12d35639f5d90bd1736bd0a7a3fe3250e65948c12f4e93c4c672464be69a2e59"
+    },
+    {
+      "path": "LICENSE",
+      "size": 1515,
+      "upstreamSHA256": "a7ca6186a7963a0a60740f6047760eecd7a0234e8c38bd7e1e0bbcb324bda45b",
+      "sha256": "a7ca6186a7963a0a60740f6047760eecd7a0234e8c38bd7e1e0bbcb324bda45b"
+    },
+    {
+      "path": "listen.go",
+      "size": 6282,
+      "upstreamSHA256": "1401b3b84bc3ffc315b5559d1d171a67e3afd673574acfd60bd522e22de41e70",
+      "sha256": "1401b3b84bc3ffc315b5559d1d171a67e3afd673574acfd60bd522e22de41e70"
+    },
+    {
+      "path": "pickregion_js.go",
+      "size": 604,
+      "upstreamSHA256": "9c188c59c09aa67ab5d96d2c95eeeadc46e5e6258a9ef52a648d87464fe6e91b",
+      "sha256": "9c188c59c09aa67ab5d96d2c95eeeadc46e5e6258a9ef52a648d87464fe6e91b"
+    },
+    {
+      "path": "pickregion.go",
+      "size": 1841,
+      "upstreamSHA256": "826ffad579f94128f3b3016082e8fc9eed98174343a8c549c8fdada65312dfc9",
+      "sha256": "826ffad579f94128f3b3016082e8fc9eed98174343a8c549c8fdada65312dfc9"
+    },
+    {
+      "path": "tailcat_exec.go",
+      "size": 3019,
+      "upstreamSHA256": "a4ec2b4bf0cc7e1d4e404e00ed8184338f93c51fcdacfe928386b4155a4b5a3d",
+      "sha256": "a4ec2b4bf0cc7e1d4e404e00ed8184338f93c51fcdacfe928386b4155a4b5a3d"
+    },
+    {
+      "path": "tailcat_files.go",
+      "size": 2882,
+      "upstreamSHA256": "21c07324dac62ff7a246be36071a2729a7220fa66acc94abd424c2da8b7b0392",
+      "sha256": "21c07324dac62ff7a246be36071a2729a7220fa66acc94abd424c2da8b7b0392"
+    },
+    {
+      "path": "tailcat_sftp.go",
+      "size": 11089,
+      "upstreamSHA256": "359777afc2cf7bb9991a1ccb73a629bbcc5974dc7a13cbe69d1650e95412607d",
+      "sha256": "359777afc2cf7bb9991a1ccb73a629bbcc5974dc7a13cbe69d1650e95412607d"
+    },
+    {
+      "path": "tailcat_ssh_keys.go",
+      "size": 1983,
+      "upstreamSHA256": "11d1e81d74af7d503a2e42b90954d6b567375f32508fe44183e1e7290a116ab4",
+      "sha256": "11d1e81d74af7d503a2e42b90954d6b567375f32508fe44183e1e7290a116ab4"
+    },
+    {
+      "path": "tailcat_ssh_stub.go",
+      "size": 625,
+      "upstreamSHA256": "63a9e5955b6b796eb839aba5891d75b64e48e2a2e840d6288be3473e8bee70a2",
+      "sha256": "63a9e5955b6b796eb839aba5891d75b64e48e2a2e840d6288be3473e8bee70a2"
+    },
+    {
+      "path": "tailcat_ssh_unix.go",
+      "size": 6041,
+      "upstreamSHA256": "5d03be75852cc5e0c4098cc93824b29d45579396cc162c6f16ef9cada43a1577",
+      "sha256": "5d03be75852cc5e0c4098cc93824b29d45579396cc162c6f16ef9cada43a1577"
+    },
+    {
+      "path": "tailcat_ssh_windows.go",
+      "size": 11090,
+      "upstreamSHA256": "b3898cdfe5806fce102d4894ae2de51c9274d23c7b7053de5e8f58d9097c9ffc",
+      "sha256": "b3898cdfe5806fce102d4894ae2de51c9274d23c7b7053de5e8f58d9097c9ffc"
+    },
+    {
+      "path": "tailcat_ssh.go",
+      "size": 8771,
+      "upstreamSHA256": "3a1a67f3385d234492e60125e4a1cf261eb6ed96d4b28b77851e5cf91947fc2d",
+      "sha256": "3a1a67f3385d234492e60125e4a1cf261eb6ed96d4b28b77851e5cf91947fc2d"
+    },
+    {
+      "path": "tailcat.go",
+      "size": 87435,
+      "upstreamSHA256": "49ccac135a2bf777cc5e1433e8ee9ba8fabc9fc637695eeb9b2d384bb217dbeb",
+      "sha256": "cbf247f25f9e61f24b6a9621522facb5e17d837d49732d399defda88f5c9a219"
+    },
+    {
+      "path": "whatsup_privacy_test.go",
+      "size": 1371,
+      "upstreamSHA256": null,
+      "sha256": "1e5c8c802ffe3ccbc5790f4d92891025f9f614fd45c4b608ae1abbc34f6da652"
+    },
+    {
+      "path": "wire.go",
+      "size": 4278,
+      "upstreamSHA256": "24dfea08aef53fa49a5a3797a5243e52e8c9f5948ecef88c8329d6889d8b27b8",
+      "sha256": "24dfea08aef53fa49a5a3797a5243e52e8c9f5948ecef88c8329d6889d8b27b8"
+    }
+  ]
+}

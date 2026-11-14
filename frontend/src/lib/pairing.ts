@@ -8,6 +8,8 @@ export const pairingStates = [
   'waiting-for-peer',
   'saving',
   'pending',
+  'completed',
+  'reconnect-required',
   'denied',
   'expired',
   'failed',
@@ -21,6 +23,13 @@ export interface PairingStatus {
   requestID: string;
   localFingerprint: string;
   peerFingerprint: string;
+  expiresAt: string;
+}
+
+// The bearer link exists only for the explicit invitation share action. Keep it
+// out of browser storage, navigation, logging and generic status DTOs.
+export interface InvitationShare {
+  link: string;
   expiresAt: string;
 }
 
@@ -51,6 +60,7 @@ export function hasPairingIdentity(status: PairingStatus): boolean {
     'waiting-for-peer',
     'saving',
     'pending',
+    'reconnect-required',
   ].includes(status.state);
 }
 
@@ -80,7 +90,10 @@ export function validatePairingStatus(value: unknown): PairingStatus {
         !fingerprint.test(status.peerFingerprint) ||
         status.localFingerprint === status.peerFingerprint ||
         (!validExpiry &&
-          !(status.state === 'pending' && status.expiresAt === '')))) ||
+          !(
+            ['pending', 'reconnect-required'].includes(status.state) &&
+            status.expiresAt === ''
+          )))) ||
     (!hasPairingIdentity(status) &&
       (status.requestID !== '' ||
         status.localFingerprint !== '' ||
@@ -90,6 +103,67 @@ export function validatePairingStatus(value: unknown): PairingStatus {
     throw new Error('The desktop returned an invalid pairing status.');
   }
   return status;
+}
+
+export function validConnectionService(value: string): boolean {
+  if (
+    value.length === 0 ||
+    value.length > 2048 ||
+    /[\s\u0000-\u001f\u007f]/.test(value)
+  )
+    return false;
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === 'https:' &&
+      url.hostname !== '' &&
+      url.username === '' &&
+      url.password === '' &&
+      url.hash === ''
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function validInvitationLink(value: string): boolean {
+  if (
+    value.length === 0 ||
+    value.length > 2048 ||
+    /[\s\u0000-\u001f\u007f]/.test(value)
+  )
+    return false;
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === 'whatsup:' &&
+      url.hostname === 'pair' &&
+      url.pathname === '/v1' &&
+      url.username === '' &&
+      url.password === '' &&
+      url.hash === '' &&
+      url.search !== ''
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function validateInvitationShare(value: unknown): InvitationShare {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('The desktop returned an invalid invitation.');
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).length !== 2 ||
+    typeof record.link !== 'string' ||
+    !validInvitationLink(record.link) ||
+    typeof record.expiresAt !== 'string' ||
+    record.expiresAt.length > 64 ||
+    !timestamp.test(record.expiresAt) ||
+    !Number.isFinite(Date.parse(record.expiresAt))
+  )
+    throw new Error('The desktop returned an invalid invitation.');
+  return { link: record.link, expiresAt: record.expiresAt };
 }
 
 async function service() {
@@ -132,5 +206,58 @@ export async function denyPairing(
     );
   } catch {
     throw new Error('Pairing cancellation could not be confirmed.');
+  }
+}
+
+export async function createInvitation(
+  relayMapURL: string,
+  allowRelayFallback: boolean,
+): Promise<InvitationShare> {
+  if (!validConnectionService(relayMapURL) || allowRelayFallback !== true)
+    throw new Error(
+      'Choose an HTTPS connection service and allow encrypted pairing relay.',
+    );
+  try {
+    return validateInvitationShare(
+      await (await service()).CreateInvitation(relayMapURL, allowRelayFallback),
+    );
+  } catch {
+    throw new Error(
+      'An invitation could not be created. Check the connection service and try again.',
+    );
+  }
+}
+
+export async function joinInvitation(
+  link: string,
+  relayMapURL: string,
+  allowRelayFallback: boolean,
+): Promise<PairingStatus> {
+  if (
+    !validInvitationLink(link) ||
+    !validConnectionService(relayMapURL) ||
+    allowRelayFallback !== true
+  )
+    throw new Error(
+      'Check the private invitation and allow the selected connection service.',
+    );
+  try {
+    return validatePairingStatus(
+      await (
+        await service()
+      ).JoinInvitation(link, relayMapURL, allowRelayFallback),
+    );
+  } catch {
+    throw new Error(
+      'The invitation could not be opened. Check it and the connection service, then try again.',
+    );
+  }
+}
+
+export async function cancelInvitation(): Promise<PairingStatus> {
+  try {
+    return validatePairingStatus(await (await service()).CancelInvitation());
+  } catch {
+    throw new Error('Invitation cancellation could not be confirmed.');
   }
 }

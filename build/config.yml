@@ -10,7 +10,7 @@ info:
   description: Private one-to-one desktop messenger
   copyright: ''
   comments: Unsigned development candidate
-  version: 0.0.2
+  version: 0.0.3
 
 dev_mode:
   root_path: .

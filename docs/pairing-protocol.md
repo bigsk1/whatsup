@@ -1,9 +1,10 @@
 # Authenticated pairing protocol work
 
-This records authenticated reservation, confirmation and encrypted pending setup.
-The six desktop methods expose status, storage lock/unlock and Approve/Deny for
-an already reserved request. No invitation creation/listener, dialer, relay
-connection, active contact or live chat is enabled by this source.
+This records explicit invitation transport, authenticated reservation, confirmation
+and durable contact completion. Nine typed desktop methods expose status/storage,
+CreateInvitation, JoinInvitation, CancelInvitation and current-request Approve/Deny.
+Invitation networking requires a chosen HTTPS operator URL and separate explicit
+relay consent. Ongoing contact transport, chat and files remain unavailable.
 
 ## Implemented channel
 
@@ -50,10 +51,11 @@ unanswered prompt, including after one person has already approved. A premature
 READY cannot substitute for a local vote. The older direct Session.Approve API
 remains a lower-level component path, not the coordinator's user-facing workflow.
 
-The returned opaque `Approval` represents live reciprocal consent only. It has
-no activation or network-start API, exposes no raw connection or generic peer
-messaging operation, and is invalidated by session closure or expiry. Only the
-narrow typed pending-credential exchange can run after reserved mutual consent.
+The returned opaque `Approval` represents live reciprocal consent only. It
+exposes no raw connection or generic peer messaging operation and is invalidated
+by session closure or expiry. Narrow typed credential/completion operations still
+need the exact reserved session and successful durable callbacks; approval alone
+cannot create a runtime Contact or start networking.
 Its validity is not an online/presence indicator or evidence that the other
 device has durably activated a contact.
 
@@ -68,8 +70,8 @@ expiry is rejected. TLS authentication does not replace bearer validation.
 The channel's pending check completes before the manager lock is taken, so an
 invitation retirement hook can close its transport without a lock cycle. A close
 between those checks can only burn a pending invitation; it cannot activate a
-contact or grant access. The future coordinator owns both lifecycles and must
-close the session on denial, expiry, cancellation and shutdown.
+contact or grant access. The coordinator owns both lifecycles and closes the
+session on denial, expiry, cancellation and shutdown.
 
 The older `Reserve`/`Approve` domain path remains for existing component tests and
 independently authenticated adapter experiments. It must not be used as native
@@ -82,7 +84,34 @@ silently substituting for durable activation.
 calls that exact manager validation before returning its authenticated acceptance
 ACK. The joiner waits for this ACK before showing a fingerprint too. The
 `pairflow.Coordinator` uses this path exclusively; no successful handshake alone
-can trigger its prompt.
+can trigger its prompt. Authenticated completion uses FinalizeAuthenticated,
+never the legacy immediate-consumption approval path.
+
+## Explicit creation, joining and privacy
+
+The native dialog starts with an empty service URL and unchecked relay consent.
+Only an explicit Create/Join action after both choices can fetch the selected
+HTTPS relay map or open invitation transport. False consent is rejected before
+network IO; it never silently changes strict direct-only into relay fallback.
+The operator observes IP/availability and can relay encrypted pairing setup.
+
+The reviewed Tailcat subset suppresses optional DERP application statistics and
+bearer debug logging. Eight supported omission tags also remove log/metric upload,
+inherited proxies, router mapping and captive-portal probes. The map fetch is
+bounded, retains TLS verification, refuses redirects/private destinations and
+pins allowed relay destinations. Peer-supplied metadata cannot add a different
+service. See [transport review](transport-review.md) and [privacy](privacy.md).
+
+Upstream's documented `https://tailcat.dev/derpmap.json` is a manual example only;
+it is not preselected or contacted automatically and has no availability promise.
+The invitation service uses dedicated ephemeral WireGuard node/PSK credentials
+and tunnel TCP port 48730. These are separate from ongoing contact credentials.
+
+Create returns the bearer link solely for explicit session-only sharing. Copy is
+manual, paste does not navigate a browser, and no OS URI registration or QR flow
+is implemented. Handoff, cancellation, expiry, storage lock and unmount clear the
+UI link. Clipboard contents remain until the user replaces them. Ordinary status,
+preferences and diagnostics never contain a bearer or ongoing transport secret.
 
 ## Pending credentials and lifecycle
 
@@ -96,22 +125,44 @@ The inviter persists its encrypted pending record before sending the agreed
 proposal. The joiner persists before sending its prepared ACK; the inviter sends
 the final prepared ACK after receiving that confirmation. A successful exchange
 means both pending writes were acknowledged. A lost ACK can leave an inert record
-on one side. This is not atomic distributed commitment or completed activation.
-Records use the coordinated schema 3 envelope; see [storage](storage.md).
+on one side. These prepared ACKs alone are not completed activation.
+Records use the coordinated schema 4 envelope; see [storage](storage.md).
 
-The coordinator closes TLS and retires the invitation on denial, expiry, error,
-shutdown and after this pending-only exchange. A rejected concurrent candidate
+Durable completion moves each exact bundle from pendingContacts to
+committedContacts before announcing local COMMITTED on that same reserved TLS
+channel. Each side verifies the peer's matching identity/node/PSK association.
+The live Completion plus an exact one-shot CommitReceipt is required to finalize
+Contact authority and promote the existing pending credentials. No replacement
+keys or PSK are minted. A role-ordered authenticated terminal receipt confirms
+the final commit before invitation teardown. Tailcat's supported DrainTCP
+operation then bounds retirement of queued TCP data/FIN/ACKs with a deadline;
+successful TLS Write alone is insufficient. Failure leaves no completion
+capability. Invitation retirement and runtime publication run outside the
+manager/channel/vault locks.
+This remains a distributed protocol: a dropped final frame or interrupted
+retirement can leave one side committed but inert, and no local rename can make
+two devices durably atomic. Terminal handoff and bounded transport teardown must
+pass their failure-path tests before native reliability is claimed.
+
+The coordinator closes TLS and retires the invitation on denial, expiry, error
+and shutdown as well. A rejected concurrent candidate
 cannot close the manager already reserved by another attempt. Cancellation waits
 for its persistence callback before removing the local pending record. Storage
 lock joins all runs/actions before closing the vault. Known bearer copies are
 dropped from retained pending state; Go-managed copies cannot be guaranteed erased.
 
+If a durable receipt has already issued runtime authority, CancelAfterRevocation
+claims it against further use, invokes runtime revoke/drain outside the vault
+mutex, and only then removes the exact committed record. This includes consumed
+receipts. Uncertain deletion leaves runtime stopped and state preserved/poisoned
+for reopen; it is never reported as a successful rollback.
+
 Restored pending records cannot revive an invitation, consent proof, Contact or
 tunnel. They display a nonmodal incomplete-setup notice with a fresh ephemeral
-request ID and a Discard action. They block a replacement attempt until explicitly
-discarded. The coordinator is deliberately pending-only: the future completion
-step belongs before final invitation retirement in a fully integrated run, with
-separate reviewed recovery for an already interrupted pending exchange.
+request ID and a Discard action. Restored committed records similarly remain
+inert, labeled reconnect-required, and cannot reconstruct live completion or a
+CommitReceipt. Both block replacement until explicitly discarded. A future
+ongoing-session reconfirmation/recovery protocol is required to reuse them safely.
 
 ## Confirmation UI
 
@@ -121,47 +172,47 @@ or Deny. Deny has initial focus, and Escape denies. Approval records the exact
 current request ID and fingerprint, returns promptly, and waits for the other
 person; stale responses cannot approve or restore another request. Browser storage
 contains no pairing state. Polling is bounded/serialized and stops on storage lock
-or unmount. Pending setup is always labeled inactive.
+or unmount. Pending setup is labeled incomplete; completed first setup says Contact
+approved and messaging not ready. Restored committed setup offers inert Discard,
+not automatic approval or a connection indicator.
 
-No sample trigger or unauthenticated fingerprint preview is added. Initiate-pairing
-controls remain disabled until the actual invitation transport is implemented and
-its privacy gate is resolved. Browser tests use synthetic bridge responses; they
-do not demonstrate a native peer reaching the popup.
+No sample trigger or unauthenticated fingerprint preview is added. Native
+Create/Join require unlocked storage and the explicit operator/consent choices
+above. Browser tests use synthetic bridge responses; they do not demonstrate a
+native peer reaching the popup.
 
 ## Required next integration
 
-The coordinator now covers reservation, reciprocal consent and pending writes.
-The remaining completion integration must run without network IO under invitation,
-contact or vault mutexes:
+1. Complete owner-driven two-device native pairing, cancellation, expiry and
+   restart QA for the new private candidate, including migration/recovery planning.
+2. Add ongoing endpoint/profile exchange and fresh peer reconfirmation for restored
+   committed contacts before allowing ContactServer.Start. A disk record or a
+   successful initial pairing must never silently resume a tunnel.
+3. Implement reviewed packet-boundary strict direct-only enforcement and prove
+   zero relayed payload under path changes/retransmission; it remains unavailable.
+4. Connect the encrypted chat queue/ACK adapters to authenticated ongoing sessions,
+   then implement files and the remaining release gates.
 
-1. Resolve invitation transport privacy/outbound relay controls before enabling
-   native creation, link handling or dialing; keep strict direct-only unavailable.
-2. Add authenticated durable-completion evidence and crash reconciliation before
-   granting an active capability. Two devices cannot be made durably atomic with
-   a local file rename, and a saved pending record alone is insufficient.
-3. Persist completed activation, retire the invitation listener/credentials, and
-   permit only the exact approved node for that conversation. Restore must reject
-   malformed, incomplete, mismatched or revoked records. Multiple separate contact
-   pins never mean multiple members of one conversation.
-
-Promote the exact agreed pending key/PSK bundle when that finalization is added.
-Do not call the older local-only credential generator to mint unrelated replacement
-keys during activation.
-
-No production constructor for the adapter's private `verifiedBinding` is added
-by this slice. Tailcat's statistics-label control, outbound relay policy,
-packet-boundary direct-only enforcement, and real two-device delivery tests remain
-separate requirements. The adapter still fails before network startup.
+Runtime Contact/credentials now have a production constructor tied to live
+completion and exact durable evidence. The ongoing server still fails before
+network startup because its endpoint/reconfirmation integration is unfinished.
+Invitation networking is a separate, explicit-consent service. Multiple separate
+contacts never mean more than two identities in one conversation.
 
 ## Evidence limits
 
-Tests exercise real TLS handshakes, bearer acknowledgements, reciprocal consent,
-pending credential exchange and actual encrypted vaults over loopback TCP. They
-use synthetic identities and invitations. The UI tests exercise the real Svelte
-app and generated bridge with synthetic status responses. These are component
-tests, not Tailcat, WireGuard, relay, native pairing or two-machine messenger
-verification. The
+Tests exercise real TLS, reservation ACKs, consent, encrypted pending writes,
+durable completion, exact credential promotion and cancellation. The external
+transport integration fixture additionally runs real Tailcat/WireGuard over a
+disposable loopback TLS DERP service, with two independent encrypted vaults and
+explicit decisions. Its wrapping keys are disposable test providers, and it makes
+no public service connection. No forced payload path or two-native-device result
+is inferred from it.
+
+The 32 browser tests exercise the real Svelte app/generated bridge with synthetic
+HTTP responses. They are separate from protocol tests and native owner QA. The
 normal `npm run test:app` command includes these packages; its known advisory gate
-remains independent. The installed 0.0.2 review executables are unchanged by this
-backend work, and no app-version increment is needed until a new test revision
-is delivered.
+remains independent. The planned private native candidate is 0.0.3, with no
+owner/native pairing pass recorded here. Installed 0.0.2 executables remain
+unchanged until an explicit reviewed launch/upgrade. Schema-4 migration prevents
+an executable-only rollback to those older binaries.

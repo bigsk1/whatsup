@@ -31,7 +31,7 @@ and are not read as current state. The wrapping key and decoded buffers are clea
 where practical, but Go-managed copies and OS paging prevent guaranteed memory
 erasure. Locking does not undo data already exposed to a compromised endpoint.
 
-Schema 3 contains a private identity section and bounded contact sections, each
+Schema 4 contains a private identity section and bounded contact sections, each
 with an exact local/peer identity pin and its own chat snapshot. A single
 ApplicationState coordinator serializes every section's read-modify-durable-write
 through the vault mutex. A chat adapter cannot replace the identity or another
@@ -40,8 +40,8 @@ vault. Separate handles for the same chat scope reject stale writes; different
 contact scopes preserve each other's changes. Any uncertain durable save poisons
 the coordinator until close/reopen, including errors after file replacement.
 
-Existing canonical schema 1 and schema 2 snapshots migrate to schema 3 without
-changing their seed, wrapping credential, pins or chat/outbox data. Unsupported,
+Existing canonical schema 1, 2 and 3 snapshots migrate to schema 4 without
+changing their seed, wrapping credential, pins, pending records or chat/outbox data. Unsupported,
 malformed or noncanonical schemas are preserved
 and rejected. The total plaintext bound remains 4 MiB, with at most 32 contact
 sections and bounded per-contact chat/history. Only the identity's public
@@ -57,24 +57,51 @@ cannot implement ApprovedContact, create a contact pin or obtain a chat scope.
 Ordinary JSON serialization/formatting is blocked or redacted; a private storage
 alias alone is encoded inside the encrypted envelope.
 
-Cancellation joins an in-flight save before explicit removal, preventing a late
-save from resurrecting canceled setup. Remove itself is idempotent, without a
-persistent revocation tombstone. A lost ACK or shutdown can leave a valid but
-inert record; reopening presents incomplete setup with an explicit discard action,
-never a resumed invitation, consent proof or active transport.
+Cancellation joins an in-flight pending save before explicit removal, preventing
+a late save from resurrecting canceled setup. Remove itself is idempotent,
+without a persistent revocation tombstone. A lost ACK or shutdown can leave a
+valid but inert pending record; reopening presents incomplete setup with an
+explicit discard action, never a resumed invitation or consent proof.
 
-Migration is forward-only for retained 0.0.2 binaries: they reject schema 3.
+The committedContacts section stores at most 32 exact agreed records. Committing
+moves the validated pending bundle without minting keys or a replacement PSK.
+Conflicting IDs/peers are rejected; an existing legacy contact/chat scope for the
+peer cannot be inherited by a new pairing. Pending and committed sections cannot
+hold competing entries for one ID or peer. No chat scope is created by commitment.
+
+An in-memory CommitReceipt proves a successful write through this open
+ApplicationState. Its ownership, generation, exact record and one-shot consumption
+are checked alongside the live TLS completion before runtime authority is issued.
+The receipt is not serialized and cannot be recovered from a committed JSON flag.
+Restored committed records are inert and appear as reconnect-required, with an
+explicit Discard action. Fresh peer reconfirmation and ongoing-session restoration
+remain unimplemented; unlock never reconnects them automatically.
+
+CancelAfterRevocation is the cancellation path when a receipt may already have
+issued runtime authority. It first claims the receipt under the vault guard,
+rejecting later use, then invokes the trusted runtime revoke/drain callback outside
+the vault mutex. Only after that callback returns does it delete the exact record,
+including when the receipt was consumed. Stale/forged receipts cannot invoke the
+callback or remove another record. A failed or uncertain deletion leaves runtime
+stopped and state preserved/poisoned for reopen, rather than reporting success.
+
+Migration is forward-only for retained 0.0.2 binaries: they reject schema 4.
 Selecting an older executable alone is not a storage rollback. Current tests use
 disposable vaults; installed review apps and the owner's existing state remain
-unchanged. See [native migration guidance](native-testing.md).
+unchanged until an explicit reviewed upgrade. The next private pairing candidate
+is planned as 0.0.3; its native owner QA is not recorded by these source tests.
+See [native migration guidance](native-testing.md).
 
 Contact pins record local approval metadata. They cannot restore live contact
 authority, transport credentials or reciprocal authentication. The desktop uses
 the coordinator for identity storage; chat adapters are exercised by backend
-integration tests and remain unbound to the visible messenger. Pending credentials
-can be restored only as inert setup. Durable active completion, credential
-reconciliation/revocation, attachments, encrypted search, backup/export
-and rollback protection remain work.
+integration tests and remain unbound to the visible messenger. Pending and
+committed credentials can be restored only as inert setup. First-run durable
+completion can issue runtime Contact/credential capabilities after reciprocal
+evidence and invitation retirement, but it does not start an ongoing tunnel.
+Fresh restored-session reconfirmation, recovery after interrupted distributed
+completion, attachments, encrypted search, backup/export and rollback protection
+remain work. A local rename cannot make two devices durably atomic.
 
 Tests cover ciphertext-only persistence, fresh nonces, tampering/truncation,
 wrong/missing credentials, reopen, size limits, writer exclusion and lock closure.
