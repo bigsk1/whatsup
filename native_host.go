@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -151,7 +152,44 @@ func newNativeHost(app *application.App, backend *desktop.Service, record func(d
 	h.tray = app.SystemTray.New().SetIcon(icon).SetMenu(menu)
 	h.tray.SetTooltip("WhatsUp")
 	h.tray.OnClick(h.focus).OnDoubleClick(h.focus)
+	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		go h.nativeStarted()
+	})
 	return h, nil
+}
+
+// Native startup does not depend on the renderer injecting its bridge. The
+// grace period permits tray registration, then reveals a hidden broken view.
+func (h *nativeHost) nativeStarted() {
+	if h.life.Err() != nil {
+		return
+	}
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	// Wails can emit ApplicationStarted before its deferred window Run. Wait
+	// for the native handle, never for JavaScript or a successful navigation.
+	for {
+		if window := h.windowValue(); window != nil && application.InvokeSyncWithResult(func() bool { return window.NativeWindow() != nil }) {
+			h.controller.NativeReady()
+			break
+		}
+		select {
+		case <-h.life.Done():
+			return
+		case <-timer.C:
+			h.controller.NativeReady()
+			h.controller.StartupFallback()
+			return
+		case <-ticker.C:
+		}
+	}
+	select {
+	case <-h.life.Done():
+	case <-timer.C:
+		h.controller.StartupFallback()
+	}
 }
 
 func (h *nativeHost) windowValue() *application.WebviewWindow {
@@ -220,6 +258,9 @@ func (h *nativeHost) show() {
 		return
 	}
 	if window := h.windowValue(); window != nil {
+		window.Show()
+		// Pinned Wails' first Show may create a deferred hidden native window.
+		// A second call explicitly reveals it after that synchronous creation.
 		window.Show()
 		window.UnMinimise()
 		window.Focus()

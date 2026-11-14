@@ -37,8 +37,11 @@ desktop environments can use the standard application-menu entry.
 
 Launch **WhatsUp (Development)** from the menu or installed shortcut. This preview
 label identifies the unsigned preview build. Closing the window keeps the app in
-the tray by default. Choose Quit from its tray menu to exit; no terminal needs to
-remain open. Start at login is optional under Settings → App behavior.
+the tray by default when a tray is available; without one, closing quits the app.
+Choose Quit from its tray menu to exit; no terminal needs to remain open. Start
+at login is optional under Settings → App behavior. If a tray icon cannot be
+confirmed, the window is shown. A second launch can also reveal the window while
+its interface is still loading.
 
 No universal Linux package, signed DEB/RPM or Flatpak release is available yet.
 

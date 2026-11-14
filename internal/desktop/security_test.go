@@ -6,11 +6,37 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
 const securityTestSecret = "  synthetic café passphrase  "
+
+func TestDamagedBackupUnlockExplainsTheSpecificLocalFile(t *testing.T) {
+	s := securityTestService(t, SecurityRuntimeOptions{})
+	if _, err := s.UnlockStorage(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ConfigurePassphrase("", securityTestSecret, true); err != nil {
+		t.Fatal(err)
+	}
+	s.LockStorage()
+	path := filepath.Join(s.directory, "pre-migration-00000000000000000000000000000000.vault")
+	if err := os.WriteFile(path, []byte("WUPVAULT\x02{truncated synthetic root"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.UnlockWithPassphrase(securityTestSecret)
+	if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "Preserve this file") || got.StorageState != "unavailable" || got.IdentityFingerprint != "" {
+		t.Fatal("managed backup failure is not actionable and closed", err)
+	}
+	if err := os.Rename(path, filepath.Join(t.TempDir(), "preserved.vault")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.UnlockWithPassphrase(securityTestSecret); err != nil || got.StorageState != "unlocked" {
+		t.Fatal("repair did not restore healthy access", err)
+	}
+}
 
 func securityTestService(t *testing.T, options SecurityRuntimeOptions) *Service {
 	t.Helper()

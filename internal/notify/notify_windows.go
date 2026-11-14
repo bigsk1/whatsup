@@ -97,6 +97,7 @@ type windowsBackend struct {
 	activate    func(string)
 	initialized bool
 	thread      bool
+	receipts    *noticeReceipts
 }
 
 func newBackend(activate func(string)) backend { return &windowsBackend{activate: activate} }
@@ -130,9 +131,14 @@ func (w *windowsBackend) start(ctx context.Context) error {
 	if scopedToastActivation(application.Get().Config().Name) != nil {
 		return ErrUnavailable
 	}
+	var err error
+	w.receipts, err = openWindowsReceipts(application.Get().Config().Name)
+	if err != nil {
+		return ErrUnavailable
+	}
 	w.service = notifications.New()
 	w.service.OnNotificationResponse(func(result notifications.NotificationResult) {
-		if id := windowsActivation(result); id != "" && w.activate != nil {
+		if id := windowsActivation(result, w.receipts); id != "" && w.activate != nil {
 			w.activate(id)
 		}
 	})
@@ -142,12 +148,16 @@ func (w *windowsBackend) start(ctx context.Context) error {
 	return nil
 }
 
-func windowsActivation(result notifications.NotificationResult) string {
-	if result.Error != nil || result.Response.ActionIdentifier != notifications.DefaultActionIdentifier || !canonicalID(result.Response.ID, false) || len(result.Response.UserInfo) != 1 {
+func windowsActivation(result notifications.NotificationResult, receipts *noticeReceipts) string {
+	if result.Error != nil || result.Response.ActionIdentifier != notifications.DefaultActionIdentifier || !canonicalID(result.Response.ID, false) || len(result.Response.UserInfo) != 2 {
 		return ""
 	}
 	id, ok := result.Response.UserInfo["contactID"].(string)
 	if !ok || !canonicalID(id, true) {
+		return ""
+	}
+	proof, ok := result.Response.UserInfo["proof"].(string)
+	if !ok || !receipts.consume(result.Response.ID, id, proof) {
 		return ""
 	}
 	return id
@@ -156,9 +166,17 @@ func (w *windowsBackend) send(ctx context.Context, notice Notice) error {
 	if ctx.Err() != nil || w.service == nil {
 		return ErrUnavailable
 	}
+	proof, err := w.receipts.issue(notice)
+	if err != nil {
+		return ErrUnavailable
+	}
 	// Pinned Wails uses wintoast.Push with no PowerShell fallback. Do not call
 	// generic actions, schedules, categories, attachment or file APIs.
-	return w.service.SendNotification(notifications.NotificationOptions{ID: notice.ID, Title: notice.Title, Body: notice.Body, Data: map[string]interface{}{"contactID": notice.ContactID}})
+	err = w.service.SendNotification(notifications.NotificationOptions{ID: notice.ID, Title: notice.Title, Body: notice.Body, Data: map[string]interface{}{"contactID": notice.ContactID, "proof": proof}})
+	if err != nil {
+		w.receipts.discard(notice.ID, notice.ContactID, proof)
+	}
+	return err
 }
 func (w *windowsBackend) close() error {
 	var err error

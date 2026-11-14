@@ -66,12 +66,16 @@ preserving your identity and other contacts. An online removal notice stops the
 peer's retries; it does not delete their history. These are logical deletion,
 not physical erasure of media, memory, external exports or OS notification history.
 Managed migration backups are re-protected on passphrase changes/authenticated
-reopen and have bounded root-snapshot retention. Complete recovery rollback data
-is retained for safety; external old backups are not retroactively protected.
+reopen. Retention keeps three authenticated top-level snapshots under the current
+master plus any live migration reference, in either protection mode. Unreadable
+or different-key material does not count toward that limit. Complete recovery
+rollback data, including nested snapshots, is retained for safety; it can consume
+additional space. External old backups are not retroactively protected.
 
 ## Desktop behavior and OS artifacts
 
-Close-to-tray and generic new-message notifications start on. Start at login,
+Close-to-tray, when a tray is available, and generic new-message notifications
+start on. Without a tray, closing the window quits. Start at login,
 notification contact names and message previews are separate opt-ins. Choose
 Quit from the tray to stop the app. Behavior preferences are encrypted in
 app-preferences.vault; appearance alone uses the private WebView's storage.
@@ -85,17 +89,31 @@ a run. Enabling start at login adds the WhatsUp value under
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`; disabling it removes
 that value. No system-wide startup entry is created.
 
+The same app-identity key contains `WhatsUpIssuedNoticesV1`, a Windows DPAPI
+current-user encrypted receipt ledger. It holds at most 1,024 opaque notification
+and contact identifiers, random activation proofs and issue times for 30 days,
+without names or message text. A receipt is consumed before selecting a chat.
+This permits checking notification clicks after restart. Missing, damaged or
+expired receipts cannot select a conversation. Older notices without a proof
+can still launch the app normally.
+
 Linux start at login uses `$XDG_CONFIG_HOME/autostart/whatsup.desktop`, normally
 `~/.config/autostart/whatsup.desktop`. Disabling it removes the app-managed entry.
 Installation may also create a menu/desktop launcher and optional dock entry.
 Notifications use the desktop notification service over the user's session bus.
+Action and dismissal signals must come from its current unique bus owner; IDs
+from a replaced service are not reused as conversation authority.
 
 Notifications say only **New message** by default. Enabling names/previews sends
 that content to the OS notification system, including its notification history.
-It can appear on the desktop or lock screen according to OS settings. Notification activation data contains only opaque routing identifiers, without
-duplicating names or message previews. Clicking a notification can select an
-existing saved conversation after unlock; it cannot unlock the app or add a
-contact. Turning previews off affects future notifications; it
+It can appear on the desktop or lock screen according to OS settings. Notification
+activation data contains opaque identifiers and an activation proof, without
+duplicating names or message previews. The message notification identifier is
+per message; its contact routing identifier is stable for that saved contact.
+Clicking a notification can select an existing saved conversation once storage
+is available. A cold launch auto-unlocks in OS-only mode; notification clicks
+never bypass an enabled app passphrase or add a contact. Turning previews off
+affects future notifications; it
 does not erase existing Action Center entries, OS history or prior copies.
 
 ## Local diagnostics and locations

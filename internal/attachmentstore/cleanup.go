@@ -20,6 +20,9 @@ func (s *Scope) Remove(id string) error {
 	_, err := s.meta.Change(id, func(e *Entry) error {
 		e.Hidden = true
 		if e.Record.State != transfer.Complete {
+			if e.Record.State != transfer.Declined && e.Record.State != transfer.Draft {
+				e.Record.PendingWithdrawal = true
+			}
 			e.Record.State = transfer.Declined
 			e.Approved = false
 			e.ImageOnly = false
@@ -90,6 +93,9 @@ func (s *Scope) recover() error {
 		for _, e := range entries {
 			if e.Record.State == transfer.Draft && !e.Ready || e.Hidden && (e.Active() || e.Record.State == transfer.Draft || e.Record.State == transfer.Offered) {
 				_, err = s.meta.Change(e.Record.Offer.ID, func(e *Entry) error {
+					if e.Record.State != transfer.Draft {
+						e.Record.PendingWithdrawal = true
+					}
 					e.Record.State = transfer.Declined
 					e.Hidden = true
 					e.Approved, e.ImageOnly = false, false

@@ -103,7 +103,7 @@ func TestCapacityFailureAndDeclineRaceKeepProtocolUsable(t *testing.T) {
 		t.Fatal(err)
 	}
 	out = nextOutput(t, e)
-	if out.Frame.Kind != DeclineFrame {
+	if out.Frame.Kind != WithdrawFrame {
 		t.Fatal("in-flight declined chunk was not safely drained")
 	}
 	select {

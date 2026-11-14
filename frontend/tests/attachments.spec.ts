@@ -231,6 +231,7 @@ async function desktop(
         state.items = state.items.map((value) => ({
           ...value,
           state: 'declined',
+          warning: 'cancellation-pending',
         }));
         state.revision++;
         break;
@@ -296,6 +297,9 @@ test('pause is resumable while cancel permanently withdraws the exact transfer',
   await expect(
     page.getByRole('article', { name: 'Sent attachment' }),
   ).toContainText('declined');
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Cancelled on this device' }),
+  ).toBeVisible();
   await expect(
     page.getByRole('button', { name: 'Resume', exact: true }),
   ).toHaveCount(0);

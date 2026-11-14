@@ -63,6 +63,30 @@ func (r *memoryRepository) Get(id string) (Record, error) {
 	}
 	return v, nil
 }
+func (r *memoryRepository) Withdraw(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	v, ok := r.records[id]
+	if !ok || v.State == Complete {
+		return ErrUnavailable
+	}
+	v.PendingWithdrawal = v.State != Draft
+	v.State = Declined
+	r.records[id] = v
+	delete(r.data, id)
+	return nil
+}
+func (r *memoryRepository) AcknowledgeWithdrawal(id string, complete bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	v, ok := r.records[id]
+	if !ok || v.State != Declined || !v.PendingWithdrawal {
+		return ErrUnavailable
+	}
+	v.PendingWithdrawal, v.PeerCompleted = false, complete
+	r.records[id] = v
+	return nil
+}
 func (r *memoryRepository) QueueOutgoing(id string, allow bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

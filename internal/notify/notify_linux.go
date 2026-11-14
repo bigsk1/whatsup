@@ -16,14 +16,16 @@ const daemon = "org.freedesktop.Notifications"
 const daemonPath = dbus.ObjectPath("/org/freedesktop/Notifications")
 
 type linuxBackend struct {
-	mu       sync.Mutex
-	conn     *dbus.Conn
-	signals  chan *dbus.Signal
-	done     chan struct{}
-	activate func(string)
-	ids      map[uint32]string
-	order    []uint32
-	closed   bool
+	mu          sync.Mutex
+	conn        *dbus.Conn
+	signals     chan *dbus.Signal
+	done        chan struct{}
+	activate    func(string)
+	ids         map[uint32]string
+	order       []uint32
+	closed      bool
+	owner       string
+	lookupOwner func() (string, error)
 }
 
 func newBackend(activate func(string)) backend {
@@ -41,6 +43,13 @@ func (l *linuxBackend) start(ctx context.Context) error {
 		return ErrUnavailable
 	}
 	l.conn = conn
+	l.lookupOwner = func() (string, error) {
+		bounded, cancel := context.WithTimeout(ctx, CallTimeout)
+		defer cancel()
+		var owner string
+		err := conn.BusObject().CallWithContext(bounded, "org.freedesktop.DBus.GetNameOwner", 0, daemon).Store(&owner)
+		return owner, err
+	}
 	setup, cancel := context.WithTimeout(ctx, CallTimeout)
 	defer cancel()
 	stop := context.AfterFunc(setup, func() { _ = conn.Close() })
@@ -71,8 +80,12 @@ func (l *linuxBackend) send(ctx context.Context, notice Notice) error {
 	if l.conn == nil || ctx.Err() != nil {
 		return ErrUnavailable
 	}
+	owner, err := l.notificationOwner()
+	if err != nil {
+		return ErrUnavailable
+	}
 	var id uint32
-	if err := l.conn.Object(daemon, daemonPath).CallWithContext(ctx, daemon+".Notify", 0, notificationArgs(notice)...).Store(&id); err != nil || id == 0 {
+	if err := l.conn.Object(owner, daemonPath).CallWithContext(ctx, daemon+".Notify", 0, notificationArgs(notice)...).Store(&id); err != nil || id == 0 {
 		return ErrUnavailable
 	}
 	l.mu.Lock()
@@ -80,6 +93,7 @@ func (l *linuxBackend) send(ctx context.Context, notice Notice) error {
 	if l.closed {
 		return ErrUnavailable
 	}
+	l.setOwnerLocked(owner)
 	l.ids[id] = notice.ContactID
 	l.order = append(l.order, id)
 	if len(l.order) > 1024 {
@@ -88,15 +102,41 @@ func (l *linuxBackend) send(ctx context.Context, notice Notice) error {
 	}
 	return nil
 }
+
+func (l *linuxBackend) notificationOwner() (string, error) {
+	if l.lookupOwner == nil {
+		return "", ErrUnavailable
+	}
+	owner, err := l.lookupOwner()
+	if err != nil || !strings.HasPrefix(owner, ":") {
+		return "", ErrUnavailable
+	}
+	return owner, nil
+}
+
+func (l *linuxBackend) setOwnerLocked(owner string) {
+	if l.owner == owner {
+		return
+	}
+	l.owner = owner
+	l.ids = map[uint32]string{}
+	l.order = nil
+}
+
 func (l *linuxBackend) handle(signal *dbus.Signal) {
-	if signal == nil || signal.Path != daemonPath || len(signal.Body) != 2 {
+	if signal == nil || signal.Path != daemonPath || len(signal.Body) != 2 || signal.Name != daemon+".ActionInvoked" && signal.Name != daemon+".NotificationClosed" {
 		return
 	}
 	id, ok := signal.Body[0].(uint32)
 	if !ok {
 		return
 	}
+	owner, err := l.notificationOwner()
+	if err != nil || signal.Sender != owner {
+		return
+	}
 	l.mu.Lock()
+	l.setOwnerLocked(owner)
 	contactID := l.ids[id]
 	if l.closed {
 		l.mu.Unlock()

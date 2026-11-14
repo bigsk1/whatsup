@@ -547,7 +547,7 @@ func (s *Service) attachmentHistoryLocked(l attachmentLease, result *Attachments
 		if progress > record.Offer.Size || record.State == transfer.Complete {
 			progress = record.Offer.Size
 		}
-		view := AttachmentView{Summary: transfer.Summary{ID: record.Offer.ID, Name: record.Offer.Name, MediaType: record.Offer.MediaType, Size: record.Offer.Size, Direction: record.Direction, State: record.State, TransferredBytes: progress}}
+		view := AttachmentView{Summary: transfer.Summary{ID: record.Offer.ID, Name: record.Offer.Name, MediaType: record.Offer.MediaType, Size: record.Offer.Size, Direction: record.Direction, State: record.State, TransferredBytes: progress, Warning: transfer.WithdrawalWarning(record)}}
 		if record.State == transfer.Complete {
 			if mime, typeErr := l.scope.VerifiedMediaType(record.Offer.ID); typeErr == nil {
 				view.MediaType = mime

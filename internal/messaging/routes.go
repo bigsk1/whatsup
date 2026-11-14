@@ -19,15 +19,18 @@ var (
 	// Only a typed local refresh may retire a generation without consuming the
 	// automatic unchanged-plan restart budget. Peer frames cannot mint this.
 	errLocalRouteRefresh = fmt.Errorf("%w: explicit local refresh", errRoutesChanged)
+	// Only this result represents a peer asking to rebuild an unchanged plan.
+	// Local map failures and strategy changes follow their own normal retry path.
+	errPeerRouteReady = fmt.Errorf("%w: peer route ready", errRoutesChanged)
 )
 
 const overlappingRouteWindow = 25 * time.Second
 
 func routeFailure(err error) error {
-	if terminalPersistence(err) {
-		return err
+	if err == nil {
+		return ErrUnavailable
 	}
-	return errRoutesChanged
+	return err
 }
 
 func (m *Manager) routePlanChanged() (bool, error) {
@@ -284,6 +287,7 @@ drained:
 	done := make(chan struct{})
 	m.mu.Lock()
 	m.planKey = routePlanKey(routes)
+	m.preferredRoute = routes[0].association
 	m.routeCancel = cancel
 	m.routeDone = done
 	m.mu.Unlock()
@@ -437,8 +441,11 @@ func (m *Manager) visitOverlappingListeners(ctx context.Context, routes []approv
 		m.mu.Unlock()
 		if first.ReadyFor(routes[0].record.RelayServiceURL) && second.ReadyFor(routes[1].record.RelayServiceURL) {
 			equivalent, _, err := transport.OngoingListenerRelation(listenerOptions(routes[0], first), listenerOptions(routes[1], second))
-			if err != nil || equivalent {
-				return errRoutesChanged
+			if err != nil {
+				return err
+			}
+			if equivalent {
+				return errLocalRouteRefresh
 			}
 		}
 		timer := time.NewTimer(retryDelay(attempt))
@@ -465,11 +472,14 @@ func (m *Manager) listenRoute(ctx context.Context, route approvedRoute, alternat
 				}
 				other, fetchErr := m.relayProfile(ctx, alternative.record.RelayServiceURL)
 				if fetchErr != nil {
-					return errRoutesChanged
+					return fetchErr
 				}
 				equivalent, _, compareErr := transport.OngoingListenerRelation(listenerOptions(route, profile), listenerOptions(alternative, other))
-				if compareErr != nil || !equivalent {
-					return errRoutesChanged
+				if compareErr != nil {
+					return compareErr
+				}
+				if !equivalent {
+					return errLocalRouteRefresh
 				}
 			}
 			err = m.serveRoute(ctx, route, profile, alternatives...)

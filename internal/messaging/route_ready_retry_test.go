@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -34,6 +35,35 @@ func TestRouteReadyRetryHasOneImmediateAttemptAndBoundedSchedulePerPlan(t *testi
 	}
 	if delay, ok := retry.next(next); !ok || delay != 0 || retry.attempt != 1 {
 		t.Fatal("a genuinely changed approved plan inherited old-route backoff")
+	}
+}
+
+func TestPeerReadyRetryUsesCurrentApprovalInsteadOfRetiringGenerationKey(t *testing.T) {
+	m, _, _, _, _ := approvedMigrationManager(t)
+	old := [32]byte{207}
+	current, err := m.currentPlanKey()
+	if err != nil || current == old {
+		t.Fatal("missing current approved plan", err)
+	}
+	m.mu.Lock()
+	m.planKey = old
+	m.mu.Unlock()
+	retry := routeReadyRetry{plan: old, started: true, attempt: maxAutomaticRouteRestarts}
+	delay, allowed, err := m.peerRouteRetry(&retry)
+	if err != nil || !allowed || delay != 0 || retry.plan != current || retry.attempt != 1 {
+		t.Fatal("fresh approval inherited the exhausted retiring plan", err)
+	}
+}
+
+func TestLocalRouteErrorsCannotConsumePeerReadyBudget(t *testing.T) {
+	for _, err := range []error{ErrUnavailable, context.DeadlineExceeded, errors.New("synthetic transient map lookup"), storage.ErrStateFailed} {
+		got := routeFailure(err)
+		if errors.Is(got, errRoutesChanged) || errors.Is(got, errPeerRouteReady) || !errors.Is(got, err) {
+			t.Fatal("local route failure was relabeled as peer rebuild", got)
+		}
+	}
+	if !errors.Is(errPeerRouteReady, errRoutesChanged) || errors.Is(errLocalRouteRefresh, errPeerRouteReady) {
+		t.Fatal("local refresh obtained peer-only budget classification")
 	}
 }
 
@@ -206,6 +236,12 @@ func TestRepeatedRouteReadyUsesBoundedBackoffAndCanRecoverOrCancel(t *testing.T)
 			for {
 				s := m.Snapshot()
 				if s.State == "connected" && len(s.Messages) == 1 && s.Messages[0].ID == queuedID && s.Messages[0].Delivered {
+					m.mu.Lock()
+					progress := m.preferredAuthenticated
+					m.mu.Unlock()
+					if progress == 0 {
+						t.Fatal("preferred-route authentication did not record retry-budget progress")
+					}
 					break
 				}
 				if time.Now().After(limit) {

@@ -110,13 +110,18 @@ type Record struct {
 	NextChunk         uint32
 	AllowRelayedLarge bool
 	Hidden            bool
+	// PendingWithdrawal remains encrypted until the authenticated peer returns
+	// its terminal receipt. PeerCompleted records a completion that won a race
+	// with local cancellation; it never restores local file-read authority.
+	PendingWithdrawal bool
+	PeerCompleted     bool
 }
 
 func (Record) String() string   { return "[private WhatsUp attachment record]" }
 func (Record) GoString() string { return "[private WhatsUp attachment record]" }
 
 func validRecord(r Record) bool {
-	if r.Offer.Validate() != nil || !checkpoint(r.Offer, r.NextChunk) {
+	if r.Offer.Validate() != nil || !checkpoint(r.Offer, r.NextChunk) || (r.PendingWithdrawal || r.PeerCompleted) && r.State != Declined || r.PendingWithdrawal && r.PeerCompleted {
 		return false
 	}
 	if r.Direction == Incoming {
@@ -141,6 +146,8 @@ type Repository interface {
 	Finalize(context.Context, string) error
 	Cancel(id string) error
 	Decline(id string) error
+	Withdraw(id string) error
+	AcknowledgeWithdrawal(id string, peerCompleted bool) error
 	MarkDelivered(id string) error
 	Open(context.Context, string) (io.ReadSeekCloser, error)
 }
@@ -149,6 +156,18 @@ type Repository interface {
 // history withdraws unfinished attachments and revokes both forms of authority.
 type OutgoingRepository interface {
 	OpenOutgoing(context.Context, string) (io.ReadSeekCloser, error)
+}
+
+// WithdrawalWarning describes only the acknowledged terminal outcome. A local
+// cancellation never promises that a peer's completed copy has been erased.
+func WithdrawalWarning(record Record) string {
+	if record.PeerCompleted {
+		return "peer-completed"
+	}
+	if record.PendingWithdrawal {
+		return "cancellation-pending"
+	}
+	return ""
 }
 
 type Summary struct {

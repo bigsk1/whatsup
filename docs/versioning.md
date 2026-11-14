@@ -1,6 +1,6 @@
 # Versions and compatibility
 
-WhatsUp's current preview series uses versions such as **0.0.12**. A version
+WhatsUp's current preview series uses versions such as **0.0.13**. A version
 identifies an application revision; it does not certify security, completeness
 or release approval.
 

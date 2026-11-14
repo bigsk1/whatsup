@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestSecondLaunchBeforeReadyFocusesExistingWindowOnce(t *testing.T) {
+func TestSecondLaunchBeforeNativeWindowFocusesExistingWindowOnce(t *testing.T) {
 	shown := 0
 	c := New(Actions{Show: func() { shown++ }})
 	c.Focus()
@@ -13,13 +13,49 @@ func TestSecondLaunchBeforeReadyFocusesExistingWindowOnce(t *testing.T) {
 	if shown != 0 {
 		t.Fatal("focused before native window existed")
 	}
-	c.Ready()
+	c.NativeReady()
 	if shown != 1 {
 		t.Fatal("lost or duplicated startup focus request")
 	}
 	c.Focus()
 	if shown != 2 {
 		t.Fatal("existing window was not focused")
+	}
+}
+
+func TestHiddenStartupCanBeRevealedBeforeRendererReady(t *testing.T) {
+	shown := 0
+	c := New(Actions{StartHidden: true, Show: func() { shown++ }, TrayAvailable: func() bool { return true }})
+	c.NativeReady()
+	c.Focus()
+	if shown != 1 {
+		t.Fatal("renderer readiness stranded second-launch/tray focus")
+	}
+	c.StartupFallback()
+	if shown != 1 {
+		t.Fatal("fallback repeated an explicit reveal")
+	}
+}
+
+func TestHiddenStartupFallbackRevealsMissingRendererOrTray(t *testing.T) {
+	for _, ready := range []bool{false, true} {
+		for _, tray := range []bool{false, true} {
+			shown := 0
+			c := New(Actions{StartHidden: true, Show: func() { shown++ }, TrayAvailable: func() bool { return tray }})
+			c.NativeReady()
+			if ready {
+				c.Ready()
+			}
+			c.StartupFallback()
+			c.StartupFallback()
+			want := 1
+			if ready && tray {
+				want = 0
+			}
+			if shown != want {
+				t.Fatalf("ready=%v tray=%v shown=%d", ready, tray, shown)
+			}
+		}
 	}
 }
 
@@ -32,6 +68,7 @@ func TestAutostartRemainsHiddenOnlyWithReachableTrayAndNoFocusRequest(t *testing
 				if focus {
 					c.Focus()
 				}
+				c.NativeReady()
 				c.Ready()
 				c.Ready()
 				want := 0
@@ -54,6 +91,8 @@ func TestAutostartCannotShowAfterQuit(t *testing.T) {
 	c := New(Actions{StartHidden: true, Show: func() { t.Fatal("showed after quit") }, Quit: func() {}, TrayAvailable: func() bool { return false }})
 	c.Focus()
 	c.Quit()
+	c.NativeReady()
+	c.StartupFallback()
 	c.Ready()
 	c.Focus()
 }

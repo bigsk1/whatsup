@@ -108,7 +108,9 @@ type managerState struct {
 	planKey       [32]byte
 	// Used only by the network worker. A successful authentication resets the
 	// transport retry schedule; approved relay maps are reused only while valid.
-	authenticated uint64
+	authenticated          uint64
+	preferredRoute         [32]byte
+	preferredAuthenticated uint64
 }
 
 func (Manager) String() string               { return "[private WhatsUp messaging coordinator]" }
@@ -449,6 +451,17 @@ func (r *routeReadyRetry) next(plan [32]byte) (time.Duration, bool) {
 	return delay, true
 }
 
+func (m *Manager) peerRouteRetry(retry *routeReadyRetry) (time.Duration, bool, error) {
+	// Read durable approval now: m.planKey belongs to the retiring generation
+	// and may still describe the route that the peer just helped replace.
+	plan, err := m.currentPlanKey()
+	if err != nil {
+		return 0, false, routeFailure(err)
+	}
+	delay, allowed := retry.next(plan)
+	return delay, allowed, nil
+}
+
 func (m *Manager) waitRetry(delay time.Duration) bool {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
@@ -498,36 +511,51 @@ func (m *Manager) run() {
 	}()
 	var routeReady routeReadyRetry
 	for attempt := 0; m.ctx.Err() == nil; attempt++ {
+		m.mu.Lock()
 		previousAuthentication := m.authenticated
+		previousPreferred := m.preferredAuthenticated
+		m.mu.Unlock()
 		err := m.runRouteCycle()
 		if m.ctx.Err() != nil {
 			return
 		}
-		if m.authenticated != previousAuthentication {
+		m.mu.Lock()
+		authenticated, preferred := m.authenticated, m.preferredAuthenticated
+		m.mu.Unlock()
+		if authenticated != previousAuthentication {
 			attempt = 0
 		}
+		// A stream on the currently preferred approved route is actual route
+		// progress. Re-authenticating an old fallback solely to repeat its ready
+		// hint is not progress and cannot reset the peer-churn budget.
+		if preferred != previousPreferred {
+			routeReady = routeReadyRetry{}
+		}
 		if errors.Is(err, errRoutesChanged) {
-			if !errors.Is(err, errLocalRouteRefresh) {
-				m.mu.Lock()
-				plan := m.planKey
-				m.mu.Unlock()
-				delay, retry := routeReady.next(plan)
-				if !retry {
-					m.changed("route-unavailable")
-					return
-				}
-				if delay > 0 {
-					m.changed("connecting")
-					if !m.waitRetry(delay) {
+			if errors.Is(err, errPeerRouteReady) {
+				delay, retry, planErr := m.peerRouteRetry(&routeReady)
+				if planErr != nil {
+					err = routeFailure(planErr)
+				} else {
+					if !retry {
+						m.changed("route-unavailable")
 						return
+					}
+					if delay > 0 {
+						m.changed("connecting")
+						if !m.waitRetry(delay) {
+							return
+						}
 					}
 				}
 			}
 			// A planned generation replacement is not a failed connection. The
 			// loop post must not advance ordinary transport backoff. Repeated
 			// peer hints have their own bounded schedule above.
-			attempt--
-			continue
+			if errors.Is(err, errRoutesChanged) {
+				attempt--
+				continue
+			}
 		}
 		if errors.Is(err, errPeerRemoved) {
 			m.changed("peer-removed")

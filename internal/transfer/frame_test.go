@@ -18,6 +18,7 @@ func TestFrameRoundTripAndStrictBoundaries(t *testing.T) {
 		{Kind: ChunkFrame, ID: o.ID, SHA256: o.SHA256, Index: 0, Data: bytes.Repeat([]byte{42}, ChunkBytes)},
 		control(FinishFrame, o, 0, 0), control(CompleteFrame, o, 0, 0),
 		control(PauseFrame, o, 0, ReasonPaused), control(DeclineFrame, o, 0, ReasonDeclined), control(FailureFrame, o, 0, ReasonCapacity),
+		control(WithdrawFrame, o, 0, 0), control(WithdrawAckFrame, o, 0, ReasonDeclined), control(WithdrawAckFrame, o, 0, ReasonCompleted),
 	}
 	for _, f := range frames {
 		if f.Kind == AcceptFrame || f.Kind == CheckpointFrame || f.Kind == ChunkFrame || f.Kind == FinishFrame {

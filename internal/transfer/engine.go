@@ -12,6 +12,9 @@ type Options struct {
 	Changed func()
 	Failed  func()
 	MaySend func(Record) bool
+	// Now is a Go-only clock seam for offer-rate-limit tests. Production leaves
+	// it nil and always uses the real monotonic clock.
+	Now func() time.Time
 }
 
 type Outbound struct {
@@ -90,6 +93,8 @@ type Engine struct {
 	offerTokens       int
 	offerAt           time.Time
 	progressAt        time.Time
+	withdrawals       bool
+	withdrawSent      map[string]bool
 }
 
 func New(repo Repository, options Options) (*Engine, error) {
@@ -98,6 +103,7 @@ func New(repo Repository, options Options) (*Engine, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{repo: repo, options: options, ctx: ctx, cancel: cancel, done: make(chan struct{}), events: make(chan event, 32), output: make(chan Outbound, 1), failures: make(chan Failure, 2), jobs: map[string]*sendJob{}, peerOffers: map[string]Offer{}, peerPaused: map[string]bool{}, finalized: make(chan finalResult, 1), offerTokens: 32, offerAt: time.Now(), readCancels: map[string]context.CancelFunc{}, blockedReads: map[string]int{}}
+	e.offerAt = e.now()
 	go e.run()
 	return e, nil
 }
@@ -122,6 +128,12 @@ func (e *Engine) request(ev event) error {
 	}
 }
 func (e *Engine) Begin(ctx context.Context, guard func() error) (uint64, error) {
+	return e.BeginWithWithdrawals(ctx, guard, true)
+}
+
+// BeginWithWithdrawals accepts only the capability obtained from the exact TLS
+// session. Never infer new wire grammar from an application version or a file.
+func (e *Engine) BeginWithWithdrawals(ctx context.Context, guard func() error, withdrawals bool) (uint64, error) {
 	if ctx == nil || ctx.Err() != nil || guard == nil {
 		return 0, ErrUnavailable
 	}
@@ -131,6 +143,7 @@ func (e *Engine) Begin(ctx context.Context, guard func() error) (uint64, error) 
 		e.epoch++
 		epoch = e.epoch
 		e.session, e.guard = ctx, guard
+		e.withdrawals = withdrawals
 		return e.reload()
 	}})
 	return epoch, err
@@ -178,6 +191,12 @@ func (e *Engine) Close() {
 }
 func (e *Engine) live() bool {
 	return e.session != nil && e.session.Err() == nil && e.guard != nil && e.guard() == nil
+}
+func (e *Engine) now() time.Time {
+	if e.options.Now != nil {
+		return e.options.Now()
+	}
+	return time.Now()
 }
 func (e *Engine) changed(progress bool) {
 	if progress && time.Since(e.progressAt) < 250*time.Millisecond {
@@ -251,6 +270,7 @@ func (e *Engine) end() {
 	e.credit = [16]byte{}
 	e.peerOffers = map[string]Offer{}
 	e.peerPaused = map[string]bool{}
+	e.withdrawSent = map[string]bool{}
 	for {
 		select {
 		case <-e.output:
@@ -272,7 +292,7 @@ func (e *Engine) reload() error {
 	if err != nil {
 		return err
 	}
-	if len(records) > MaxOffers+MaxActive+4 {
+	if len(records) > 2*(MaxOffers+MaxActive+4) {
 		return ErrUnavailable
 	}
 	seen := map[string]bool{}
@@ -313,6 +333,14 @@ func (e *Engine) reload() error {
 	e.order = order
 	if !e.live() {
 		return nil
+	}
+	for _, r := range records {
+		if r.PendingWithdrawal && e.withdrawals && !e.withdrawSent[r.Offer.ID] {
+			if err := e.emit(control(WithdrawFrame, r.Offer, 0, 0)); err != nil {
+				return err
+			}
+			e.withdrawSent[r.Offer.ID] = true
+		}
 	}
 	for _, id := range e.order {
 		job := e.jobs[id]
@@ -482,7 +510,7 @@ func (e *Engine) nextChunk() (Frame, bool, error) {
 	return Frame{}, false, nil
 }
 func (e *Engine) written(frame Frame) error {
-	if frame.Kind == CompleteFrame || frame.Kind == DeclineFrame {
+	if frame.Kind == CompleteFrame || frame.Kind == DeclineFrame || frame.Kind == WithdrawFrame || frame.Kind == WithdrawAckFrame {
 		if offer, ok := e.peerOffers[frame.ID]; ok && offer.SHA256 == frame.SHA256 && e.activeIn != frame.ID {
 			delete(e.peerOffers, frame.ID)
 			delete(e.peerPaused, frame.ID)

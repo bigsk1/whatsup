@@ -57,23 +57,35 @@ func (e *Engine) Withdraw(id string) error {
 		if err != nil || record.State == Complete {
 			return ErrUnavailable
 		}
+		if record.State == Declined {
+			return nil
+		}
 		if e.finalDone != nil && e.activeIn == id {
 			e.finalCancel()
 			<-e.finalDone
 			e.finalCancel, e.finalDone = nil, nil
 		}
-		if err := e.repo.Decline(id); err != nil {
+		// Finalize can have committed before observing cancellation. Re-read
+		// after joining it; a completed peer copy cannot be withdrawn.
+		record, err = e.repo.Get(id)
+		if err != nil || record.State == Complete {
+			return ErrUnavailable
+		}
+		if err := e.repo.Withdraw(id); err != nil {
 			return err
 		}
 		e.drop(id)
 		delete(e.jobs, id)
 		delete(e.peerPaused, id)
-		if record.State != Draft {
+		if !e.withdrawals && record.Direction == Incoming && e.peerOffers[id] == record.Offer {
 			if err := e.emit(control(DeclineFrame, record.Offer, 0, ReasonDeclined)); err != nil {
 				return err
 			}
 		}
 		e.changed(false)
+		if err := e.reload(); err != nil {
+			return err
+		}
 		return e.promoteReceiver()
 	}})
 }
@@ -89,27 +101,34 @@ func (e *Engine) ClearHistory(clearHistory func() error) error {
 	unblock := e.blockSources("")
 	defer unblock()
 	return e.request(event{kind: actionEvent, action: func() error {
-		records, err := e.repo.List()
-		if err != nil {
-			return err
-		}
 		session, guard := e.session, e.guard
+		peerOffers, peerPaused := e.peerOffers, e.peerPaused
 		e.end() // Cancels/joins final verification and closes every source first.
-		err = clearHistory()
+		err := clearHistory()
 		e.session, e.guard = session, guard
 		if err != nil {
-			_ = e.reload()
-			return err
-		}
-		for _, record := range records {
-			if record.State == Draft || record.State == Complete || record.State == Declined {
-				continue
-			}
-			if err := e.emit(control(DeclineFrame, record.Offer, 0, ReasonDeclined)); err != nil {
+			// The history transaction failed: preserve receiver authority from
+			// this live session and issue fresh credit from the durable checkpoint.
+			// Frames still carrying the old credit are harmlessly ignored.
+			e.peerOffers, e.peerPaused = peerOffers, peerPaused
+			if restoreErr := e.reload(); restoreErr != nil {
+				e.protocolFailure(restoreErr)
 				return err
 			}
+			for _, offer := range peerOffers {
+				if record, readErr := e.repo.Get(offer.ID); readErr == nil && record.State == Complete {
+					if restoreErr := e.emit(control(CompleteFrame, offer, 0, 0)); restoreErr != nil {
+						e.protocolFailure(restoreErr)
+						return err
+					}
+				}
+			}
+			if restoreErr := e.promoteReceiver(); restoreErr != nil {
+				e.protocolFailure(restoreErr)
+			}
+			return err
 		}
 		e.changed(false)
-		return nil
+		return e.reload()
 	}})
 }

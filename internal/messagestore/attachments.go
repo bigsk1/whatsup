@@ -106,6 +106,9 @@ func (d *DB) verifyAttachments(ctx context.Context, q queryer, contact string, m
 			active++
 			cache.attachments[id] = true
 		}
+		if e.Record.PendingWithdrawal {
+			cache.attachments[id] = true
+		}
 		if e.Record.State == "draft" {
 			drafts++
 			cache.attachments[id] = true
@@ -149,15 +152,37 @@ func (a *AttachmentMetadata) Get(id string) (result attachmentstore.Entry, err e
 	return
 }
 func (a *AttachmentMetadata) Active() (result []attachmentstore.Entry, err error) {
+	return a.runtimeEntries(false)
+}
+func (a *AttachmentMetadata) PendingWithdrawals() (result []attachmentstore.Entry, err error) {
+	return a.runtimeEntries(true)
+}
+func (a *AttachmentMetadata) runtimeEntries(withdrawals bool) (result []attachmentstore.Entry, err error) {
 	err = a.run(func(ctx context.Context, tx *sql.Tx, _ *metadata, _ string) error {
 		for id := range a.scope.db.contacts[a.scope.id].attachments {
 			entry, e := a.load(ctx, tx, id)
 			if e != nil {
 				return e
 			}
-			result = append(result, entry)
+			if withdrawals && entry.Record.PendingWithdrawal || !withdrawals && !entry.Record.PendingWithdrawal {
+				result = append(result, entry)
+			}
 		}
 		sort.Slice(result, func(i, j int) bool { return result[i].Sequence < result[j].Sequence })
+		// Pending terminal receipts must not grow one session's control queue
+		// without bound. Refill this batch as authenticated receipts retire it.
+		pending := 0
+		kept := result[:0]
+		for _, entry := range result {
+			if entry.Record.PendingWithdrawal {
+				if pending >= transfer.MaxOffers {
+					continue
+				}
+				pending++
+			}
+			kept = append(kept, entry)
+		}
+		result = kept
 		return nil
 	})
 	return
@@ -253,7 +278,7 @@ func (a *AttachmentMetadata) checkLimits(ctx context.Context, tx *sql.Tx, next a
 func (a *AttachmentMetadata) cache(entry attachmentstore.Entry) {
 	d := a.scope.db
 	id := entry.Record.Offer.ID
-	live := entry.Active() || entry.Record.State == "draft" || entry.Record.State == transfer.Offered
+	live := entry.Active() || entry.Record.State == "draft" || entry.Record.State == transfer.Offered || entry.Record.PendingWithdrawal
 	d.afterCommit = append(d.afterCommit, func() {
 		cache := d.contacts[a.scope.id]
 		if cache.attachments == nil {
@@ -421,6 +446,9 @@ func (s *Scope) hideAttachments(ctx context.Context, tx *sql.Tx, id string) erro
 			entry.Hidden = true
 			entry.Revision++
 			if entry.Record.State != transfer.Complete {
+				if entry.Record.State != transfer.Declined && entry.Record.State != transfer.Draft {
+					entry.Record.PendingWithdrawal = true
+				}
 				entry.Record.State = transfer.Declined
 				entry.Approved = false
 				entry.ImageOnly = false

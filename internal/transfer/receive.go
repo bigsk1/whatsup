@@ -30,6 +30,9 @@ func (e *Engine) receive(frame Frame) error {
 	if frame.Kind == OfferFrame {
 		return e.receiveOffer(frame.Offer)
 	}
+	if frame.Kind == WithdrawFrame || frame.Kind == WithdrawAckFrame {
+		return e.receiveWithdrawal(frame)
+	}
 	record, err := e.repo.Get(frame.ID)
 	// An offer and its immediate withdrawal can cross queued actor output. An
 	// unknown terminal notice grants no authority and creates no record.
@@ -43,7 +46,7 @@ func (e *Engine) receive(frame Frame) error {
 	// already in flight. Their exact authenticated offer ID/hash is still pinned.
 	if record.State == Declined && frame.Kind != DeclineFrame {
 		if frame.Kind == AcceptFrame || frame.Kind == ChunkFrame || frame.Kind == FinishFrame {
-			return e.emit(control(DeclineFrame, record.Offer, 0, ReasonDeclined))
+			return e.terminalNotice(record)
 		}
 		return nil
 	}
@@ -199,13 +202,8 @@ func (e *Engine) receive(frame Frame) error {
 		if record.State == Complete || record.State == Declined {
 			return nil
 		}
-		if record.Direction == Incoming {
-			if e.peerOffers[frame.ID] != record.Offer {
-				return ErrProtocol
-			}
-		} else if job := e.jobs[frame.ID]; job == nil || !job.offered {
-			return ErrProtocol
-		}
+		// Legacy terminal responses are safe for an exact durable offer after
+		// reconnect too. They revoke work and confer no content authority.
 		if e.finalDone != nil && e.activeIn == frame.ID {
 			e.finalCancel()
 			<-e.finalDone
@@ -224,8 +222,84 @@ func (e *Engine) receive(frame Frame) error {
 	return nil
 }
 
+// terminalNotice uses old decline semantics only for an incoming offer. Older
+// receivers reject sender withdrawals, so local cancellation remains pending
+// until a capable peer reconnects, without disrupting its text conversation.
+func (e *Engine) terminalNotice(record Record) error {
+	if e.withdrawals && record.PendingWithdrawal {
+		return e.emit(control(WithdrawFrame, record.Offer, 0, 0))
+	}
+	if record.Direction == Incoming {
+		return e.emit(control(DeclineFrame, record.Offer, 0, ReasonDeclined))
+	}
+	return nil
+}
+
+func (e *Engine) receiveWithdrawal(frame Frame) error {
+	if !e.withdrawals {
+		return ErrProtocol
+	}
+	record, err := e.repo.Get(frame.ID)
+	if errors.Is(err, ErrUnavailable) {
+		// Cancellation grants no file authority. An unknown ID is already
+		// absent, so acknowledge it idempotently without creating a record.
+		if frame.Kind == WithdrawFrame {
+			return e.emit(Frame{Kind: WithdrawAckFrame, ID: frame.ID, SHA256: frame.SHA256, Reason: ReasonDeclined})
+		}
+		return nil
+	}
+	if err != nil || !validRecord(record) || record.Offer.SHA256 != frame.SHA256 {
+		return ErrProtocol
+	}
+	if frame.Kind == WithdrawAckFrame {
+		if !record.PendingWithdrawal {
+			return nil
+		}
+		if err := e.repo.AcknowledgeWithdrawal(frame.ID, frame.Reason == ReasonCompleted); err != nil {
+			return err
+		}
+		delete(e.withdrawSent, frame.ID)
+		e.changed(false)
+		return e.reload()
+	}
+	if e.finalDone != nil && e.activeIn == frame.ID {
+		e.finalCancel()
+		<-e.finalDone
+		e.finalCancel, e.finalDone = nil, nil
+		// A completed verification may have committed while the cancellation
+		// was queued. Its persisted result is authoritative.
+		record, err = e.repo.Get(frame.ID)
+		if err != nil {
+			return err
+		}
+	}
+	reason := byte(ReasonDeclined)
+	if record.State == Complete {
+		reason = ReasonCompleted
+	} else if record.State != Declined {
+		if err := e.repo.Decline(frame.ID); err != nil {
+			return err
+		}
+	}
+	if record.PendingWithdrawal {
+		// Simultaneous exact-ID withdrawals also acknowledge each other's
+		// terminal intent. Dropping a queued duplicate must not strand its bit.
+		if err := e.repo.AcknowledgeWithdrawal(frame.ID, false); err != nil {
+			return err
+		}
+		delete(e.withdrawSent, frame.ID)
+	}
+	e.drop(frame.ID)
+	delete(e.jobs, frame.ID)
+	e.changed(false)
+	if err := e.emit(control(WithdrawAckFrame, record.Offer, 0, reason)); err != nil {
+		return err
+	}
+	return e.promoteReceiver()
+}
+
 func (e *Engine) receiveOffer(offer Offer) error {
-	now := time.Now()
+	now := e.now()
 	if now.Sub(e.offerAt) >= 30*time.Second {
 		e.offerTokens = 32
 		e.offerAt = now
@@ -291,7 +365,7 @@ func (e *Engine) receiveOffer(offer Offer) error {
 	case Complete:
 		return e.emit(control(CompleteFrame, offer, 0, 0))
 	case Declined:
-		return e.emit(control(DeclineFrame, offer, 0, ReasonDeclined))
+		return e.terminalNotice(record)
 	default:
 		return ErrProtocol
 	}

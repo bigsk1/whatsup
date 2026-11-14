@@ -90,7 +90,7 @@ func (r *Registry) Transfers(contactID string) ([]transfer.Summary, error) {
 		if progress > record.Offer.Size {
 			progress = record.Offer.Size
 		}
-		warning := ""
+		warning := transfer.WithdrawalWarning(record)
 		m.mu.Lock()
 		direct := m.pathLocked(time.Now()) == transport.PathDirect
 		m.mu.Unlock()
@@ -141,7 +141,7 @@ func (r *Registry) DeclineTransfer(contactID, id string) error {
 	if e != nil {
 		err = e.Decline(id)
 	} else {
-		err = scope.Decline(id)
+		err = scope.Withdraw(id)
 	}
 	if err == nil {
 		r.MetadataChanged(contactID)
@@ -186,7 +186,7 @@ func (r *Registry) WithdrawTransfer(contactID, id string) error {
 	if e != nil {
 		err = e.Withdraw(id)
 	} else {
-		err = scope.Decline(id)
+		err = scope.Withdraw(id)
 	}
 	if err == nil {
 		r.MetadataChanged(contactID)

@@ -17,17 +17,20 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/services/notifications"
+	"golang.org/x/sys/windows/registry"
 )
 
 func TestWindowsActivationAcceptsOnlyCanonicalContactForDefaultMessageAction(t *testing.T) {
 	contactID := syntheticNotice().ContactID
+	receipts, _ := newNoticeReceipts(nil, func([]byte) error { return nil }, nil)
+	proof, err := receipts.issue(syntheticNotice())
+	if err != nil {
+		t.Fatal(err)
+	}
 	valid := notifications.NotificationResult{Response: notifications.NotificationResponse{
 		ID: syntheticNotice().ID, ActionIdentifier: notifications.DefaultActionIdentifier,
-		UserInfo: map[string]interface{}{"contactID": contactID},
+		UserInfo: map[string]interface{}{"contactID": contactID, "proof": proof},
 	}}
-	if windowsActivation(valid) != contactID {
-		t.Fatal("canonical default activation was lost")
-	}
 	for _, change := range []func(*notifications.NotificationResult){
 		func(value *notifications.NotificationResult) { value.Error = errors.New("synthetic error") },
 		func(value *notifications.NotificationResult) { value.Response.ActionIdentifier = "untrusted-action" },
@@ -40,14 +43,86 @@ func TestWindowsActivationAcceptsOnlyCanonicalContactForDefaultMessageAction(t *
 			value.Response.UserInfo = map[string]interface{}{"contactID": "AAAAAAAAAAAAAAAAAAAAAA"}
 		},
 		func(value *notifications.NotificationResult) {
-			value.Response.UserInfo = map[string]interface{}{"contactID": contactID, "body": "synthetic content"}
+			value.Response.UserInfo = map[string]interface{}{"contactID": contactID, "proof": proof, "body": "synthetic content"}
+		},
+		func(value *notifications.NotificationResult) {
+			value.Response.UserInfo = map[string]interface{}{"contactID": contactID, "proof": strings.Repeat("A", 43)}
+		},
+		func(value *notifications.NotificationResult) {
+			value.Response.UserInfo = map[string]interface{}{"contactID": contactID}
 		},
 	} {
 		value := valid
 		change(&value)
-		if windowsActivation(value) != "" {
+		if windowsActivation(value, receipts) != "" {
 			t.Fatal("malformed or non-default activation requested a conversation")
 		}
+	}
+	if windowsActivation(valid, receipts) != contactID {
+		t.Fatal("issued canonical default activation was lost")
+	}
+	if windowsActivation(valid, receipts) != "" {
+		t.Fatal("issued activation replayed")
+	}
+}
+
+func TestWindowsReceiptsSurviveRestartAndFailClosedOnDPAPIDamage(t *testing.T) {
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		t.Fatal(err)
+	}
+	appName := "WhatsUp-Receipt-QA-" + hex.EncodeToString(token[:])
+	path := `Software\Classes\AppUserModelId\` + appName
+	t.Cleanup(func() { _ = registry.DeleteKey(registry.CURRENT_USER, path) })
+	first, err := openWindowsReceipts(appName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := first.issue(syntheticNotice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openWindowsReceipts(appName)
+	if err != nil || !reopened.consume(syntheticNotice().ID, syntheticNotice().ContactID, proof) {
+		t.Fatal("cold launch lost issued proof")
+	}
+	third, err := openWindowsReceipts(appName)
+	if err != nil || third.consume(syntheticNotice().ID, syntheticNotice().ContactID, proof) {
+		t.Fatal("consumption not durable")
+	}
+	key, err := registry.OpenKey(registry.CURRENT_USER, path, registry.SET_VALUE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer key.Close()
+	for _, damaged := range [][]byte{{1, 2, 3}, make([]byte, maxProtectedNoticeReceipts+1)} {
+		if key.SetBinaryValue(noticeReceiptRegistryValue, damaged) != nil {
+			t.Fatal("fixture write failed")
+		}
+		if _, err := openWindowsReceipts(appName); err == nil {
+			t.Fatal("damaged/oversized DPAPI registry accepted")
+		}
+	}
+	plain := encodeNoticeReceipts(nil)
+	ciphertext, err := receiptDPAPI(plain, appName, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := receiptDPAPI(ciphertext, appName+"-other", false); err == nil {
+		t.Fatal("app binding lost")
+	}
+	if key.SetBinaryValue(noticeReceiptRegistryValue, ciphertext) != nil {
+		t.Fatal("fixture write failed")
+	}
+	if _, err := openWindowsReceipts(appName); err != nil {
+		t.Fatal("valid empty registry ledger rejected")
+	}
+	if key.DeleteValue(noticeReceiptRegistryValue) != nil {
+		t.Fatal("fixture removal failed")
+	}
+	lost, err := openWindowsReceipts(appName)
+	if err != nil || lost.consume(syntheticNotice().ID, syntheticNotice().ContactID, proof) {
+		t.Fatal("lost ledger invented proof for old notice")
 	}
 }
 

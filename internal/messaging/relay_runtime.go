@@ -306,7 +306,7 @@ func (x *relayExchange) receive(f controlFrame) error {
 		for _, candidate := range plan.Candidates {
 			if candidate.Epoch() == epoch && candidate.Association() == association && candidate.RequestID() == requestID && candidate.Validate() == nil {
 				if epoch > x.control.route.epoch {
-					return errRoutesChanged
+					return errPeerRouteReady
 				}
 				return nil
 			}

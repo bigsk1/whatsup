@@ -96,6 +96,9 @@ func (e Entry) Validate() error {
 	if e.Record.Direction != transfer.Incoming && e.Record.Direction != transfer.Outgoing {
 		return ErrIntegrity
 	}
+	if (e.Record.PendingWithdrawal || e.Record.PeerCompleted) && e.Record.State != transfer.Declined || e.Record.PendingWithdrawal && e.Record.PeerCompleted {
+		return ErrIntegrity
+	}
 	switch e.Record.State {
 	case "draft", transfer.Offered, transfer.Queued, transfer.Accepted, transfer.Paused, transfer.Complete, transfer.Declined:
 	default:
@@ -197,6 +200,7 @@ type Metadata interface {
 	Epoch() string
 	Get(string) (Entry, error)
 	Active() ([]Entry, error)
+	PendingWithdrawals() ([]Entry, error)
 	Page(before uint64, limit int) (entries []Entry, next uint64, more bool, err error)
 	Create(Entry) error
 	Change(string, func(*Entry) error) (Entry, error)

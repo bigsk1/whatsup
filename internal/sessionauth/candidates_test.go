@@ -49,7 +49,7 @@ func TestCandidateListenerProvesOnlyExactNegotiatedAssociation(t *testing.T) {
 			if s == right.session {
 				local, peer = b.Local.PublicKey(), b.Peer
 			}
-			if !s.Matches(local, peer, a.ContactID, b.Association) || s.Capabilities() != (Capabilities{WireVersion: 4, Attachments: true, Control: true}) {
+			if !s.Matches(local, peer, a.ContactID, b.Association) || s.Capabilities() != (Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true}) {
 				t.Fatal("candidate proof or capabilities did not follow exact TLS negotiation")
 			}
 			other := associations[1]

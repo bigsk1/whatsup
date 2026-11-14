@@ -262,6 +262,13 @@
                 >Cancel transfer</button
               >
             {/if}
+            {#if item.warning === 'cancellation-pending'}<p role="status">
+                Cancelled on this device. Waiting for the other device to
+                confirm; it may need an update.
+              </p>{:else if item.warning === 'peer-completed'}<p role="status">
+                The other device completed this file before cancellation and may
+                keep its copy.
+              </p>{/if}
             {#if item.warning === 'relay-approval'}<p role="status">
                 This large transfer may use relay bandwidth.
               </p>

@@ -54,6 +54,21 @@ function deferred<T>() {
   return { promise, resolve };
 }
 describe('attachment state boundary', () => {
+  it('accepts only the fixed cancellation outcomes returned by Go', () => {
+    for (const warning of ['cancellation-pending', 'peer-completed']) {
+      const value = {
+        ...snapshot(),
+        items: [{ ...item, state: 'declined', warning }],
+      };
+      expect(validateAttachments(value, id).items[0].warning).toBe(warning);
+    }
+    expect(() =>
+      validateAttachments(
+        { ...snapshot(), items: [{ ...item, warning: 'untrusted text' }] },
+        id,
+      ),
+    ).toThrow();
+  });
   it('keeps an older-page image open across current-page reloads until explicit invalidation', async () => {
     const api = mock();
     const older = { ...item, id: 'E'.repeat(21) + 'A', mediaType: 'image/png' };

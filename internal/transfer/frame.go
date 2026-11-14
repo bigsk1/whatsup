@@ -18,6 +18,8 @@ const (
 	PauseFrame
 	DeclineFrame
 	FailureFrame
+	WithdrawFrame
+	WithdrawAckFrame
 )
 const (
 	ProtocolVersion byte = 1
@@ -31,6 +33,7 @@ const (
 	ReasonIntegrity
 	ReasonUnavailable
 	ReasonRelayApproval
+	ReasonCompleted
 )
 
 type Frame struct {
@@ -58,7 +61,7 @@ func (f Frame) Validate() error {
 	}
 	if f.Kind != OfferFrame && f.Offer != (Offer{}) || f.Kind != ChunkFrame && (f.Index != 0 || len(f.Data) != 0) ||
 		f.Kind != AcceptFrame && f.Kind != CheckpointFrame && f.NextChunk != 0 ||
-		f.Kind != PauseFrame && f.Kind != DeclineFrame && f.Kind != FailureFrame && f.Reason != 0 {
+		f.Kind != PauseFrame && f.Kind != DeclineFrame && f.Kind != FailureFrame && f.Kind != WithdrawAckFrame && f.Reason != 0 {
 		return ErrProtocol
 	}
 	switch f.Kind {
@@ -75,6 +78,11 @@ func (f Frame) Validate() error {
 			return ErrProtocol
 		}
 	case FinishFrame, CompleteFrame:
+	case WithdrawFrame:
+	case WithdrawAckFrame:
+		if f.Reason != ReasonDeclined && f.Reason != ReasonCompleted {
+			return ErrProtocol
+		}
 	case PauseFrame:
 		if f.Reason != ReasonPaused && f.Reason != ReasonUnavailable && f.Reason != ReasonRelayApproval {
 			return ErrProtocol
@@ -107,7 +115,7 @@ func EncodeFrame(f Frame) ([]byte, error) {
 		length += 24 + len(f.Data)
 	case FinishFrame:
 		length += 16
-	case PauseFrame, DeclineFrame, FailureFrame:
+	case PauseFrame, DeclineFrame, FailureFrame, WithdrawAckFrame:
 		length++
 	}
 	encoded := make([]byte, length)
@@ -133,7 +141,7 @@ func EncodeFrame(f Frame) ([]byte, error) {
 		binary.BigEndian.PutUint32(data[:4], f.Index)
 		binary.BigEndian.PutUint32(data[4:8], uint32(len(f.Data)))
 		copy(data[8:], f.Data)
-	case PauseFrame, DeclineFrame, FailureFrame:
+	case PauseFrame, DeclineFrame, FailureFrame, WithdrawAckFrame:
 		data[0] = f.Reason
 	}
 	return encoded, nil
@@ -173,11 +181,11 @@ func DecodeFrame(encoded []byte) (Frame, error) {
 			return Frame{}, ErrProtocol
 		}
 		f.Index, f.Data = binary.BigEndian.Uint32(data[:4]), append([]byte(nil), data[8:]...)
-	case FinishFrame, CompleteFrame:
+	case FinishFrame, CompleteFrame, WithdrawFrame:
 		if len(data) != 0 {
 			return Frame{}, ErrProtocol
 		}
-	case PauseFrame, DeclineFrame, FailureFrame:
+	case PauseFrame, DeclineFrame, FailureFrame, WithdrawAckFrame:
 		if len(data) != 1 {
 			return Frame{}, ErrProtocol
 		}

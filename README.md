@@ -1,7 +1,7 @@
 # WhatsUp
 
 WhatsUp is a private desktop messenger for Windows and Linux. The current
-**0.0.12 preview** supports up to 32 saved contacts, with a separate one-to-one
+**0.0.13 preview** supports up to 32 saved contacts, with a separate one-to-one
 conversation and approved device identities for each contact.
 
 It includes encrypted local message history and offline queues, resumable file
@@ -27,8 +27,9 @@ Credential Manager or Linux Secret Service is required in both modes.
 
 **Go offline** disconnects all contacts and closes local storage. Encrypted data
 stays on the device. **Keep running when the window closes** is enabled initially;
-closing the window keeps connections running in the tray. Choose **Quit** from
-the tray to exit. A second launch shows the existing window. Start at login is
+closing the window keeps connections running when a tray is available. Without
+a tray, closing the window quits. Choose **Quit** from the tray to exit. A second
+launch shows the existing window. Start at login is
 opt-in under **Settings → App behavior** and starts in the tray when one is
 available. Clicking a notification opens its saved conversation after local
 storage is available; it never bypasses the app passphrase.
@@ -77,6 +78,10 @@ limited to 2 GiB each and logical attachment storage to 4 GiB per contact.
 Transfers can be paused/resumed or cancelled. Completed files remain encrypted
 inside WhatsUp until **Save…** writes a copy to a destination you choose.
 **Show in folder** reveals a saved copy; the app never opens arbitrary files.
+Cancellation is saved locally and retried until a compatible peer acknowledges
+it. An older peer may need an update before its unfinished copy can be cancelled;
+text messaging remains available. A file completed before cancellation may stay
+on the other device.
 
 PNG, JPEG, WebP and static GIF previews use bounded Go decoding and sanitized
 thumbnails. **View image** opens a full-size preview with fit and actual-size

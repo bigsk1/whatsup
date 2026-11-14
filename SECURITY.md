@@ -1,6 +1,6 @@
 # Security information
 
-WhatsUp 0.0.12 is unsigned preview software, not a supported public release.
+WhatsUp 0.0.13 is unsigned preview software, not a supported public release.
 It has not undergone an independent security audit or certification. Do not
 rely on the preview for sensitive communication.
 
@@ -62,9 +62,18 @@ healthy app. Storage corruption and uncertain protection writes still close it.
 
 Passphrase changes cover recognized migration and recovery root copies and owned
 crash temporaries. Authenticated reopen repairs copies missed by older builds.
-At most three migration root backups, plus a required live migration reference,
-are retained after protected reconciliation. Full recovery rollback trees and
-unknown recovery material are preserved for safety and can consume extra space.
+Retention keeps the newest three authenticated top-level migration root backups
+under the current master, plus a required live migration reference, in either
+protection mode. Unreadable or different-key copies do not displace those backups.
+Full recovery rollback trees, including their migration roots, and unknown
+recovery material are preserved for safety and can consume extra space.
+Damaged managed backups produce a specific local-file repair error; they are not
+silently skipped when passphrase protection requires reconciliation. Pruning is
+best-effort after a verified settings change and cannot turn success into a
+misleading passphrase-change failure.
+An inaccessible historical protected copy under the current OS credential may
+also require explicit repair or secure preservation outside the app directory
+when its relationship to the current master cannot be authenticated.
 An app passphrase cannot revoke an earlier external OS-only backup or data
 already obtained by someone else. Master keys are not rotated on mode changes.
 

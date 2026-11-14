@@ -21,19 +21,19 @@ func TestLinuxNotificationEscapesMarkupAndRoutesOnlyKnownExplicitAction(t *testi
 		t.Fatal("notice added file/category/preference hints")
 	}
 	var activations []string
-	l := &linuxBackend{ids: map[uint32]string{7: notice.ContactID}, activate: func(id string) { activations = append(activations, id) }}
-	l.handle(&dbus.Signal{Path: daemonPath, Name: daemon + ".NotificationClosed", Body: []interface{}{uint32(99), uint32(2)}})
-	l.handle(&dbus.Signal{Path: daemonPath, Name: daemon + ".ActionInvoked", Body: []interface{}{uint32(99), "default"}})
-	l.handle(&dbus.Signal{Path: daemonPath, Name: daemon + ".ActionInvoked", Body: []interface{}{uint32(7), "untrusted-action"}})
+	l := &linuxBackend{owner: ":1.4", lookupOwner: func() (string, error) { return ":1.4", nil }, ids: map[uint32]string{7: notice.ContactID}, activate: func(id string) { activations = append(activations, id) }}
+	l.handle(&dbus.Signal{Sender: ":1.4", Path: daemonPath, Name: daemon + ".NotificationClosed", Body: []interface{}{uint32(99), uint32(2)}})
+	l.handle(&dbus.Signal{Sender: ":1.4", Path: daemonPath, Name: daemon + ".ActionInvoked", Body: []interface{}{uint32(99), "default"}})
+	l.handle(&dbus.Signal{Sender: ":1.4", Path: daemonPath, Name: daemon + ".ActionInvoked", Body: []interface{}{uint32(7), "untrusted-action"}})
 	if len(activations) != 0 {
 		t.Fatal("dismissal or unknown action activated app")
 	}
-	l.handle(&dbus.Signal{Path: daemonPath, Name: daemon + ".ActionInvoked", Body: []interface{}{uint32(7), "default"}})
+	l.handle(&dbus.Signal{Sender: ":1.4", Path: daemonPath, Name: daemon + ".ActionInvoked", Body: []interface{}{uint32(7), "default"}})
 	if len(activations) != 1 || activations[0] != notice.ContactID {
 		t.Fatal("known default action did not select canonical contact")
 	}
-	l.handle(&dbus.Signal{Path: daemonPath, Name: daemon + ".NotificationClosed", Body: []interface{}{uint32(7), uint32(2)}})
-	l.handle(&dbus.Signal{Path: daemonPath, Name: daemon + ".ActionInvoked", Body: []interface{}{uint32(7), "default"}})
+	l.handle(&dbus.Signal{Sender: ":1.4", Path: daemonPath, Name: daemon + ".NotificationClosed", Body: []interface{}{uint32(7), uint32(2)}})
+	l.handle(&dbus.Signal{Sender: ":1.4", Path: daemonPath, Name: daemon + ".ActionInvoked", Body: []interface{}{uint32(7), "default"}})
 	if len(activations) != 1 {
 		t.Fatal("closed notification retained activation routing")
 	}
@@ -47,5 +47,34 @@ func TestLinuxNeverAutolaunchesOrUsesRemoteSessionBus(t *testing.T) {
 			t.Fatal("invalid desktop bus accepted")
 		}
 		_ = l.close()
+	}
+}
+
+func TestLinuxNotificationRejectsForgedAndPreviousDaemonSenders(t *testing.T) {
+	owner := ":1.4"
+	activations := 0
+	l := &linuxBackend{owner: owner, lookupOwner: func() (string, error) { return owner, nil }, ids: map[uint32]string{7: syntheticNotice().ContactID}, activate: func(string) { activations++ }}
+	for _, sender := range []string{"", daemon, ":1.99"} {
+		l.handle(&dbus.Signal{Sender: sender, Path: daemonPath, Name: daemon + ".ActionInvoked", Body: []interface{}{uint32(7), "default"}})
+		l.handle(&dbus.Signal{Sender: sender, Path: daemonPath, Name: daemon + ".NotificationClosed", Body: []interface{}{uint32(7), uint32(2)}})
+	}
+	if activations != 0 || len(l.ids) != 1 {
+		t.Fatal("forged sender activated or retired issued notice")
+	}
+	l.handle(&dbus.Signal{Sender: owner, Path: daemonPath, Name: daemon + ".ActionInvoked", Body: []interface{}{uint32(7), "default"}})
+	if activations != 1 {
+		t.Fatal("legitimate daemon action failed")
+	}
+	previous := owner
+	owner = ":1.5"
+	l.handle(&dbus.Signal{Sender: previous, Path: daemonPath, Name: daemon + ".ActionInvoked", Body: []interface{}{uint32(7), "default"}})
+	l.handle(&dbus.Signal{Sender: owner, Path: daemonPath, Name: daemon + ".ActionInvoked", Body: []interface{}{uint32(7), "default"}})
+	if activations != 1 || len(l.ids) != 0 {
+		t.Fatal("daemon replacement reused stale issued IDs")
+	}
+	l.ids[7] = syntheticNotice().ContactID
+	l.handle(&dbus.Signal{Sender: owner, Path: daemonPath, Name: daemon + ".ActionInvoked", Body: []interface{}{uint32(7), "default"}})
+	if activations != 2 {
+		t.Fatal("new daemon could not activate newly issued notice")
 	}
 }

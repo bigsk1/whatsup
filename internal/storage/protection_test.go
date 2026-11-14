@@ -406,7 +406,7 @@ func TestManagedMigrationRetentionKeepsNewestThreeAndPinnedCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	var paths []string
-	for i := range 8 {
+	for i := range 12 {
 		parent := dir
 		if i%2 != 0 {
 			parent = container
@@ -426,7 +426,7 @@ func TestManagedMigrationRetentionKeepsNewestThreeAndPinnedCopy(t *testing.T) {
 	}
 	for i, path := range paths {
 		_, err := os.Stat(path)
-		want := i >= len(paths)-maxRetainedMigrationBackups
+		want := i%2 != 0 || i >= len(paths)-2*maxRetainedMigrationBackups
 		if want && err != nil || !want && !os.IsNotExist(err) {
 			t.Fatalf("first protection lost original snapshot age at index %d", i)
 		}
@@ -449,7 +449,7 @@ func TestManagedMigrationRetentionKeepsNewestThreeAndPinnedCopy(t *testing.T) {
 	}
 	for i, path := range paths {
 		_, err := os.Stat(path)
-		want := i == 0 || i >= len(paths)-maxRetainedMigrationBackups
+		want := i == 0 || i%2 != 0 || i >= len(paths)-2*maxRetainedMigrationBackups
 		if want && err != nil || !want && !os.IsNotExist(err) {
 			t.Fatalf("retention violated pinned/newest policy at index %d", i)
 		}

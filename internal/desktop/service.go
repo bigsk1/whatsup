@@ -4,6 +4,8 @@ package desktop
 
 import (
 	"errors"
+	"fmt"
+	"path/filepath"
 	"sync"
 
 	"whatsup/internal/chat"
@@ -14,7 +16,7 @@ import (
 	"whatsup/internal/storage"
 )
 
-const Version = "0.0.12"
+const Version = "0.0.13"
 
 type Status struct {
 	Version              string `json:"version"`
@@ -141,6 +143,14 @@ func (s *Service) unlockStorage(secret []byte) (Status, error) {
 	return s.unlockStorageLocked(secret)
 }
 
+func (s *Service) managedCopyAttention(err error) error {
+	var copyError *storage.ManagedCopyError
+	if !errors.As(err, &copyError) {
+		return nil
+	}
+	return fmt.Errorf("A local backup could not be authenticated or re-protected: %s. Preserve this file and the OS credential. Quit WhatsUp, then repair the backup or move it to secure storage outside the app data folder before retrying. Do not share it.", filepath.Join(s.directory, copyError.RelativePath))
+}
+
 func (s *Service) unlockStorageLocked(secret []byte) (Status, error) {
 	if s.security != nil && s.security.options.Life != nil && s.security.options.Life.Err() != nil {
 		return s.status(), errors.New("The desktop is shutting down")
@@ -161,6 +171,11 @@ func (s *Service) unlockStorageLocked(secret []byte) (Status, error) {
 	}
 	vault, err := storage.OpenWithPassphrase(s.directory, s.keys, secret)
 	if err != nil {
+		if attention := s.managedCopyAttention(err); attention != nil {
+			s.state = "unavailable"
+			s.record(diagnostics.StorageUnavailable)
+			return s.status(), attention
+		}
 		if errors.Is(err, storage.ErrPassphraseRequired) {
 			s.state = "locked"
 			return s.status(), errors.New("Enter the app passphrase to go online")
@@ -184,6 +199,10 @@ func (s *Service) unlockStorageLocked(secret []byte) (Status, error) {
 	}
 	application, err := storage.OpenApplication(vault)
 	if err != nil {
+		if attention := s.managedCopyAttention(err); attention != nil {
+			_, _ = fail()
+			return s.status(), attention
+		}
 		if errors.Is(err, storage.ErrPassphrase) || errors.Is(err, storage.ErrPassphraseRequired) {
 			if closeErr := vault.Close(); closeErr != nil {
 				s.vault = vault

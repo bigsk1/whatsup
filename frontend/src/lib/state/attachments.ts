@@ -119,7 +119,12 @@ export function validateAttachments(
       Object.keys(record).length !== 9 ||
       !validID(record.id) ||
       !['incoming', 'outgoing'].includes(record.direction as string) ||
-      !['', 'relay-approval'].includes(record.warning as string) ||
+      ![
+        '',
+        'relay-approval',
+        'cancellation-pending',
+        'peer-completed',
+      ].includes(record.warning as string) ||
       ![
         'offered',
         'queued',

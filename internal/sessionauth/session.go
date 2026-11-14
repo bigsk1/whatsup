@@ -38,6 +38,9 @@ const (
 	// Wire protocol versions are independent of application release numbers.
 	protocol        = "whatsup-contact/4"
 	controlProtocol = "whatsup-contact/4-control1"
+	// Cancellation has durable, idempotent request/receipt semantics. Older
+	// wire-4 peers retain their original attachment grammar.
+	withdrawProtocol = "whatsup-contact/4-control2"
 	// Previous protocol framing is selected only after exact-contact mutual TLS.
 	previousProtocol = "whatsup-contact/3"
 	// Wire 2 is diagnostic-only: authenticate its exact pin and context before
@@ -70,6 +73,7 @@ type Capabilities struct {
 	WireVersion uint8
 	Attachments bool
 	Control     bool
+	Withdrawals bool
 }
 
 func (s *Session) Capabilities() Capabilities {
@@ -156,6 +160,7 @@ func authenticate(ctx context.Context, raw net.Conn, options Options, associatio
 		name string
 		caps Capabilities
 	}{
+		{withdrawProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true}},
 		{controlProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true}},
 		{protocol, Capabilities{WireVersion: 4, Attachments: true}},
 		{previousProtocol, Capabilities{WireVersion: 3}},

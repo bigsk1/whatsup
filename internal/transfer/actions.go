@@ -34,31 +34,7 @@ func (e *Engine) Accept(id string) error {
 	}})
 }
 func (e *Engine) Decline(id string) error {
-	if e == nil {
-		return ErrUnavailable
-	}
-	unblock := e.blockSources(id)
-	defer unblock()
-	return e.request(event{kind: actionEvent, action: func() error {
-		record, err := e.repo.Get(id)
-		if err != nil || record.Direction != Incoming {
-			return ErrUnavailable
-		}
-		if e.finalDone != nil && e.activeIn == id {
-			e.finalCancel()
-			<-e.finalDone
-			e.finalCancel, e.finalDone = nil, nil
-		}
-		if err = e.repo.Decline(id); err != nil {
-			return err
-		}
-		e.drop(id)
-		e.changed(false)
-		if err = e.emit(control(DeclineFrame, record.Offer, 0, ReasonDeclined)); err != nil {
-			return err
-		}
-		return e.promoteReceiver()
-	}})
+	return e.Withdraw(id)
 }
 func (e *Engine) Cancel(id string) error {
 	if e == nil {
@@ -147,7 +123,7 @@ func (e *Engine) Summaries() ([]Summary, error) {
 			}
 			state := r.State
 			next := r.NextChunk
-			warning := ""
+			warning := WithdrawalWarning(r)
 			if r.Direction == Incoming && e.peerPaused[r.Offer.ID] && state == Accepted {
 				state = Paused
 			}

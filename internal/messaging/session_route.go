@@ -21,6 +21,7 @@ func (m *Manager) session(raw net.Conn) error {
 	}
 	m.mu.Lock()
 	m.planKey = routePlanKey(routes)
+	m.preferredRoute = routes[0].association
 	m.mu.Unlock()
 	for _, route := range routes {
 		if route.epoch == 0 {
@@ -184,6 +185,9 @@ func (m *Manager) sessionRouteCandidates(parent context.Context, raw net.Conn, r
 		return err
 	}
 	m.authenticated++
+	if route.association == m.preferredRoute {
+		m.preferredAuthenticated++
+	}
 	m.state = "connected"
 	m.sessionActive = true
 	m.capabilities = session.Capabilities()

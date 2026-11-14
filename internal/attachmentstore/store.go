@@ -320,6 +320,11 @@ func (s *Scope) List() ([]transfer.Record, error) {
 	if err != nil {
 		return nil, err
 	}
+	pending, err := s.meta.PendingWithdrawals()
+	if err != nil {
+		return nil, err
+	}
+	entries = append(entries, pending...)
 	result := make([]transfer.Record, 0, len(entries))
 	for _, e := range entries {
 		if e.Record.State == transfer.Draft && !e.Ready {
@@ -514,9 +519,10 @@ func (s *Scope) Cancel(id string) error {
 	s.cancelReadersLocked(id)
 	return err
 }
-func (s *Scope) Decline(id string) error     { return s.remove(id, false) }
-func (s *Scope) RemoveDraft(id string) error { return s.remove(id, true) }
-func (s *Scope) remove(id string, draft bool) error {
+func (s *Scope) Decline(id string) error     { return s.remove(id, false, false) }
+func (s *Scope) Withdraw(id string) error    { return s.remove(id, false, true) }
+func (s *Scope) RemoveDraft(id string) error { return s.remove(id, true, false) }
+func (s *Scope) remove(id string, draft, withdraw bool) error {
 	if s == nil || s.scopeState == nil {
 		return ErrUnavailable
 	}
@@ -532,7 +538,17 @@ func (s *Scope) remove(id string, draft bool) error {
 			}
 			e.Hidden = true
 		} else if e.Record.State == transfer.Complete {
+			if withdraw {
+				return ErrUnavailable
+			}
 			return nil
+		}
+		if withdraw && e.Record.State == transfer.Declined {
+			return nil
+		}
+		if withdraw && e.Record.State != transfer.Draft {
+			e.Record.PendingWithdrawal = true
+			e.Record.PeerCompleted = false
 		}
 		e.Record.State = transfer.Declined
 		e.Approved = false
@@ -549,6 +565,26 @@ func (s *Scope) remove(id string, draft bool) error {
 		return err
 	}
 	return s.collectLocked(id)
+}
+
+func (s *Scope) AcknowledgeWithdrawal(id string, peerCompleted bool) error {
+	if s == nil || s.scopeState == nil {
+		return ErrUnavailable
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.usableLocked(); err != nil {
+		return err
+	}
+	_, err := s.meta.Change(id, func(e *Entry) error {
+		if e.Record.State != transfer.Declined || !e.Record.PendingWithdrawal {
+			return ErrUnavailable
+		}
+		e.Record.PendingWithdrawal = false
+		e.Record.PeerCompleted = peerCompleted
+		return nil
+	})
+	return err
 }
 func (s *Scope) QueueOutgoing(id string, allowRelayedLarge bool) error {
 	if s == nil || s.scopeState == nil {

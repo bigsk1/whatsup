@@ -38,7 +38,7 @@ type packet struct {
 var errProtocol = errors.New("authenticated messaging protocol failed")
 
 func readPacket(reader io.Reader) (packet, error) {
-	return readPacketFor(reader, sessionauth.Capabilities{WireVersion: 4, Attachments: true, Control: true})
+	return readPacketFor(reader, sessionauth.Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true})
 }
 
 func readPacketFor(reader io.Reader, capabilities sessionauth.Capabilities) (packet, error) {
@@ -60,6 +60,9 @@ func readPacketFor(reader io.Reader, capabilities sessionauth.Capabilities) (pac
 			return packet{}, errProtocol
 		}
 		frame, err := transfer.ReadFrame(reader)
+		if err == nil && !capabilities.Withdrawals && (frame.Kind == transfer.WithdrawFrame || frame.Kind == transfer.WithdrawAckFrame) {
+			return packet{}, errProtocol
+		}
 		p.attachment = frame
 		return p, err
 	case dataPacket, capacityPacket:
@@ -87,6 +90,9 @@ func readPacketFor(reader io.Reader, capabilities sessionauth.Capabilities) (pac
 func writePacket(session *sessionauth.Session, p packet) error {
 	caps := session.Capabilities()
 	if p.kind == transferPacket && !caps.Attachments || p.kind == controlPacket && !caps.Control {
+		return errProtocol
+	}
+	if p.kind == transferPacket && !caps.Withdrawals && (p.attachment.Kind == transfer.WithdrawFrame || p.attachment.Kind == transfer.WithdrawAckFrame) {
 		return errProtocol
 	}
 	if p.kind == controlPacket {
@@ -171,7 +177,7 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 	}
 	if caps.Attachments {
 		var err error
-		epoch, err = engine.Begin(ctx, func() error { return session.WithLivePeer(m.record.Peer, func() error { return nil }) })
+		epoch, err = engine.BeginWithWithdrawals(ctx, func() error { return session.WithLivePeer(m.record.Peer, func() error { return nil }) }, caps.Withdrawals)
 		if err != nil {
 			return err
 		}
