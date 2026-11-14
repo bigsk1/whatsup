@@ -18,6 +18,7 @@ import (
 	"whatsup/internal/pairing"
 	"whatsup/internal/sessionauth"
 	"whatsup/internal/storage"
+	"whatsup/internal/transfer"
 	"whatsup/internal/transport"
 )
 
@@ -62,6 +63,7 @@ type managerState struct {
 	record        storage.PendingRecord
 	contact       *pairing.Contact
 	conversation  *chat.Conversation
+	transfers     *transfer.Engine
 	state         string
 	revision      uint64
 	targetID      string
@@ -620,6 +622,12 @@ func (m *Manager) Close() {
 		_ = listener.Close()
 	}
 	m.workers.Wait()
+	m.mu.Lock()
+	transfers := m.transfers
+	m.mu.Unlock()
+	if transfers != nil {
+		transfers.Close()
+	}
 	if contact != nil {
 		contact.Revoke()
 	}

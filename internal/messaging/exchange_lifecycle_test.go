@@ -18,6 +18,7 @@ import (
 	"whatsup/internal/pairing"
 	"whatsup/internal/sessionauth"
 	"whatsup/internal/storage"
+	"whatsup/internal/transfer"
 )
 
 type readDeadlineFault struct {
@@ -29,6 +30,12 @@ type readDeadlineFault struct {
 	writeOnce    sync.Once
 	closeOnce    sync.Once
 }
+
+// These heartbeat tests intentionally have no durable contact record. An empty
+// scoped engine isolates transport lifecycle without granting file authority.
+type emptyTransferRepository struct{ transfer.Repository }
+
+func (emptyTransferRepository) List() ([]transfer.Record, error) { return []transfer.Record{}, nil }
 
 func (c *readDeadlineFault) Write(data []byte) (int, error) {
 	if c.blockWrite.Load() {
@@ -114,7 +121,12 @@ func exchangeFixture(t *testing.T, repositories ...message.Repository) (*Manager
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = app.Close() })
-	m := &Manager{managerState: &managerState{application: app, record: storage.PendingRecord{Peer: peer.PublicKey()}, state: "connected", wake: make(chan struct{}, 1)}}
+	engine, err := transfer.New(emptyTransferRepository{}, transfer.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(engine.Close)
+	m := &Manager{managerState: &managerState{application: app, record: storage.PendingRecord{Peer: peer.PublicKey()}, transfers: engine, state: "connected", wake: make(chan struct{}, 1)}}
 	return m, server.session, client, conversation, fault
 }
 

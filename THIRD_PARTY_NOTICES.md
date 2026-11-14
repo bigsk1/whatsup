@@ -19,6 +19,18 @@ Source: [Wails v3.1.0](https://github.com/wailsapp/wails/tree/v3.1.0),
 [upstream license](https://github.com/wailsapp/wails/blob/v3.1.0/LICENSE).
 The current icons are scaffold placeholders, not WhatsUp branding.
 
+The application applies a private, reviewed native integration patch to Wails
+3.1.0 for Go-only file drops and bounded completed-reader media responses. The
+patch and immutable upstream basis are recorded in `config/wails-patch.json`.
+The exact upstream module and its MIT notice are preserved during the build.
+
+## Tink
+
+Attachment storage uses `github.com/tink-crypto/tink-go/v2` version 2.9.0,
+distributed under the Apache License, Version 2.0. Its full license is retained
+at [third_party/licenses/tink-Apache-2.0.txt](third_party/licenses/tink-Apache-2.0.txt).
+Source: [Tink Go 2.9.0](https://github.com/tink-crypto/tink-go/tree/v2.9.0).
+
 ## Tailcat
 
 A reviewed library-only source copy is retained under `third_party/tailcat` and

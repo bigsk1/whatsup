@@ -52,6 +52,7 @@ type nativeHost struct {
 	life              context.Context
 	cancel            context.CancelFunc
 	incoming          chan messaging.Incoming
+	fileDrops         chan []string
 	incomingDone      chan struct{}
 	stopOnce          sync.Once
 	startupMu         sync.Mutex

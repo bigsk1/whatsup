@@ -322,7 +322,7 @@ func (v *Vault) Close() error {
 	v.closed = true
 	var applicationErr error
 	if v.application != nil {
-		applicationErr = v.application.closeMessageStoreLocked()
+		applicationErr = errors.Join(v.application.closeAttachmentStoreLocked(), v.application.closeMessageStoreLocked())
 		v.application.clearLocked()
 	}
 	clear(v.key)

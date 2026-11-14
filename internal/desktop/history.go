@@ -11,6 +11,7 @@ func (s *Service) ClearHistory(contactID string) (messaging.Snapshot, error) {
 	if s.state != "unlocked" || s.messages == nil {
 		return unavailableConversation(), errors.New("Unlock local storage before clearing history")
 	}
+	s.retireAttachmentsLocked(contactID)
 	snapshot, err := s.messages.ClearHistory(contactID)
 	if err != nil {
 		return snapshot, errors.New("Local history could not be cleared")

@@ -14,7 +14,7 @@ import (
 	"whatsup/internal/storage"
 )
 
-const Version = "0.0.8"
+const Version = "0.0.9"
 
 type Status struct {
 	Version              string `json:"version"`
@@ -40,6 +40,7 @@ type Service struct {
 	events          *contactEvents
 	preferenceState *appPreferenceState
 	runtimeOptions  RuntimeOptions
+	attachments     *attachmentControl
 	fingerprint     string
 	state           string
 	record          func(diagnostics.Event)
@@ -63,6 +64,7 @@ func NewWithEvents(directory string, keys storage.KeyStore, record func(diagnost
 
 func (s *Service) status() Status {
 	status := Status{Version: Version, IdentityFingerprint: s.fingerprint, StorageState: s.state, NetworkState: "unavailable", PairingAvailable: s.state == "unlocked" && s.invitations != nil}
+	status.AttachmentsAvailable = s.state == "unlocked" && s.attachments != nil && s.attachments.session != nil
 	if s.state == "unlocked" && s.messages != nil {
 		contacts, err := s.messages.Contacts()
 		if err == nil {
@@ -154,6 +156,7 @@ func (s *Service) UnlockStorage() (Status, error) {
 	s.invitations = invitations
 	s.messages = messages
 	s.state = "unlocked"
+	s.startAttachmentsLocked()
 	s.record(diagnostics.StorageUnlocked)
 	if s.runtimeOptions.AutoConnect {
 		if contacts, err := messages.Contacts(); err == nil {
@@ -170,6 +173,7 @@ func (s *Service) UnlockStorage() (Status, error) {
 func (s *Service) LockStorage() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.stopAttachmentsLocked()
 	if s.messages != nil {
 		s.messages.Close()
 		s.messages = nil

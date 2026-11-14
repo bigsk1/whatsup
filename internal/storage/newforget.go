@@ -40,6 +40,13 @@ func (a *ApplicationState) ForgetCommittedContact(record PendingRecord, stop fun
 	}
 	state.canceling = true
 	delete(a.localReceipts, record.ID)
+	if a.attachments != nil {
+		for _, contact := range a.state.Contacts {
+			if contact.ContactID == record.ID {
+				a.attachments.RetireScope(contact.StoreID)
+			}
+		}
+	}
 	a.vault.mu.Unlock()
 
 	if err := stop(); err != nil {

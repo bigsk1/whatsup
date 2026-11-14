@@ -7,6 +7,37 @@ import * as preferences$0 from "../preferences/models.js";
 
 export type AppPreferences = preferences$0.Values;
 
+export interface AttachmentDraft {
+    "handle": string;
+    "name": string;
+    "mediaType": string;
+    "size": number;
+    "previewURL": string;
+    "requiresRelayWarning": boolean;
+}
+
+export interface AttachmentView {
+    "id": string;
+    "name": string;
+    "mediaType": string;
+    "size": number;
+    "direction": string;
+    "state": string;
+    "transferredBytes": number;
+    "warning": string;
+    "previewURL": string;
+}
+
+export interface Attachments {
+    "contactID": string;
+    "revision": number;
+    "items": AttachmentView[] | null;
+    "drafts": AttachmentDraft[] | null;
+    "autoAcceptImages": boolean;
+    "nextCursor": string;
+    "hasMore": boolean;
+}
+
 export interface InvitationInspection {
     "serviceURL": string;
     "host": string;
@@ -28,6 +59,10 @@ export interface InvitationShare {
 export interface ProfileSnapshot {
     "displayName": string;
     "shareDisplayName": boolean;
+}
+
+export interface SavedAttachment {
+    "handle": string;
 }
 
 export interface Status {

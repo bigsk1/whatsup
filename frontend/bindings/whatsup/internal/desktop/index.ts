@@ -8,8 +8,12 @@ export {
 
 export type {
     AppPreferences,
+    AttachmentDraft,
+    AttachmentView,
+    Attachments,
     InvitationInspection,
     InvitationShare,
     ProfileSnapshot,
+    SavedAttachment,
     Status
 } from "./models.js";

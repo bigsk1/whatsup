@@ -166,7 +166,7 @@ func assertMigrationCiphertextFiles(t *testing.T, f *phase1Fixture) {
 	for _, entry := range entries {
 		// These zero-content OS lock files are deliberately unreadable while
 		// held on Windows; they are not persistence payloads or SQLite sidecars.
-		if entry.Name() == "state.lock" || entry.Name() == "messages.lock" {
+		if entry.Name() == "state.lock" || entry.Name() == "messages.lock" || entry.Name() == "attachments.lock" {
 			continue
 		}
 		if !entry.Type().IsRegular() {

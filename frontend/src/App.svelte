@@ -30,6 +30,8 @@
   import { createAppPreferences } from './lib/state/preferences';
   import { createSession } from './lib/state/session';
   import ContactList from './lib/components/ContactList.svelte';
+  import AttachmentPanel from './lib/components/AttachmentPanel.svelte';
+  import { createAttachments } from './lib/state/attachments';
   import {
     createContacts,
     selectedConversation,
@@ -93,6 +95,8 @@
   const actionKind = $derived($pairingState.actionKind);
   const invitationBusy = $derived($pairingState.invitationBusy);
   const contacts = createContacts();
+  const attachments = createAttachments();
+  const attachmentsState = attachments.state;
   const contactsState = contacts.state;
   const conversation = $derived(selectedConversation($contactsState));
   const conversationNotice = $derived(
@@ -110,7 +114,21 @@
   );
   let conversationEpoch = 0;
 
+  $effect(() => {
+    if (
+      native &&
+      status.storageState === 'unlocked' &&
+      status.attachmentsAvailable
+    ) {
+      attachments.start();
+      void attachments.select(conversation.contactID);
+    } else {
+      attachments.stop();
+    }
+  });
+
   function clearConversation() {
+    attachments.stop();
     historyActions.reset();
     historyDialog?.close();
     conversationEpoch += 1;
@@ -199,8 +217,10 @@
       messageID === undefined
         ? await historyActions.clear(selectedContact)
         : await historyActions.remove(selectedContact, messageID);
-    if (result && acceptConversation(result, epoch, selectedContact))
+    if (result && acceptConversation(result, epoch, selectedContact)) {
+      if (messageID === undefined) attachments.invalidate();
       historyDialog.close();
+    }
   }
 
   async function forgetConversation(selectedContact: string) {
@@ -325,6 +345,7 @@
       visibility: (visible) => {
         contacts.setVisible(visible && !document.hidden && !settingsOpen);
         if (visible && conversationEnabled()) void contacts.reload();
+        if (visible && conversationEnabled()) void attachments.reload();
       },
     });
     const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -343,6 +364,7 @@
           $sessionState.windowVisible && !document.hidden && !settingsOpen,
         );
         void contacts.reload();
+        void attachments.reload();
       }
     };
     window.addEventListener('focus', recoverContacts);
@@ -715,6 +737,32 @@
             </p>
           {/each}
         </div>
+        {#if status.attachmentsAvailable}
+          {#key conversation.contactID}
+            <AttachmentPanel
+              items={$attachmentsState.items}
+              drafts={$attachmentsState.drafts}
+              busy={$attachmentsState.busy}
+              notice={$attachmentsState.notice}
+              videos={$attachmentsState.videos}
+              saved={$attachmentsState.saved}
+              autoAcceptImages={$attachmentsState.autoAcceptImages}
+              hasMore={$attachmentsState.hasMore}
+              onolder={() => void attachments.older()}
+              onpick={(original) => void attachments.pick(original)}
+              onpaste={() => void attachments.paste()}
+              onsend={(draft, allow) => void attachments.send(draft, allow)}
+              ondiscard={(draft) => void attachments.discard(draft)}
+              ondecision={(item, action) =>
+                void attachments.decision(item, action)}
+              onautoaccept={(enabled) =>
+                void attachments.setAutoAccept(enabled)}
+              onpreview={(item) => void attachments.preview(item)}
+              onsave={(item) => void attachments.save(item)}
+              onreveal={(item) => void attachments.reveal(item)}
+            />
+          {/key}
+        {/if}
       </section>
     {:else}
       <section class="welcome-space" aria-labelledby="welcome-heading">
@@ -775,8 +823,15 @@
       >
         <button
           class="icon-button"
-          aria-label="Attach file unavailable"
-          disabled><Paperclip size={21} strokeWidth={1.6} /></button
+          aria-label={status.attachmentsAvailable && hasContact
+            ? 'Choose attachment'
+            : 'Attach file unavailable'}
+          disabled={!status.attachmentsAvailable ||
+            !hasContact ||
+            busy ||
+            $attachmentsState.busy}
+          onclick={() => void attachments.pick(false)}
+          ><Paperclip size={21} strokeWidth={1.6} /></button
         ><textarea
           aria-label={hasContact
             ? 'Message'
@@ -794,6 +849,15 @@
               event.currentTarget.value,
             )}
           maxlength={16 * 1024}
+          onpaste={(event) => {
+            if (
+              status.attachmentsAvailable &&
+              event.clipboardData?.types.includes('Files')
+            ) {
+              event.preventDefault();
+              void attachments.paste();
+            }
+          }}
           onkeydown={(event) => {
             if (
               event.key === 'Enter' &&
@@ -940,9 +1004,9 @@
       <Info size={18} />
       <p>
         This is a development build. Pairing requires your chosen connection
-        service and explicit consent. Text messaging uses approved contact
-        credentials. Attachments and strict direct-only delivery are not
-        available yet.
+        service and explicit consent. Messages and attachments use approved
+        contact credentials. Files require receiver approval and are never
+        opened automatically. Strict direct-only delivery is unavailable.
       </p>
     </div>
     <p class="muted small">
@@ -951,8 +1015,8 @@
       encrypted traffic. In OS-only mode, launch opens local storage and
       reconnects saved contacts automatically. Go online reconnects after you
       have gone offline; Connect retries a stopped contact connection. Go
-      offline stops messaging and locks local data while keeping saved contacts
-      and history.
+      offline stops connections and locks local data while keeping saved
+      contacts and history.
     </p>
     <p class="muted small">
       WhatsUp keeps redacted troubleshooting logs locally and has no analytics

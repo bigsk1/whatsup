@@ -8,9 +8,11 @@ require (
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/gofrs/flock v0.13.2
 	github.com/tailscale/tailcat v0.7.1-0.20261105151022-e00cdde6ff78
+	github.com/tink-crypto/tink-go/v2 v2.9.0
 	github.com/wailsapp/wails/v3 v3.1.0
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/crypto v0.59.0
+	golang.org/x/image v0.48.0
 	golang.org/x/sys v0.50.0
 	modernc.org/sqlite v1.62.0
 	tailscale.com v1.105.0-pre.0.20261013225543-fb79793d99f5
@@ -170,7 +172,6 @@ require (
 	go4.org/mem v0.0.0-20240501181205-ae6ca9944745 // indirect
 	go4.org/netipx v0.0.0-20260823151212-3075585bcbeb // indirect
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
-	golang.org/x/image v0.46.0 // indirect
 	golang.org/x/mod v0.42.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
@@ -183,6 +184,7 @@ require (
 	golang.org/x/vuln v1.9.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard/windows v1.0.1 // indirect
+	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
@@ -200,3 +202,5 @@ tool (
 )
 
 replace github.com/tailscale/tailcat => ./third_party/tailcat
+
+replace github.com/wailsapp/wails/v3 => ./.local/modules/wails-v3

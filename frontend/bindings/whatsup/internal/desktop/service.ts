@@ -16,6 +16,14 @@ import * as pairflow$0 from "../pairflow/models.js";
 // @ts-ignore: Unused imports
 import * as $models from "./models.js";
 
+export function AcceptAttachment(id: string, attachment: string): $CancellablePromise<void> {
+    return $Call.ByID(3288289052, id, attachment);
+}
+
+export function AllowAttachmentRelay(id: string, attachment: string): $CancellablePromise<void> {
+    return $Call.ByID(2302801420, id, attachment);
+}
+
 /**
  * ApprovePairing confirms the current reserved identity. It returns public state
  * only; successful reciprocal durable completion later starts this generation's
@@ -25,8 +33,16 @@ export function ApprovePairing(requestID: string, peerFingerprint: string): $Can
     return $Call.ByID(1516693078, requestID, peerFingerprint);
 }
 
+export function CancelAttachment(id: string, attachment: string): $CancellablePromise<void> {
+    return $Call.ByID(3627719846, id, attachment);
+}
+
 export function CancelInvitation(): $CancellablePromise<pairflow$0.Snapshot> {
     return $Call.ByID(3037999004);
+}
+
+export function ChooseAttachment(id: string, sendAsFile: boolean): $CancellablePromise<$models.AttachmentDraft> {
+    return $Call.ByID(145270285, id, sendAsFile);
 }
 
 export function ClearHistory(contactID: string): $CancellablePromise<messaging$0.Snapshot> {
@@ -45,12 +61,20 @@ export function CreateInvitation(relayMapURL: string, allowRelayFallback: boolea
     return $Call.ByID(3777505958, relayMapURL, allowRelayFallback);
 }
 
+export function DeclineAttachment(id: string, attachment: string): $CancellablePromise<void> {
+    return $Call.ByID(3472571724, id, attachment);
+}
+
 export function DeleteMessage(contactID: string, messageID: string): $CancellablePromise<messaging$0.Snapshot> {
     return $Call.ByID(122046625, contactID, messageID);
 }
 
 export function DenyPairing(requestID: string): $CancellablePromise<pairflow$0.Snapshot> {
     return $Call.ByID(2165699649, requestID);
+}
+
+export function DiscardAttachment(id: string, handle: string): $CancellablePromise<void> {
+    return $Call.ByID(3824909412, id, handle);
 }
 
 /**
@@ -65,6 +89,14 @@ export function ForgetContact(contactID: string): $CancellablePromise<messaging$
 
 export function GetAppPreferences(): $CancellablePromise<$models.AppPreferences> {
     return $Call.ByID(4280908016);
+}
+
+export function GetAttachmentHistory(id: string, cursor: string): $CancellablePromise<$models.Attachments> {
+    return $Call.ByID(1259618514, id, cursor);
+}
+
+export function GetAttachments(id: string): $CancellablePromise<$models.Attachments> {
+    return $Call.ByID(1522039443, id);
 }
 
 export function GetContacts(): $CancellablePromise<messaging$0.ContactSummary[] | null> {
@@ -115,6 +147,26 @@ export function MarkRead(contactID: string, throughMessageID: string): $Cancella
     return $Call.ByID(3481817764, contactID, throughMessageID);
 }
 
+export function PasteAttachment(id: string): $CancellablePromise<$models.AttachmentDraft> {
+    return $Call.ByID(1203939365, id);
+}
+
+export function PreviewAttachment(id: string, attachment: string): $CancellablePromise<string> {
+    return $Call.ByID(22355730, id, attachment);
+}
+
+export function ResumeAttachment(id: string, attachment: string): $CancellablePromise<void> {
+    return $Call.ByID(4042520743, id, attachment);
+}
+
+export function SaveAttachment(id: string, attachment: string): $CancellablePromise<$models.SavedAttachment> {
+    return $Call.ByID(2345954437, id, attachment);
+}
+
+export function SendAttachment(id: string, handle: string, allowRelayedLarge: boolean): $CancellablePromise<void> {
+    return $Call.ByID(2166986394, id, handle, allowRelayedLarge);
+}
+
 export function SendMessage(contactID: string, text: string): $CancellablePromise<messaging$0.Snapshot> {
     return $Call.ByID(2070448990, contactID, text);
 }
@@ -123,12 +175,28 @@ export function SetAppPreferences(values: $models.AppPreferences): $CancellableP
     return $Call.ByID(2345815276, values);
 }
 
+/**
+ * SetAttachmentInputContact selects only an existing approved association for
+ * subsequent OS-native drop input. No renderer-supplied path is accepted.
+ */
+export function SetAttachmentInputContact(id: string): $CancellablePromise<void> {
+    return $Call.ByID(671117418, id);
+}
+
+export function SetAutoAcceptImages(id: string, enabled: boolean): $CancellablePromise<void> {
+    return $Call.ByID(134676394, id, enabled);
+}
+
 export function SetContactName(contactID: string, localName: string): $CancellablePromise<messaging$0.Snapshot> {
     return $Call.ByID(3486640966, contactID, localName);
 }
 
 export function SetProfile(displayName: string, shareDisplayName: boolean): $CancellablePromise<$models.ProfileSnapshot> {
     return $Call.ByID(3658025180, displayName, shareDisplayName);
+}
+
+export function ShowSavedAttachment(id: string, handle: string): $CancellablePromise<void> {
+    return $Call.ByID(948564322, id, handle);
 }
 
 /**

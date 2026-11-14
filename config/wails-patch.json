@@ -1,0 +1,174 @@
+{
+  "schemaVersion": 1,
+  "module": "github.com/wailsapp/wails/v3",
+  "version": "v3.1.0",
+  "patchVersion": 1,
+  "replacement": "./.local/modules/wails-v3",
+  "upstreamSum": "h1:ld0AXSicXiTTsIvmTq3qNn9FzCP8vIHRSJdkRLgaAo8=",
+  "upstreamGoModSum": "h1:tzDY3W1jzN3ksSqfGalTt7K3PwnGfIqtl+IgIXlXz0I=",
+  "purpose": [
+    "native_only_file_drop",
+    "completed_reader_response"
+  ],
+  "upstreamTree": {
+    "sha256": "031658ed3d2445aea47806f219cb50187eb495404a7cee9d9d06a01a1b1ba420",
+    "count": 4545,
+    "size": 41908357
+  },
+  "patchedTree": {
+    "sha256": "394d415ebc545e5c08c6819a0d97e3d8da369de8d70e70c38834f82c82606f17",
+    "count": 4556,
+    "size": 41962495
+  },
+  "patch": {
+    "path": "third_party/patches/wails-v3-native.patch",
+    "sha256": "3b0b2742b09678d4bc6d4fc75b858be43634a77a07d58e53f59cd1b0d8a37f9c",
+    "size": 63304
+  },
+  "files": [
+    {
+      "path": "internal/assetserver/assetserver_webview.go",
+      "upstreamSHA256": "717ed3b3c388361522f38de00752f7c80b80eecab8be68c0deac36f57cf99570",
+      "sha256": "19a32f57e9960a217119166dc1174aee54390b8b80a1eeee9720afdca80b1a62",
+      "size": 7151
+    },
+    {
+      "path": "internal/assetserver/webview/responsewriter_windows.go",
+      "upstreamSHA256": "77f90d447c1227846721d62a2682a44cb2e413121645445bdb82322dd4898b23",
+      "sha256": "e2c511ee9f7f770d8301d4f95a90745c183d61ab5009e6f13c53634c1b2432dd",
+      "size": 4185
+    },
+    {
+      "path": "internal/webview2/pkg/edge/chromium.go",
+      "upstreamSHA256": "888e9594492b0cb9655bdb3d206d8504943ab3546a6dd6ca4dbe2a2b6140d431",
+      "sha256": "11d4b147b6124a99ca4709799a4b5eee740689e2165b69081587440fffeaf480",
+      "size": 42651
+    },
+    {
+      "path": "internal/webview2/pkg/edge/whatsup_reader_stream_windows.go",
+      "upstreamSHA256": null,
+      "sha256": "bad65e8a32bfed8e7a4d7a30bdf25edbcfbff3fc2db628c9975473e645943f63",
+      "size": 9495
+    },
+    {
+      "path": "internal/webview2/pkg/edge/whatsup_reader_stream_windows_test.go",
+      "upstreamSHA256": null,
+      "sha256": "dcbd1ab55292310e94c62215e0e8f8e228fa3cbf7afcb7a9e39268044580d35c",
+      "size": 4957
+    },
+    {
+      "path": "pkg/application/linux_cgo.go",
+      "upstreamSHA256": "ca0fd8031f51ccfea7d5c04d6c756ef78dbc62094737a892c40e81e369d7ccce",
+      "sha256": "0441365bf6fefea3abe3d15658abb56ae9ad4bafe4a025823675cfcd5cb53a6f",
+      "size": 59627
+    },
+    {
+      "path": "pkg/application/linux_cgo.h",
+      "upstreamSHA256": "215ed75358090d207cd3f491d08dd242f515df6b0635645a4797c7a5bb7c1f3d",
+      "sha256": "9f2c8553dc32ec911d3f0cdcc606c8e186f994dfceb8b804344532cf44c8a55d",
+      "size": 9952
+    },
+    {
+      "path": "pkg/application/linux_cgo_gtk3.go",
+      "upstreamSHA256": "be956608773ea1ede20c42ecdca163a6458bd42ec688c0b448c61e322e5c8878",
+      "sha256": "fd2df1fd94e6b464d205770d7a5394e4a01258430d88c16cb5cb90fa2f428bce",
+      "size": 80242
+    },
+    {
+      "path": "pkg/application/linux_purego.go",
+      "upstreamSHA256": "7a2f78f93dc4a308448839c3a139a8cadfce14b7b392c29f15aa82b479d7004b",
+      "sha256": "2df8220a2dfcffa891d52dd8a80743660ae368242e1f74be8aef71d970ea3537",
+      "size": 38994
+    },
+    {
+      "path": "pkg/application/linux_purego_gtk3_generated.go",
+      "upstreamSHA256": "7b713d715f28b8bde793ecfc2b5984c2398de43ee9b2422e74bcf8e178d96b02",
+      "sha256": "55fbd1098d55fe999592c1ad6c8bfec49e3f67bc1e5026aaaf35bcbf6a4fada5",
+      "size": 57054
+    },
+    {
+      "path": "pkg/application/messageprocessor_window.go",
+      "upstreamSHA256": "86792f88a38132c0e0e96e308c450c6d28124f594adb630db0f1e898b87eeb4a",
+      "sha256": "bcaa690620c41d743a5373351ba73c092c25e911b9cdffd84b652a320eeab80d",
+      "size": 13737
+    },
+    {
+      "path": "pkg/application/testdata/whatsup-native/main_windows.go",
+      "upstreamSHA256": null,
+      "sha256": "4f925893045484802c023c015b4243f70c32d3dec02e320bd13c379b066bfd4b",
+      "size": 5263
+    },
+    {
+      "path": "pkg/application/testdata/whatsup-native-uri/main.c",
+      "upstreamSHA256": null,
+      "sha256": "19d1e33017f3e43aa2668f7395d1525335e971502c27361d7c4cba0046e3868e",
+      "size": 1568
+    },
+    {
+      "path": "pkg/application/webview_window.go",
+      "upstreamSHA256": "200d34a3890bcf23cdfd71cd822c09ecdac303a9d0ef724e37ee3fb3d72ba0c5",
+      "sha256": "c4dc061ac79e83f1c78cbf3c237bea43d162231d3f25db200c5ed8d1dacadb96",
+      "size": 54036
+    },
+    {
+      "path": "pkg/application/webview_window_linux.go",
+      "upstreamSHA256": "86e64fcbb1d68fa161386298d30f7075baf772126f0b1e293e6d5af5a55e5a0e",
+      "sha256": "14400ee9fbcec079380874d1d12c01d42f3774bcde16b68d2617e756131bc7a5",
+      "size": 18560
+    },
+    {
+      "path": "pkg/application/webview_window_options.go",
+      "upstreamSHA256": "153b19915e180d6f4d664539e76ef3e52e64a0995bd33d09919e5a3bc62a4eb6",
+      "sha256": "658ed9b3d33f6e055760add00dd5720ac098d33d5e3dc227b60523db9a4bd150",
+      "size": 36449
+    },
+    {
+      "path": "pkg/application/webview_window_windows.go",
+      "upstreamSHA256": "0d4bf4d74f720c45e2630a9fe249eaf3a27c5428b18568201ead5a4d612eca05",
+      "sha256": "5fb20dee0380bc5a877ef9636f5eb7e806372dc780cc54c65edc09bbc3d8e722",
+      "size": 121862
+    },
+    {
+      "path": "pkg/application/whatsup_completed_reader.go",
+      "upstreamSHA256": null,
+      "sha256": "0c225c655560f80eb8200f153cb8fd79fe5055858174fd2765099536833ca1d8",
+      "size": 5651
+    },
+    {
+      "path": "pkg/application/whatsup_completed_reader_test.go",
+      "upstreamSHA256": null,
+      "sha256": "7b53bbc3a4a05eaf77a950da76ec122dfa0680b285e709b40e20e4b58aacb60c",
+      "size": 3652
+    },
+    {
+      "path": "pkg/application/whatsup_native_drop_linux.c",
+      "upstreamSHA256": null,
+      "sha256": "b659a800c7be055c1f5a1a015ec2df60e4886dcf7a52755048fe7ddeb13de9bb",
+      "size": 6293
+    },
+    {
+      "path": "pkg/application/whatsup_native_drop_linux_test.go",
+      "upstreamSHA256": null,
+      "sha256": "e508e12ec36e6fdc85e8d70c78e9824ecea98fd74d74d895c50ee214bd257cda",
+      "size": 1389
+    },
+    {
+      "path": "pkg/application/whatsup_native_drop_windows.go",
+      "upstreamSHA256": null,
+      "sha256": "9c66231539f9151b80aca87692e84597833d9af5145903c302cd2169702e1f6e",
+      "size": 6390
+    },
+    {
+      "path": "pkg/application/whatsup_native_drop_windows_test.go",
+      "upstreamSHA256": null,
+      "sha256": "0da631c10b99e81f919e2b3ebc94179f855a36a7d123faa8ded3828e91995eff",
+      "size": 3528
+    },
+    {
+      "path": "pkg/application/whatsup_native_windows_test.go",
+      "upstreamSHA256": null,
+      "sha256": "b77922d330cc802a5516e7b159b355e68452eb1a05d5680c5badcac02ee98ead",
+      "size": 1687
+    }
+  ]
+}

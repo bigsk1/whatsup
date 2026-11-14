@@ -347,6 +347,9 @@ func (s *Scope) ClearHistory() error {
 		m.ClearThroughSequence = m.NextSequence - 1
 		m.ReadThroughSequence = m.ClearThroughSequence
 		m.Unread = 0
+		if err := s.hideAttachments(ctx, tx, ""); err != nil {
+			return err
+		}
 		return s.db.saveMeta(ctx, tx, s.id, key, m)
 	})
 }
@@ -403,6 +406,9 @@ func (d *DB) DropContact(id string) error {
 			return nil
 		}
 		if _, err := tx.ExecContext(ctx, "DELETE FROM records WHERE contact_id=?", id); err != nil {
+			return sqlError(err)
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM attachments WHERE contact_id=?", id); err != nil {
 			return sqlError(err)
 		}
 		next := d.manifest

@@ -76,6 +76,19 @@ test('same review ID permits the other platform but never overwrites an existing
   assert.deepEqual(await readFile(path.join(first.directory, 'build-manifest.json')), originalManifest);
 });
 
+test('review snapshots bind both native patch inventories without accepting extra private metadata', async (t) => {
+  const { root } = await fixture(t);
+  const patches = [
+    { module: 'github.com/tailscale/tailcat', version: 'v0.7.1-0.20261105151022-e00cdde6ff78', patchVersion: 2, manifestSHA256: 'a'.repeat(64) },
+    { module: 'github.com/wailsapp/wails/v3', version: 'v3.1.0', patchVersion: 1, manifestSHA256: 'b'.repeat(64), treeSHA256: 'c'.repeat(64), privateData: 'must not enter manifest' },
+  ];
+  const result = await archiveReviewBuild(options(root, { patches }));
+  assert.equal(result.manifest.patches[1].treeSHA256, 'c'.repeat(64));
+  assert.equal(JSON.stringify(result.manifest).includes('privateData'), false);
+  await assert.rejects(() => archiveReviewBuild(options(root, { patches: patches.slice(1) })), /Both reviewed native patch/);
+  await assert.rejects(() => archiveReviewBuild(options(root, { patches: [patches[0], { ...patches[1], treeSHA256: '' }] })), /Invalid reviewed native patch/);
+});
+
 test('review snapshot rejects traversal, false clean IDs and arbitrary source data before creating output', async (t) => {
   const { root } = await fixture(t);
   const invalid = [

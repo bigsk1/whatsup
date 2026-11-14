@@ -55,6 +55,7 @@ func main() {
 	application.RegisterEvent[NativeStorageHint](nativeStorageChangedEvent)
 	application.RegisterEvent[bool](nativeWindowVisibleEvent)
 	var native atomic.Pointer[nativeHost]
+	var backend atomic.Pointer[desktop.Service]
 	var focusPending atomic.Bool
 	app := application.New(application.Options{
 		Name: "WhatsUp", Description: "Private one-to-one desktop messenger",
@@ -88,6 +89,9 @@ func main() {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("X-Content-Type-Options", "nosniff")
 					w.Header().Set("Referrer-Policy", "no-referrer")
+					if desktop.ServeAttachment(backend.Load(), w, r) {
+						return
+					}
 					next.ServeHTTP(w, r)
 				})
 			},
@@ -114,6 +118,7 @@ func main() {
 		}
 	}
 	service := desktop.NewWithEvents(directory, storage.OSKeyStore{}, record, func(hint messaging.Hint) { app.Event.Emit(desktop.ContactChangedEvent, hint) })
+	backend.Store(service)
 	host, err := newNativeHost(app, service, record, options, trayIcon)
 	if err != nil {
 		record(diagnostics.RuntimeError)
@@ -124,6 +129,9 @@ func main() {
 	}
 	if err := desktop.ConfigureAppPreferences(service, desktop.AppPreferenceRuntimeOptions{SetStartAtLogin: host.setStartAtLogin, OnChanged: host.preferencesChanged}); err != nil {
 		log.Fatal("WhatsUp could not authenticate its app preferences")
+	}
+	if err := host.configureFiles(); err != nil {
+		log.Fatal("WhatsUp could not initialize private file input")
 	}
 	native.Store(host)
 	if focusPending.Swap(false) {
@@ -139,7 +147,8 @@ func main() {
 		Title: "WhatsUp", Width: 1180, Height: 780, MinWidth: 760, MinHeight: 560,
 		BackgroundColour: application.NewRGB(12, 20, 23), URL: "/",
 		DevToolsEnabled: false, DefaultContextMenuDisabled: true,
-		Linux: linuxWindow,
+		NativeFileDropHandler: host.nativeFileDrop,
+		Linux:                 linuxWindow,
 	})
 	host.attachWindow(window)
 	if err := app.Run(); err != nil {

@@ -1,0 +1,2 @@
+# Unified diffs retain literal context prefixes; applied source is hash checked.
+*.patch -whitespace

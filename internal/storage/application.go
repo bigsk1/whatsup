@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"time"
 
+	"whatsup/internal/attachmentstore"
 	"whatsup/internal/identity"
 	"whatsup/internal/messagestore"
 	"whatsup/internal/profile"
@@ -183,6 +184,7 @@ type ApplicationState struct {
 	nextCommitGeneration uint64
 	localReceipts        map[string]*localContactReceiptState
 	messages             *messagestore.DB
+	attachments          *attachmentstore.Store
 }
 
 func (a ApplicationState) String() string   { return "[private WhatsUp application state]" }
@@ -330,6 +332,18 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 	}
 	if err := a.openMessageStoreLocked(); err != nil {
 		a.failed = true
+		_ = a.closeMessageStoreLocked()
+		return nil, err
+	}
+	if err := a.openAttachmentStoreLocked(); err != nil {
+		a.failed = true
+		_ = a.closeAttachmentStoreLocked()
+		_ = a.closeMessageStoreLocked()
+		return nil, err
+	}
+	if err := a.finishMessageDeletesLocked(); err != nil {
+		a.failed = true
+		_ = a.closeAttachmentStoreLocked()
 		_ = a.closeMessageStoreLocked()
 		return nil, err
 	}

@@ -8,10 +8,12 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { archiveReviewBuild } from './lib/review-build.mjs';
 import { captureReviewSource } from './lib/review-source.mjs';
 import { verifyTailcatPatch } from './lib/tailcat-patch.mjs';
+import { ensureWailsPatch, prepareOfficialToolModule, retainReplacementSums, verifyWailsDefinition, verifyWailsPatch } from './lib/wails-patch.mjs';
+import { replacementAdvisories } from './lib/replacement-advisories.mjs';
 import {
   assertNodeRuntime, assertReviewedGoGraph, assertToolBuildInfo, atLeast, checksums, collectArtifacts, collectSourceFiles,
   latestLtsNode, parseVersion, privateToolEnvironment, readJson, requireApp, requireFrontendScripts, requireFullReadiness,
-  stableNpmVersion, validatePackageName, validateReviewedGoPins, within, writeJson,
+  stableNpmVersion, validatePackageName, validateReviewedGoPins, validSecurityScans, within, writeJson,
 } from './lib/workflow.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -32,6 +34,10 @@ const commands = new Set([
 
 function run(executable, args, { cwd = root, capture = false, timeout = 120000, env = {}, mutableGo = false } = {}) {
   verifyTailcatPatch(root, policy.reviewedGoPins);
+  verifyWailsDefinition(root);
+  const toolchainOnly = path.basename(executable).replace(/\.exe$/i, '') === 'go' && ['version', 'env', 'telemetry'].includes(args[0]);
+  const nodeOnly = path.resolve(executable) === path.resolve(process.execPath);
+  if (!toolchainOnly && !nodeOnly) verifyWailsPatch(root);
   const childEnvironment = privateToolEnvironment({ ...process.env, GOTOOLCHAIN: 'local', GOFLAGS: `${mutableGo ? '' : '-mod=readonly '}-tags=${privacyTags}`, ...env });
   for (const name of Object.keys(childEnvironment)) if (name.toLowerCase() === 'path') delete childEnvironment[name];
   childEnvironment[process.platform === 'win32' ? 'Path' : 'PATH'] = [
@@ -104,8 +110,22 @@ function requirePinnedTool(name, module, version) {
   if (!existsSync(filename)) throw new Error(`Pinned ${name} missing for ${process.platform}-${process.arch}; run npm run setup in this platform's Node environment`);
   const info = run('go', ['version', '-m', filename], { capture: true });
   const graph = run('go', ['list', '-m', '-f', '{{.Path}} {{.Version}}{{with .Replace}} => {{.Path}} {{.Version}}{{end}}', 'all'], { capture: true, timeout: 300000 });
-  assertToolBuildInfo(info, module, version, graph, policy.minimumGo, verifyTailcatPatch(root, policy.reviewedGoPins));
+  assertToolBuildInfo(info, module, version, graph, policy.minimumGo, patchApprovals());
   return filename;
+}
+
+function patchApprovals() {
+  return [verifyTailcatPatch(root, policy.reviewedGoPins), verifyWailsPatch(root)];
+}
+
+function patchEvidence() {
+  return patchApprovals().map(({ module, version, patchVersion, manifestSHA256, treeSHA256 }) => ({ module, version, patchVersion, manifestSHA256, ...(treeSHA256 ? { treeSHA256 } : {}) }));
+}
+
+function materializeWails() {
+  const goRoot = run('go', ['env', 'GOROOT'], { capture: true });
+  return ensureWailsPatch(root, { executable: path.join(goRoot, 'bin', process.platform === 'win32' ? 'go.exe' : 'go'),
+    env: privateToolEnvironment({ ...process.env, GOTOOLCHAIN: 'local' }) });
 }
 
 function wailsPath() {
@@ -135,6 +155,8 @@ async function doctor() {
   };
   try { report.go = { ...report.go, ok: true, version: requireGo(), root: run('go', ['env', 'GOROOT'], { capture: true }), telemetry: run('go', ['telemetry'], { capture: true }) }; }
   catch (error) { report.go.error = error.message; }
+  try { const patch = verifyWailsPatch(root); report.wailsPatch = { ok: true, patchVersion: patch.patchVersion, treeSHA256: patch.treeSHA256 }; }
+  catch (error) { report.wailsPatch = { ok: false, error: error.message }; }
   try { await requireApp(root); report.appSources = true; }
   catch { report.appSources = false; }
   if (flags.includes('--network')) {
@@ -151,7 +173,7 @@ async function doctor() {
   await mkdir(directory, { recursive: true });
   await writeJson(path.join(directory, `doctor-${process.platform}-${process.arch}.json`), report);
   console.log(JSON.stringify(report, null, 2));
-  if (!report.node.ok || !report.go.ok || report.network?.some((x) => !x.ok)) process.exitCode = 1;
+  if (!report.node.ok || !report.go.ok || !report.wailsPatch.ok || report.network?.some((x) => !x.ok)) process.exitCode = 1;
 }
 
 async function toolingTest() {
@@ -166,7 +188,15 @@ async function installTool(module, version, name) {
   await mkdir(toolDirectory, { recursive: true });
   // Go tool directives pin the CLI AND its transitive graph in go.mod/go.sum.
   // Installing module@version would bypass patched dependencies selected there.
-  run('go', ['install', module], { env: { GOBIN: toolDirectory }, timeout: 600000 });
+  const officialTools = prepareOfficialToolModule(root);
+  const lockedMod = await readFile(path.join(officialTools, 'go.mod'));
+  const lockedSum = await readFile(path.join(officialTools, 'go.sum'));
+  run('go', ['mod', 'download'], { cwd: officialTools, env: { GOWORK: 'off' }, timeout: 300000 });
+  run('go', ['mod', 'verify'], { cwd: officialTools, env: { GOWORK: 'off' } });
+  run('go', ['install', module], { cwd: officialTools, env: { GOBIN: toolDirectory, GOWORK: 'off' }, timeout: 600000 });
+  if (!lockedMod.equals(await readFile(path.join(officialTools, 'go.mod'))) || !lockedSum.equals(await readFile(path.join(officialTools, 'go.sum')))) {
+    throw new Error('Official CLI compilation changed the mechanically derived frozen graph');
+  }
   const packageModule = name === 'wails3' ? 'github.com/wailsapp/wails/v3' : 'golang.org/x/vuln';
   requirePinnedTool(name, packageModule, version);
 }
@@ -174,10 +204,11 @@ async function installTool(module, version, name) {
 function assertTransportPins() {
   validateReviewedGoPins(policy.reviewedGoPins);
   const graph = run('go', ['list', '-m', '-f', '{{.Path}} {{.Version}}{{with .Replace}} => {{.Path}} {{.Version}}{{end}}', 'all'], { capture: true, timeout: 300000 });
-  assertReviewedGoGraph(graph, policy.reviewedGoPins, verifyTailcatPatch(root, policy.reviewedGoPins));
+  assertReviewedGoGraph(graph, policy.reviewedGoPins, patchApprovals());
 }
 
 async function frozenInstall() {
+  materializeWails();
   const lockFiles = ['package-lock.json', 'go.mod', 'go.sum', 'frontend/package.json', 'frontend/package-lock.json'];
   const before = await Promise.all(lockFiles.map((file) => readFile(path.join(root, file))));
   await frozenNpmInstall();
@@ -239,6 +270,7 @@ async function implementedCheck() {
   await requireApp(root);
   requireNativePlatform();
   requireGo();
+  materializeWails();
   const scanner = requirePinnedTool('govulncheck', 'golang.org/x/vuln', policy.govulncheckVersion);
   const wails = wailsPath();
   const manifest = await readJson(path.join(frontendDirectory, 'package.json'));
@@ -257,6 +289,9 @@ async function implementedCheck() {
   // The reviewed replacement is a nested module, so ./... does not include its
   // narrowly scoped offline regression tests. Compile it with this locked graph.
   run('go', ['test', '-mod=readonly', ...(race ? ['-race'] : []), '-count=1', 'github.com/tailscale/tailcat'], { timeout: 600000 });
+  run('go', ['test', '-mod=readonly', ...(race ? ['-race'] : []), '-count=1', '-run', '^TestWhatsUp',
+    'github.com/wailsapp/wails/v3/pkg/application', 'github.com/wailsapp/wails/v3/internal/assetserver/webview',
+    ...(process.platform === 'win32' ? ['github.com/wailsapp/wails/v3/internal/webview2/pkg/edge'] : [])], { timeout: 600000 });
   if (!race) console.log('Windows Go unit tests passed WITHOUT the race detector: no configured CGO C compiler. Ubuntu race validation remains required.');
   const scans = [];
   for (const [name, scan] of [
@@ -266,8 +301,14 @@ async function implementedCheck() {
     ['Wails CLI binary', () => run(scanner, ['-mode=binary', wails], { timeout: 600000 })],
     ['govulncheck binary', () => run(scanner, ['-mode=binary', scanner], { timeout: 600000 })],
   ]) {
-    try { scan(); scans.push({ name, passed: true }); }
+    try { await scan(); scans.push({ name, passed: true }); }
     catch (error) { scans.push({ name, passed: false, error: error.message }); }
+  }
+  try {
+    const replacements = await replacementAdvisories(patchApprovals());
+    for (const entry of replacements) scans.push({ name: `${entry.module} upstream version advisories`, ...entry });
+  } catch (error) {
+    for (const approval of patchApprovals()) scans.push({ name: `${approval.module} upstream version advisories`, module: approval.module, version: approval.version, passed: false, error: error.message });
   }
   assertTransportPins();
   let sourceAfter = null;
@@ -280,7 +321,7 @@ async function implementedCheck() {
     recordedAt: new Date().toISOString(), platform: process.platform, arch: process.arch,
     scope: 'implemented components only', functionalChecksPassed: true, goRaceEnabled: race,
     source: sourceBefore && sourceAfter ? { commit: sourceAfter.sourceCommit, dirty: sourceAfter.sourceDirty, digestSHA256: sourceAfter.sourceDigest } : null,
-    scans, applicationReady: false, transportIntegrationVerified: false,
+    scans, patches: patchEvidence(), applicationReady: false, transportIntegrationVerified: false,
   });
   if (scans.some((scan) => !scan.passed)) throw new Error(`Security scans failed: ${scans.filter((scan) => !scan.passed).map((scan) => scan.name).join(', ')}. No advisory exception was applied. Local report: ${report}`);
   console.log('Implemented-component checks completed. These do not establish native two-machine messaging, complete transport security verification, or release readiness.');
@@ -394,7 +435,9 @@ async function update() {
     ...Object.entries(policy.reviewedGoPins).map(([module, version]) => `${module}@${version}`)], { timeout: 600000, mutableGo: true });
   run('go', ['get', '-tool', `github.com/wailsapp/wails/v3/cmd/wails3@${policy.wailsVersion}`,
     `golang.org/x/vuln/cmd/govulncheck@${policy.govulncheckVersion}`], { timeout: 600000, mutableGo: true });
+  const updateGoRoot = run('go', ['env', 'GOROOT'], { capture: true });
   run('go', ['mod', 'tidy'], { timeout: 300000, mutableGo: true });
+  retainReplacementSums(root, policy.reviewedGoPins, { executable: path.join(updateGoRoot, 'bin', process.platform === 'win32' ? 'go.exe' : 'go'), env: privateToolEnvironment(process.env) });
   assertTransportPins();
   await setup();
   await applicationCheck();
@@ -464,6 +507,7 @@ async function nativeBuild() {
   } finally {
     if (windows) await rm(syso, { force: true });
   }
+  patchApprovals();
   console.log(`Native development candidate: ${output}. This unsigned build is not approved for distribution.`);
 }
 
@@ -515,7 +559,7 @@ async function buildReview() {
   try {
     const report = await readJson(path.join(root, '.local', `validation-${process.platform}-${process.arch}.json`));
     if (report.source?.digestSHA256 === source.sourceDigest && report.source.commit === source.sourceCommit
-        && Array.isArray(report.scans) && report.scans.length === 5 && report.scans.every((entry) => typeof entry.passed === 'boolean')) {
+        && validSecurityScans(report.scans)) {
       validation = {
         componentChecks: report.functionalChecksPassed === true ? 'passed' : 'not-run-for-this-snapshot',
         advisoryGate: report.scans.every((entry) => entry.passed) ? 'passed' : 'failed',
@@ -524,7 +568,7 @@ async function buildReview() {
   } catch { /* Do not infer validation from a missing or stale report. */ }
   const result = await archiveReviewBuild({ root, version, platform: process.platform, arch: process.arch,
     sourceCommit: source.sourceCommit, sourceDirty: source.sourceDirty, sourceDigest: source.sourceDigest,
-    toolchain: { go: requireGo(), node: process.versions.node, wails: policy.wailsVersion },
+    toolchain: { go: requireGo(), node: process.versions.node, wails: policy.wailsVersion }, patches: patchEvidence(),
     reviewID: flags[1], validation });
   let probeRelativeDirectory;
   if (probe) {
@@ -590,6 +634,7 @@ try {
   if (!['wsl', 'build-review'].includes(command) && flags.some((flag) => !allowedFlags.includes(flag))) throw new Error('Unsupported command option');
   assertNodeRuntime(process.versions.node, policy.minimumNode);
   verifyTailcatPatch(root, policy.reviewedGoPins);
+  verifyWailsDefinition(root);
   if (command === 'doctor') await doctor();
   if (command === 'tooling-test') await toolingTest();
   if (command === 'setup') await setup();

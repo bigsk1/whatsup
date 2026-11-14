@@ -33,14 +33,14 @@ const (
 	// lifetime or accepting certificates with unbounded validity intervals.
 	MaxClockSkew    = 5 * time.Minute
 	certificateName = "WhatsUp contact v1"
-	// Version 3 adds an authenticated capacity refusal, distinct from delivery
-	// acknowledgement. Both peers must understand it before any text is sent.
+	// Version 4 adds bounded attachment offers, approval and chunk checkpoints.
+	// Both peers must understand it before any attachment or text is sent.
 	// Wire protocol versions are independent of application release numbers.
-	protocol = "whatsup-contact/3"
+	protocol = "whatsup-contact/4"
 	// The previous protocol is recognized only to diagnose a pinned peer after
 	// TLS authentication. It never grants an application Session or permission
 	// to send legacy/new message packets.
-	diagnosticProtocol = "whatsup-contact/2"
+	diagnosticProtocol = "whatsup-contact/3"
 )
 
 var (

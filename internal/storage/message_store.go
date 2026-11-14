@@ -194,7 +194,7 @@ func (a *ApplicationState) openMessageStoreLocked() error {
 			return err
 		}
 	}
-	return a.finishMessageDeletesLocked()
+	return nil
 }
 
 func (a *ApplicationState) closeMessageStoreLocked() error {
@@ -214,6 +214,18 @@ func (a *ApplicationState) finishMessageDeletesLocked() error {
 		return nil
 	}
 	for _, id := range a.state.DeleteScopes {
+		if a.attachments != nil {
+			scope, err := a.messages.ExistingScope(id)
+			if err != nil {
+				return err
+			}
+			if scope != nil {
+				if err := a.attachments.DropScope(id, scope.Attachments()); err != nil {
+					a.failed = true
+					return err
+				}
+			}
+		}
 		if err := a.messages.DropContact(id); err != nil {
 			a.failed = true
 			return err
@@ -311,5 +323,17 @@ func (s *ChatStore) DeleteLocal(id string) error {
 	return s.withScope(func(scope *messagestore.Scope) error { return scope.DeleteLocal(id) })
 }
 func (s *ChatStore) ClearHistory() error {
-	return s.withScope(func(scope *messagestore.Scope) error { return scope.ClearHistory() })
+	return s.withScope(func(scope *messagestore.Scope) error {
+		if err := scope.ClearHistory(); err != nil {
+			return err
+		}
+		if s.application.attachments == nil {
+			return nil
+		}
+		files, err := s.application.attachments.Scope(s.storeID, scope.Attachments())
+		if err != nil {
+			return err
+		}
+		return files.CollectGarbage()
+	})
 }

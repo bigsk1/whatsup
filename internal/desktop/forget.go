@@ -41,6 +41,7 @@ func (s *Service) ForgetContact(contactID string) (messaging.Snapshot, error) {
 	if index < 0 {
 		return current, errors.New("This contact is no longer available")
 	}
+	s.retireAttachmentsLocked(contactID)
 	err = s.application.ForgetCommittedContact(records[index], func() error {
 		// Retire sets a permanent generation tombstone before joining this exact
 		// runtime. A late pairing callback cannot recreate it during deletion.
@@ -56,6 +57,7 @@ func (s *Service) ForgetContact(contactID string) (messaging.Snapshot, error) {
 // invalidates every stale receipt and handle before the owner explicitly reopens
 // the authenticated snapshot to determine whether the old association remains.
 func (s *Service) failForget() (messaging.Snapshot, error) {
+	s.stopAttachmentsLocked()
 	if s.messages != nil {
 		s.messages.Close()
 		s.messages = nil

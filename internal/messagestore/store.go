@@ -85,6 +85,10 @@ type metadata struct {
 	ClearThroughSequence uint64 `json:"clearThroughSequence"`
 	ReadThroughSequence  uint64 `json:"readThroughSequence"`
 	Unread               uint64 `json:"unread"`
+	AttachmentNext       uint64 `json:"attachmentNext,omitempty"`
+	AttachmentRows       uint64 `json:"attachmentRows,omitempty"`
+	AttachmentUsed       uint64 `json:"attachmentUsed,omitempty"`
+	AutoImages           bool   `json:"autoImages,omitempty"`
 }
 
 // Keep the exact Phase 1 canonical shape for authenticated on-open migration.
@@ -106,8 +110,9 @@ type record struct {
 }
 
 type contactCache struct {
-	epoch   string
-	pending map[string]uint64
+	epoch       string
+	pending     map[string]uint64
+	attachments map[string]bool
 }
 
 type DB struct{ *dbState }
@@ -286,6 +291,9 @@ func Open(directory string, rootKey []byte, options Options) (_ *DB, result erro
 			return nil, ErrStore
 		}
 	}
+	if _, err = d.conn.ExecContext(context.Background(), `CREATE TABLE IF NOT EXISTS attachments(contact_id TEXT NOT NULL,message_id TEXT NOT NULL,sequence INTEGER NOT NULL CHECK(sequence>0),cipher BLOB NOT NULL,PRIMARY KEY(contact_id,message_id),UNIQUE(contact_id,sequence)) WITHOUT ROWID;`); err != nil {
+		return nil, ErrStore
+	}
 	if err = d.upgradeMetadata(context.Background()); err != nil {
 		return nil, err
 	}
@@ -454,7 +462,7 @@ func (d *DB) loadMeta(ctx context.Context, q queryer, id string) (metadata, stri
 	} else if m.Version != 2 {
 		return metadata{}, "", ErrCorrupt
 	}
-	if m.Version != 1 && m.Version != 2 || !validID(m.Epoch) || m.NextSequence == 0 || m.NextSequence > math.MaxInt64 || m.Rows != m.NextSequence-1 || m.Pending > m.Rows || m.Unread > m.Rows || m.ClearThroughSequence > m.ReadThroughSequence || m.ReadThroughSequence >= m.NextSequence {
+	if m.Version != 1 && m.Version != 2 || !validID(m.Epoch) || m.NextSequence == 0 || m.NextSequence > math.MaxInt64 || m.Rows != m.NextSequence-1 || m.Pending > m.Rows || m.Unread > m.Rows || m.ClearThroughSequence > m.ReadThroughSequence || m.ReadThroughSequence >= m.NextSequence || !validAttachmentMetadata(m) {
 		return metadata{}, "", ErrCorrupt
 	}
 	return m, key, nil
@@ -487,6 +495,11 @@ func (d *DB) verifyAll(ctx context.Context, q queryer) error {
 		return ErrCorrupt
 	}
 	contacts := make(map[string]*contactCache, len(root.Contacts))
+	var attachmentContacts int
+	if err = q.QueryRowContext(ctx, "SELECT count(DISTINCT contact_id) FROM attachments").Scan(&attachmentContacts); err != nil {
+		return ErrCorrupt
+	}
+	var expectedAttachmentContacts int
 	for _, contact := range root.Contacts {
 		m, _, err := d.loadMeta(ctx, q, contact)
 		if err != nil {
@@ -533,7 +546,16 @@ func (d *DB) verifyAll(ctx context.Context, q queryer) error {
 		if count != m.Rows || used != m.UsedBytes || last+1 != m.NextSequence || uint64(len(cache.pending)) != m.Pending || unread != m.Unread {
 			return ErrCorrupt
 		}
+		if err := d.verifyAttachments(ctx, q, contact, m, cache); err != nil {
+			return err
+		}
+		if m.AttachmentRows != 0 {
+			expectedAttachmentContacts++
+		}
 		contacts[contact] = cache
+	}
+	if attachmentContacts != expectedAttachmentContacts {
+		return ErrCorrupt
 	}
 	d.manifest, d.contacts = root, contacts
 	return nil

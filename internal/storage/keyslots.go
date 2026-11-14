@@ -48,6 +48,18 @@ func messageFilesExist(directory string) bool {
 			return true
 		}
 	}
+	path := filepath.Join(directory, "attachments")
+	if info, err := os.Lstat(path); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return true
+		}
+		entries, err := os.ReadDir(path)
+		if err != nil || len(entries) > 0 {
+			return true
+		}
+	} else if !os.IsNotExist(err) {
+		return true
+	}
 	return false
 }
 

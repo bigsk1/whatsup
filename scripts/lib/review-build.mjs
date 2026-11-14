@@ -66,6 +66,19 @@ function validationEvidence(validation = {}) {
   return { componentChecks, advisoryGate, nativeUI };
 }
 
+function patchEvidence(patches) {
+  if (patches === undefined) return undefined;
+  const names = ['github.com/tailscale/tailcat', 'github.com/wailsapp/wails/v3'];
+  if (!Array.isArray(patches) || patches.length !== 2 || new Set(patches.map((entry) => entry?.module)).size !== 2) throw new Error('Both reviewed native patch identities are required');
+  return patches.map((entry) => {
+    if (!names.includes(entry?.module) || typeof entry.version !== 'string' || !/^v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(entry.version)
+      || !Number.isSafeInteger(entry.patchVersion) || entry.patchVersion < 1 || !digestPattern.test(entry.manifestSHA256)
+      || (entry.module === 'github.com/wailsapp/wails/v3' && !digestPattern.test(entry.treeSHA256))) throw new Error('Invalid reviewed native patch evidence');
+    return { module: entry.module, version: entry.version, patchVersion: entry.patchVersion, manifestSHA256: entry.manifestSHA256,
+      ...(entry.module === 'github.com/wailsapp/wails/v3' ? { treeSHA256: entry.treeSHA256 } : {}) };
+  });
+}
+
 /**
  * Preserve one native DEVELOPMENT candidate, separate from gated release
  * packaging. Only the exact native build output and selected public metadata
@@ -74,7 +87,7 @@ function validationEvidence(validation = {}) {
  */
 export async function archiveReviewBuild({
   root, version, platform, arch, binary, sourceCommit, sourceDirty, sourceDigest,
-  toolchain, reviewID, validation, now = new Date(),
+  toolchain, reviewID, validation, patches, now = new Date(),
 }) {
   if (!path.isAbsolute(root)) throw new Error('Review builds require an absolute workspace path');
   const parsed = parseVersion(version);
@@ -91,6 +104,7 @@ export async function archiveReviewBuild({
   }
   const createdAt = new Date(now).toISOString();
   const selectedTools = toolVersions(toolchain);
+  const selectedPatches = patchEvidence(patches);
   const evidence = validationEvidence(validation);
   const workspace = path.resolve(root);
   await inspectAncestors(workspace);
@@ -133,6 +147,7 @@ export async function archiveReviewBuild({
     platform, arch, developmentOnly: true, releaseEligible: false, signed: false,
     source: { commit: sourceCommit, dirty: sourceDirty, digestSHA256: sourceDigest },
     toolchain: selectedTools,
+    ...(selectedPatches ? { patches: selectedPatches } : {}),
     validation: evidence,
     limitations: [
       'Private unsigned development candidate; not an installer or approved release.',

@@ -2,6 +2,14 @@ import { createHash } from 'node:crypto';
 import { lstat, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { isApprovedReplacement } from './tailcat-patch.mjs';
+import { isApprovedWailsReplacement } from './wails-patch.mjs';
+
+const requiredScanNames = Object.freeze(['root npm audit', 'frontend npm audit', 'govulncheck', 'Wails CLI binary', 'govulncheck binary',
+  'github.com/tailscale/tailcat upstream version advisories', 'github.com/wailsapp/wails/v3 upstream version advisories']);
+export function validSecurityScans(scans) {
+  return Array.isArray(scans) && scans.length === requiredScanNames.length && new Set(scans.map((scan) => scan?.name)).size === requiredScanNames.length
+    && scans.every((scan) => requiredScanNames.includes(scan?.name) && typeof scan?.passed === 'boolean');
+}
 
 export function parseVersion(value) {
   const match = /^(?:v|go)?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(value);
@@ -132,11 +140,16 @@ export function validateReviewedGoPins(pins) {
   return modules;
 }
 
+function approvedGoReplacement(module, version, target, approvals) {
+  return (Array.isArray(approvals) ? approvals : [approvals]).some((approval) =>
+    isApprovedReplacement(module, version, target, approval) || isApprovedWailsReplacement(module, version, target, approval));
+}
+
 function selectedGoGraph(output, approvedReplacement) {
   const rows = output.split(/\r?\n/).filter((line) => line.trim()).map((line) => line.trim().split(/\s+/));
   for (const row of rows) {
     if (row.includes('=>') && !(row.length === 4 && row[2] === '=>'
-        && isApprovedReplacement(row[0], row[1], row[3], approvedReplacement))) {
+        && approvedGoReplacement(row[0], row[1], row[3], approvedReplacement))) {
       throw new Error('Unreviewed selected graph replacement is not permitted for pinned tools or transport');
     }
   }
@@ -146,9 +159,10 @@ function selectedGoGraph(output, approvedReplacement) {
 export function assertReviewedGoGraph(output, pins, approvedReplacement) {
   for (const module of validateReviewedGoPins(pins)) {
     const line = output.split(/\r?\n/).map((value) => value.trim()).find((value) => value.split(/\s+/)[0] === module);
+    const fields = line?.split(/\s+/) ?? [];
     if (line !== `${module} ${pins[module]}`
-        && !(line === `${module} ${pins[module]} => ${approvedReplacement?.path}`
-          && isApprovedReplacement(module, pins[module], approvedReplacement?.path, approvedReplacement))) {
+        && !(fields.length === 4 && fields[0] === module && fields[1] === pins[module] && fields[2] === '=>'
+          && approvedGoReplacement(module, pins[module], fields[3], approvedReplacement))) {
       throw new Error(`Reviewed transport dependency moved or was replaced: ${module}. Review upstream separately before changing its pin.`);
     }
   }

@@ -1,0 +1,1929 @@
+--- a/internal/assetserver/assetserver_webview.go
++++ b/internal/assetserver/assetserver_webview.go
+@@ -16,6 +16,8 @@
+ 	webview.ResponseWriter
+ 	ctx context.Context
+ }
++
++func (rw *requestContextResponseWriter) Unwrap() http.ResponseWriter { return rw.ResponseWriter }
+ 
+ func (rw *requestContextResponseWriter) Write(buf []byte) (int, error) {
+ 	if rw.ctx.Err() != nil {
+--- a/internal/assetserver/webview/responsewriter_windows.go
++++ b/internal/assetserver/webview/responsewriter_windows.go
+@@ -4,10 +4,14 @@
+ 
+ import (
+ 	"bytes"
++	"context"
+ 	"errors"
+ 	"fmt"
++	"io"
+ 	"net/http"
+ 	"strings"
++
++	"github.com/wailsapp/wails/v3/internal/webview2/pkg/edge"
+ )
+ 
+ var _ http.ResponseWriter = &responseWriter{}
+@@ -19,6 +23,7 @@
+ 	wroteHeader bool
+ 	code        int
+ 	body        *bytes.Buffer
++	stream      *edge.ReaderStream
+ 
+ 	finished bool
+ }
+@@ -42,7 +47,7 @@
+ // This is also why a streaming response cannot work on Windows today,
+ // independently of anything WebView2 does.
+ func (rw *responseWriter) Write(buf []byte) (int, error) {
+-	if rw.finished {
++	if rw.finished || rw.stream != nil {
+ 		return 0, errResponseFinished
+ 	}
+ 
+@@ -103,7 +108,11 @@
+ 			errs = append(errs, fmt.Errorf("Resp.PutStatusCode failed: %s", err))
+ 		}
+ 
+-		if err := resp.PutByteContent(rw.body.Bytes()); err != nil {
++		if rw.stream != nil {
++			if err := resp.PutContent(rw.stream.IStream()); err != nil {
++				errs = append(errs, errors.New("native completed content failed"))
++			}
++		} else if err := resp.PutByteContent(rw.body.Bytes()); err != nil {
+ 			errs = append(errs, fmt.Errorf("Resp.PutByteContent failed: %s", err))
+ 		}
+ 
+@@ -115,6 +124,40 @@
+ 	return combineErrs(errs)
+ }
+ 
++// SetCompletedReader publishes complete content, then waits without holding the
++// UI thread. Keeping this handler alive preserves browser abort tracking.
++func (rw *responseWriter) SetCompletedReader(ctx context.Context, reader io.ReadSeekCloser, length int64) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	if rw.finished || rw.stream != nil || (rw.body != nil && rw.body.Len() != 0) {
++		return errors.New("completed content cannot replace a response")
++	}
++	var err error
++	rw.req.invokeSync(func() { rw.stream, err = edge.NewReaderStream(reader, length) })
++	if err != nil {
++		return err
++	}
++	stream := rw.stream
++	if err = rw.Finish(); err != nil {
++		_ = stream.Close()
++		stream.Release()
++		return err
++	}
++	stream.Release() // The response/browser owns the native references now.
++	select {
++	case <-stream.Done():
++		return stream.Err()
++	case <-ctx.Done():
++		complete := stream.Exhausted()
++		_ = stream.Close()
++		if complete {
++			return nil
++		}
++		return ctx.Err()
++	}
++}
++
+ func (rw *responseWriter) Code() int {
+ 	return rw.code
+ }
+--- a/internal/webview2/pkg/edge/chromium.go
++++ b/internal/webview2/pkg/edge/chromium.go
+@@ -86,6 +86,7 @@
+ 	AdditionalBrowserArgs         []string
+ 	NonClientRegionSupportEnabled bool
+ 	CompositionControllerEnabled  bool
++	RequireComposition            bool
+ 
+ 	// permissions
+ 	permissions      map[CoreWebView2PermissionKind]CoreWebView2PermissionState
+@@ -568,6 +569,9 @@
+ }
+ 
+ func (e *Chromium) fallbackToCoreWebView2Controller(reason error) error {
++	if e.RequireComposition {
++		return fmt.Errorf("required composition hosting unavailable: %w", reason)
++	}
+ 	log.Printf("[WebView2] Composition hosting unavailable, falling back to HWND controller: %v\n", reason)
+ 
+ 	e.releaseCompositionController()
+--- /dev/null
++++ b/internal/webview2/pkg/edge/whatsup_reader_stream_windows.go
+@@ -0,0 +1,340 @@
++//go:build windows && (amd64 || arm64)
++
++package edge
++
++import (
++	"errors"
++	"io"
++	"sync"
++	"sync/atomic"
++	"syscall"
++	"unsafe"
++
++	"golang.org/x/sys/windows"
++)
++
++// ReaderStream exposes complete immutable content without copying it into an
++// HGLOBAL. All callbacks are global: allocating one stream does not consume more
++// runtime callback slots. The native object is rooted until its final Release.
++type ReaderStream struct {
++	mu               sync.Mutex
++	native           *readerStreamObject
++	reader           io.ReadSeekCloser
++	length, position int64
++	refs             atomic.Int64
++	closed           atomic.Bool
++	failed           atomic.Bool
++	done             chan struct{}
++	once             sync.Once
++	marshaler        uintptr
++}
++type readerStreamObject struct{ vtable *[14]uintptr }
++
++var readerStreams = struct {
++	sync.RWMutex
++	states map[uintptr]*ReaderStream
++}{states: make(map[uintptr]*ReaderStream)}
++var createReaderMarshaler = windows.NewLazySystemDLL("ole32.dll").NewProc("CoCreateFreeThreadedMarshaler")
++
++func readerGUID(s string) windows.GUID {
++	value, err := windows.GUIDFromString(s)
++	if err != nil {
++		panic(err)
++	}
++	return value
++}
++
++var readerIUnknown = readerGUID("{00000000-0000-0000-C000-000000000046}")
++var readerISequentialStream = readerGUID("{0c733a30-2a1c-11ce-ade5-00aa0044773d}")
++var readerIStream = readerGUID("{0000000c-0000-0000-C000-000000000046}")
++var readerIAgile = readerGUID("{94ea2b94-e9cc-49e0-c0ff-ee64ca8f5b90}")
++var readerIMarshal = readerGUID("{00000003-0000-0000-C000-000000000046}")
++var readerStreamVTable = [14]uintptr{
++	windows.NewCallback(readerQueryInterface), windows.NewCallback(readerAddRef), windows.NewCallback(readerRelease),
++	windows.NewCallback(readerRead), windows.NewCallback(readerWrite), windows.NewCallback(readerSeek),
++	windows.NewCallback(readerSetSize), windows.NewCallback(readerCopyTo), windows.NewCallback(readerCommit),
++	windows.NewCallback(readerRevert), windows.NewCallback(readerLockRegion), windows.NewCallback(readerUnlockRegion),
++	windows.NewCallback(readerStat), windows.NewCallback(readerClone),
++}
++
++// NewReaderStream must run on a COM-initialized thread. The free-threaded
++// marshaler and serialized reader make native background reads supported.
++func NewReaderStream(reader io.ReadSeekCloser, length int64) (*ReaderStream, error) {
++	if reader == nil || length < 0 {
++		return nil, errors.New("invalid native reader")
++	}
++	memory, allocationError := windows.LocalAlloc(0, uint32(unsafe.Sizeof(readerStreamObject{})))
++	if allocationError != nil || memory == 0 {
++		return nil, errors.New("native reader allocation failed")
++	}
++	object := (*readerStreamObject)(unsafe.Pointer(memory))
++	object.vtable = &readerStreamVTable
++	s := &ReaderStream{reader: reader, length: length, done: make(chan struct{}), native: object}
++	s.refs.Store(1)
++	this := uintptr(unsafe.Pointer(s.native))
++	readerStreams.Lock()
++	readerStreams.states[this] = s
++	readerStreams.Unlock()
++	hr, _, _ := createReaderMarshaler.Call(this, uintptr(unsafe.Pointer(&s.marshaler)))
++	if int32(hr) < 0 || s.marshaler == 0 {
++		readerRelease(this)
++		return nil, errors.New("native reader marshaler unavailable")
++	}
++	return s, nil
++}
++func (s *ReaderStream) IStream() *IStream     { return (*IStream)(unsafe.Pointer(s.native)) }
++func (s *ReaderStream) Done() <-chan struct{} { return s.done }
++func (s *ReaderStream) Err() error {
++	if s.failed.Load() {
++		return errors.New("native completed content read failed")
++	}
++	return nil
++}
++func (s *ReaderStream) Exhausted() bool {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	return s.position >= s.length
++}
++func (s *ReaderStream) Close() error {
++	var err error
++	s.closed.Store(true)
++	s.once.Do(func() { s.mu.Lock(); err = s.reader.Close(); s.mu.Unlock(); close(s.done) })
++	return err
++}
++func (s *ReaderStream) Release() { readerRelease(uintptr(unsafe.Pointer(s.native))) }
++func streamState(this uintptr) *ReaderStream {
++	readerStreams.RLock()
++	s := readerStreams.states[this]
++	readerStreams.RUnlock()
++	return s
++}
++func readerQueryInterface(this, riid, out uintptr) uintptr {
++	if riid == 0 || out == 0 {
++		return 0x80004003
++	}
++	*(*uintptr)(unsafe.Pointer(out)) = 0
++	s := streamState(this)
++	if s == nil {
++		return 0x80004002
++	}
++	id := *(*windows.GUID)(unsafe.Pointer(riid))
++	if id == readerIUnknown || id == readerISequentialStream || id == readerIStream || id == readerIAgile {
++		s.refs.Add(1)
++		*(*uintptr)(unsafe.Pointer(out)) = this
++		return 0
++	}
++	if id == readerIMarshal && s.marshaler != 0 {
++		vt := *(*[3]uintptr)(unsafe.Pointer(*(*uintptr)(unsafe.Pointer(s.marshaler))))
++		hr, _, _ := syscall.SyscallN(vt[0], s.marshaler, riid, out)
++		return hr
++	}
++	return 0x80004002
++}
++func readerAddRef(this uintptr) uintptr {
++	if s := streamState(this); s != nil {
++		return uintptr(s.refs.Add(1))
++	}
++	return 0
++}
++func readerRelease(this uintptr) uintptr {
++	s := streamState(this)
++	if s == nil {
++		return 0
++	}
++	refs := s.refs.Add(-1)
++	if refs == 0 {
++		_ = s.Close()
++		if s.marshaler != 0 {
++			vt := *(*[3]uintptr)(unsafe.Pointer(*(*uintptr)(unsafe.Pointer(s.marshaler))))
++			_, _, _ = syscall.SyscallN(vt[2], s.marshaler)
++		}
++		readerStreams.Lock()
++		delete(readerStreams.states, this)
++		readerStreams.Unlock()
++		_, _ = windows.LocalFree(windows.Handle(this))
++	}
++	return uintptr(refs)
++}
++func readerRead(this, p, count, readOut uintptr) uintptr {
++	if readOut != 0 {
++		*(*uint32)(unsafe.Pointer(readOut)) = 0
++	}
++	if count > 0 && p == 0 {
++		return 0x80004003
++	}
++	s := streamState(this)
++	if s == nil {
++		return 0x80030002
++	}
++	if count > 0xffffffff {
++		return 0x80070057
++	}
++	var total uintptr
++	for total < count {
++		if s.closed.Load() {
++			return 0x80030102
++		}
++		s.mu.Lock()
++		if s.closed.Load() {
++			s.mu.Unlock()
++			return 0x80030102
++		}
++		remaining := s.length - s.position
++		amount := min(count-total, 64<<10)
++		if int64(amount) > remaining {
++			amount = uintptr(max(remaining, 0))
++		}
++		if amount == 0 {
++			s.mu.Unlock()
++			if readOut != 0 {
++				*(*uint32)(unsafe.Pointer(readOut)) = uint32(total)
++			}
++			return 1
++		}
++		buf := unsafe.Slice((*byte)(unsafe.Pointer(p+total)), int(amount))
++		n, err := s.reader.Read(buf)
++		s.position += int64(n)
++		s.mu.Unlock()
++		total += uintptr(n)
++		if readOut != 0 {
++			*(*uint32)(unsafe.Pointer(readOut)) = uint32(total)
++		}
++		if err != nil && err != io.EOF {
++			s.failed.Store(true)
++			_ = s.Close()
++			return 0x8003001e
++		}
++		if err == io.EOF {
++			if !s.Exhausted() {
++				s.failed.Store(true)
++				_ = s.Close()
++				return 0x8003001e
++			}
++			if total == count {
++				return 0
++			}
++			return 1
++		}
++		if n == 0 {
++			s.failed.Store(true)
++			_ = s.Close()
++			return 0x8003001e
++		}
++	}
++	return 0
++}
++func readerWrite(this, p, count, written uintptr) uintptr {
++	if written != 0 {
++		*(*uint32)(unsafe.Pointer(written)) = 0
++	}
++	return 0x80030005
++}
++func readerSeek(this, offset, origin, out uintptr) uintptr {
++	s := streamState(this)
++	if s == nil || s.closed.Load() {
++		return 0x80030102
++	}
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	if s.closed.Load() {
++		return 0x80030102
++	}
++	n := int64(offset)
++	switch origin {
++	case 0:
++	case 1:
++		n += s.position
++	case 2:
++		n += s.length
++	default:
++		return 0x80030001
++	}
++	if n < 0 || n > s.length {
++		return 0x80030001
++	}
++	position, err := s.reader.Seek(n, io.SeekStart)
++	if err != nil || position != n {
++		return 0x80030019
++	}
++	s.position = n
++	if out != 0 {
++		*(*uint64)(unsafe.Pointer(out)) = uint64(n)
++	}
++	return 0
++}
++func readerSetSize(this, size uintptr) uintptr { return 0x80030005 }
++func readerCopyTo(this, target, size, read, written uintptr) uintptr {
++	if read != 0 {
++		*(*uint64)(unsafe.Pointer(read)) = 0
++	}
++	if written != 0 {
++		*(*uint64)(unsafe.Pointer(written)) = 0
++	}
++	if target == 0 {
++		return 0x80004003
++	}
++	targetVTable := *(*[5]uintptr)(unsafe.Pointer(*(*uintptr)(unsafe.Pointer(target))))
++	buffer := make([]byte, 64<<10)
++	var consumed, emitted uint64
++	for consumed < uint64(size) {
++		amount := min(uint64(len(buffer)), uint64(size)-consumed)
++		var got, sent uint32
++		hr := readerRead(this, uintptr(unsafe.Pointer(&buffer[0])), uintptr(amount), uintptr(unsafe.Pointer(&got)))
++		consumed += uint64(got)
++		if read != 0 {
++			*(*uint64)(unsafe.Pointer(read)) = consumed
++		}
++		if int32(hr) < 0 {
++			return hr
++		}
++		if got > 0 {
++			result, _, _ := syscall.SyscallN(targetVTable[4], target, uintptr(unsafe.Pointer(&buffer[0])), uintptr(got), uintptr(unsafe.Pointer(&sent)))
++			emitted += uint64(sent)
++			if written != 0 {
++				*(*uint64)(unsafe.Pointer(written)) = emitted
++			}
++			if int32(result) < 0 {
++				return result
++			}
++			if sent != got {
++				return 0x8003001d
++			}
++		}
++		if hr == 1 {
++			return 1
++		}
++	}
++	return 0
++}
++func readerCommit(this, flags uintptr) uintptr                      { return 0 }
++func readerRevert(this uintptr) uintptr                             { return 0x80004001 }
++func readerLockRegion(this, offset, length, kind uintptr) uintptr   { return 0x80030001 }
++func readerUnlockRegion(this, offset, length, kind uintptr) uintptr { return 0x80030001 }
++
++type readerStatSTG struct {
++	Name                uintptr
++	Type                uint32
++	Size                uint64
++	Mtime, Ctime, Atime windows.Filetime
++	Mode, Locks         uint32
++	CLSID               windows.GUID
++	State, Reserved     uint32
++}
++
++func readerStat(this, out, flags uintptr) uintptr {
++	if out == 0 {
++		return 0x80004003
++	}
++	s := streamState(this)
++	if s == nil {
++		return 0x80030102
++	}
++	*(*readerStatSTG)(unsafe.Pointer(out)) = readerStatSTG{Type: 2, Size: uint64(s.length)}
++	return 0
++}
++func readerClone(this, out uintptr) uintptr {
++	if out != 0 {
++		*(*uintptr)(unsafe.Pointer(out)) = 0
++	}
++	return 0x80004001
++}
+--- /dev/null
++++ b/internal/webview2/pkg/edge/whatsup_reader_stream_windows_test.go
+@@ -0,0 +1,160 @@
++//go:build windows && (amd64 || arm64)
++
++package edge
++
++import (
++	"bytes"
++	"io"
++	"runtime"
++	"syscall"
++	"testing"
++	"time"
++	"unsafe"
++
++	"golang.org/x/sys/windows"
++)
++
++type whatsUpStreamReader struct {
++	*bytes.Reader
++	closes, maximum int
++}
++
++func TestWhatsUpReaderMarshalsFromSTAIntoBackgroundMTA(t *testing.T) {
++	runtime.LockOSThread()
++	defer runtime.UnlockOSThread()
++	ole := windows.NewLazySystemDLL("ole32.dll")
++	hr, _, _ := ole.NewProc("CoInitializeEx").Call(0, 2)
++	if int32(hr) < 0 {
++		t.Fatal("STA initialization failed")
++	}
++	defer ole.NewProc("CoUninitialize").Call()
++	r := &whatsUpStreamReader{Reader: bytes.NewReader([]byte("synthetic native stream"))}
++	stream, err := NewReaderStream(r, 23)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer stream.Release()
++	var marshaled uintptr
++	hr, _, _ = ole.NewProc("CoMarshalInterThreadInterfaceInStream").Call(uintptr(unsafe.Pointer(&readerIStream)), uintptr(unsafe.Pointer(stream.IStream())), uintptr(unsafe.Pointer(&marshaled)))
++	if int32(hr) < 0 || marshaled == 0 {
++		t.Fatal("stream could not be marshaled")
++	}
++	done := make(chan error, 1)
++	go func() {
++		runtime.LockOSThread()
++		defer runtime.UnlockOSThread()
++		result, _, _ := ole.NewProc("CoInitializeEx").Call(0, 0)
++		if int32(result) < 0 {
++			done <- io.ErrClosedPipe
++			return
++		}
++		defer ole.NewProc("CoUninitialize").Call()
++		var pointer uintptr
++		result, _, _ = ole.NewProc("CoGetInterfaceAndReleaseStream").Call(marshaled, uintptr(unsafe.Pointer(&readerIStream)), uintptr(unsafe.Pointer(&pointer)))
++		if int32(result) < 0 || pointer == 0 {
++			done <- io.ErrClosedPipe
++			return
++		}
++		native := (*IStream)(unsafe.Pointer(pointer))
++		defer native.Release()
++		bytes := make([]byte, 23)
++		n, err := native.Read(bytes)
++		if err == nil && (n != 23 || string(bytes) != "synthetic native stream") {
++			err = io.ErrUnexpectedEOF
++		}
++		done <- err
++	}()
++	select {
++	case err := <-done:
++		if err != nil {
++			t.Fatal(err)
++		}
++	case <-time.After(5 * time.Second):
++		t.Fatal("background native read blocked")
++	}
++}
++
++func TestWhatsUpReaderPrematureEOFIsFailureAndCloses(t *testing.T) {
++	runtime.LockOSThread()
++	defer runtime.UnlockOSThread()
++	ole := windows.NewLazySystemDLL("ole32.dll")
++	hr, _, _ := ole.NewProc("CoInitializeEx").Call(0, 0)
++	if int32(hr) < 0 {
++		t.Fatal("COM initialization failed")
++	}
++	defer ole.NewProc("CoUninitialize").Call()
++	r := &whatsUpStreamReader{Reader: bytes.NewReader([]byte("x"))}
++	stream, err := NewReaderStream(r, 2)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer stream.Release()
++	_, err = stream.IStream().Read(make([]byte, 3))
++	if err == nil || err == io.EOF || stream.Err() == nil || r.closes != 1 {
++		t.Fatalf("truncated content accepted: %v closes=%d", err, r.closes)
++	}
++}
++
++func (r *whatsUpStreamReader) Read(p []byte) (int, error) {
++	if len(p) > r.maximum {
++		r.maximum = len(p)
++	}
++	return r.Reader.Read(p)
++}
++func (r *whatsUpStreamReader) Close() error { r.closes++; return nil }
++func TestWhatsUpReaderNativeCOMReadSeekStatAndLifetime(t *testing.T) {
++	runtime.LockOSThread()
++	defer runtime.UnlockOSThread()
++	ole := windows.NewLazySystemDLL("ole32.dll")
++	hr, _, _ := ole.NewProc("CoInitializeEx").Call(0, 0)
++	if int32(hr) < 0 {
++		t.Fatal("COM initialization failed")
++	}
++	defer ole.NewProc("CoUninitialize").Call()
++	body := bytes.Repeat([]byte("01234567"), 20000)
++	r := &whatsUpStreamReader{Reader: bytes.NewReader(body)}
++	stream, err := NewReaderStream(r, int64(len(body)))
++	if err != nil {
++		t.Fatal(err)
++	}
++	native := stream.IStream()
++	data := make([]byte, len(body)+1)
++	n, err := native.Read(data)
++	if n != len(body) || err != io.EOF || !bytes.Equal(data[:n], body) || r.maximum > 64<<10 {
++		t.Fatalf("native read n=%d err=%v maximum=%d", n, err, r.maximum)
++	}
++	var position uint64
++	hr, _, _ = syscall.SyscallN(readerStreamVTable[5], uintptr(unsafe.Pointer(stream.native)), 3, 0, uintptr(unsafe.Pointer(&position)))
++	if hr != 0 || position != 3 {
++		t.Fatalf("seek=%x/%d", hr, position)
++	}
++	n, err = native.Read(data[:4])
++	if n != 4 || err != nil || string(data[:4]) != "3456" {
++		t.Fatal("seek/read mismatch")
++	}
++	var stat readerStatSTG
++	hr, _, _ = syscall.SyscallN(readerStreamVTable[12], uintptr(unsafe.Pointer(stream.native)), uintptr(unsafe.Pointer(&stat)), 1)
++	if hr != 0 || stat.Size != uint64(len(body)) || stat.Type != 2 || unsafe.Sizeof(stat) != 80 {
++		t.Fatal("native STATSTG layout/length")
++	}
++	var marshal uintptr
++	hr = readerQueryInterface(uintptr(unsafe.Pointer(stream.native)), uintptr(unsafe.Pointer(&readerIMarshal)), uintptr(unsafe.Pointer(&marshal)))
++	if hr != 0 || marshal == 0 {
++		t.Fatal("free-threaded marshaler missing")
++	}
++	vtable := *(*[3]uintptr)(unsafe.Pointer(*(*uintptr)(unsafe.Pointer(marshal))))
++	_, _, _ = syscall.SyscallN(vtable[2], marshal)
++	stream.Release()
++	select {
++	case <-stream.Done():
++	default:
++		t.Fatal("native release did not close reader")
++	}
++	if r.closes != 1 {
++		t.Fatalf("reader closed %d times", r.closes)
++	}
++	_ = stream.Close()
++	if r.closes != 1 {
++		t.Fatal("close not idempotent")
++	}
++}
+--- a/pkg/application/linux_cgo.go
++++ b/pkg/application/linux_cgo.go
+@@ -756,6 +756,10 @@
+ }
+ 
+ func (w *linuxWebviewWindow) enableDND() {
++	if w.parent.options.NativeFileDropHandler != nil {
++		C.enableNativeDND((*C.GtkWidget)(w.window), C.uintptr_t(w.parent.id))
++		return
++	}
+ 	C.enableDND((*C.GtkWidget)(w.webview), C.uintptr_t(w.parent.id))
+ }
+ 
+--- a/pkg/application/linux_cgo.h
++++ b/pkg/application/linux_cgo.h
+@@ -170,6 +170,7 @@
+ // ============================================================================
+ 
+ void enableDND(GtkWidget *widget, uintptr_t winID);
++void enableNativeDND(GtkWidget *window, uintptr_t winID);
+ void disableDND(GtkWidget *widget, uintptr_t winID);
+ 
+ // ============================================================================
+--- a/pkg/application/linux_cgo_gtk3.go
++++ b/pkg/application/linux_cgo_gtk3.go
+@@ -1174,6 +1174,9 @@
+ }
+ 
+ func (w *linuxWebviewWindow) enableDND() {
++	if w.parent.options.NativeFileDropHandler != nil {
++		panic("native-only file drops require the reviewed GTK4 CGO backend")
++	}
+ 	// Pass the window ID as the gpointer user_data value itself (not a pointer
+ 	// to it) using an integer type, so the Go GC never scans it. See #5631.
+ 	C.enableDND((*C.GtkWidget)(w.webview), C.uintptr_t(w.parent.id))
+--- a/pkg/application/linux_purego.go
++++ b/pkg/application/linux_purego.go
+@@ -591,6 +591,9 @@
+ }
+ 
+ func (w *linuxWebviewWindow) enableDND() {
++	if w.parent.options.NativeFileDropHandler != nil {
++		panic("native-only file drops require the reviewed GTK4 CGO backend")
++	}
+ 	enableDNDGo(uintptr(w.webview), uintptr(w.parent.id))
+ }
+ 
+--- a/pkg/application/linux_purego_gtk3_generated.go
++++ b/pkg/application/linux_purego_gtk3_generated.go
+@@ -617,6 +617,9 @@
+ }
+ 
+ func (w *linuxWebviewWindow) enableDND() {
++	if w.parent.options.NativeFileDropHandler != nil {
++		panic("native-only file drops require the reviewed GTK4 CGO backend")
++	}
+ 	_Cfunc_enableDND((*_Ctype_GtkWidget)(w.webview), _Ctype_uintptr_t(w.parent.id))
+ }
+ 
+--- a/pkg/application/messageprocessor_window.go
++++ b/pkg/application/messageprocessor_window.go
+@@ -367,6 +367,9 @@
+ 		window.ZoomReset()
+ 		return unit, nil
+ 	case WindowFilesDropped:
++		if native, ok := window.(*WebviewWindow); ok && native.options.NativeFileDropHandler != nil {
++			return nil, errs.NewInvalidWindowCallErrorf("native file drops cannot originate in the frontend")
++		}
+ 		var payload fileDropPayload
+ 		err := req.Args.ToStruct(&payload)
+ 		if err != nil {
+--- /dev/null
++++ b/pkg/application/testdata/whatsup-native/main_windows.go
+@@ -0,0 +1,165 @@
++//go:build windows
++
++package main
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"io"
++	"log"
++	"log/slog"
++	"net/http"
++	"os"
++	"path/filepath"
++	"sync"
++	"sync/atomic"
++	"time"
++
++	"github.com/wailsapp/wails/v3/pkg/application"
++)
++
++const contentLength int64 = (1 << 30) + 17
++const page = `<!doctype html><meta charset="utf-8"><script>
++(async()=>{try{
++ const total=1073741841;
++ for(const [range,start,count] of [['bytes=1048576-1114111',1048576,65536],['bytes=-4096',total-4096,4096]]){
++  const r=await fetch('/media',{headers:{Range:range}}); const data=new Uint8Array(await r.arrayBuffer());
++  if(r.status!==206||data.length!==count)throw Error('range');
++  for(let i=0;i<data.length;i++)if(data[i]!==((start+i)%251))throw Error('bytes');
++ }
++ const h=await fetch('/media',{method:'HEAD'});if(h.status!==200||Number(h.headers.get('Content-Length'))!==total)throw Error('head');
++ const c=new AbortController();setTimeout(()=>c.abort(),80);try{const r=await fetch('/abort',{signal:c.signal});await r.arrayBuffer();throw Error('abort absent')}catch(e){if(e.name!=='AbortError')throw e}
++ let closed=false;for(let i=0;i<20;i++){if(await(await fetch('/closed')).text()==='yes'){closed=true;break}await new Promise(r=>setTimeout(r,100))}if(!closed)throw Error('native abort not observed');
++ await fetch('/done',{method:'POST',body:'pass'});
++}catch(e){await fetch('/done',{method:'POST',body:'fail'})}})();
++</script>`
++
++type virtualReader struct {
++	position int64
++	slow     bool
++	closed   atomic.Bool
++	read     *atomic.Int64
++}
++
++func (r *virtualReader) Read(p []byte) (int, error) {
++	if r.closed.Load() {
++		return 0, io.ErrClosedPipe
++	}
++	if r.position >= contentLength {
++		return 0, io.EOF
++	}
++	if int64(len(p)) > contentLength-r.position {
++		p = p[:contentLength-r.position]
++	}
++	if r.slow {
++		time.Sleep(10 * time.Millisecond)
++	}
++	for i := range p {
++		p[i] = byte((r.position + int64(i)) % 251)
++	}
++	r.position += int64(len(p))
++	r.read.Add(int64(len(p)))
++	return len(p), nil
++}
++func (r *virtualReader) Seek(n int64, origin int) (int64, error) {
++	switch origin {
++	case io.SeekStart:
++	case io.SeekCurrent:
++		n += r.position
++	case io.SeekEnd:
++		n += contentLength
++	default:
++		return 0, errors.New("seek")
++	}
++	if n < 0 || n > contentLength {
++		return 0, errors.New("seek")
++	}
++	r.position = n
++	return n, nil
++}
++func (r *virtualReader) Close() error { r.closed.Store(true); return nil }
++
++type probe struct {
++	app         *application.App
++	active      sync.WaitGroup
++	finished    atomic.Bool
++	passed      atomic.Bool
++	abortBytes  atomic.Int64
++	streamBytes atomic.Int64
++	abortClosed atomic.Bool
++}
++
++func (p *probe) ServeHTTP(w http.ResponseWriter, r *http.Request) {
++	switch r.URL.Path {
++	case "/":
++		w.Header().Set("Content-Type", "text/html; charset=utf-8")
++		io.WriteString(w, page)
++	case "/media", "/abort":
++		p.active.Add(1)
++		defer p.active.Done()
++		slow := r.URL.Path == "/abort"
++		counter := &p.streamBytes
++		if slow {
++			counter = &p.abortBytes
++		}
++		reader := &virtualReader{slow: slow, read: counter}
++		w.Header().Set("Content-Type", "application/octet-stream")
++		w.Header().Set("X-Content-Type-Options", "nosniff")
++		w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
++		w.Header().Set("Cache-Control", "no-store")
++		_ = application.ServeCompletedReader(w, r, reader, contentLength)
++		if slow && reader.closed.Load() {
++			p.abortClosed.Store(true)
++		}
++	case "/done":
++		data, _ := io.ReadAll(io.LimitReader(r.Body, 16))
++		p.passed.Store(string(data) == "pass")
++		p.finished.Store(true)
++		w.WriteHeader(204)
++		go func() { time.Sleep(100 * time.Millisecond); p.app.Quit() }()
++	case "/closed":
++		w.Header().Set("Content-Type", "text/plain")
++		if p.abortClosed.Load() {
++			io.WriteString(w, "yes")
++		} else {
++			io.WriteString(w, "no")
++		}
++	default:
++		w.WriteHeader(404)
++	}
++}
++func run() error {
++	log.SetOutput(io.Discard)
++	directory, err := os.Getwd()
++	if err != nil {
++		return err
++	}
++	p := &probe{}
++	app := application.New(application.Options{Name: "WhatsUpNativePatchQA", Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Assets: application.AssetOptions{Handler: p}, Windows: application.WindowsOptions{WebviewUserDataPath: filepath.Join(directory, "webview"), DisableQuitOnLastWindowClosed: true}})
++	p.app = app
++	app.Window.NewWithOptions(application.WebviewWindowOptions{Title: "WhatsUp native patch QA", Hidden: true, URL: "/", NativeFileDropHandler: func([]string) {}})
++	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
++	defer cancel()
++	go func() { <-ctx.Done(); app.Quit() }()
++	if err := app.Run(); err != nil {
++		return err
++	}
++	done := make(chan struct{})
++	go func() { p.active.Wait(); close(done) }()
++	select {
++	case <-done:
++	case <-time.After(3 * time.Second):
++		return errors.New("native media handler did not stop")
++	}
++	if !p.finished.Load() || !p.passed.Load() || !p.abortClosed.Load() || p.abortBytes.Load() >= 16<<20 {
++		return errors.New("native reader/drop initialization or cancellation failed")
++	}
++	return json.NewEncoder(os.Stdout).Encode(map[string]any{"nativeReaderRanges": true, "strictDropInitialized": true, "abortClosed": true, "abortBytes": p.abortBytes.Load(), "rangeBytes": p.streamBytes.Load()})
++}
++func main() {
++	if err := run(); err != nil {
++		os.Stderr.WriteString(err.Error() + "\n")
++		os.Exit(1)
++	}
++}
+--- /dev/null
++++ b/pkg/application/testdata/whatsup-native-uri/main.c
+@@ -0,0 +1,41 @@
++#include "../../whatsup_native_drop_linux.c"
++
++static unsigned int received;
++void onDropFiles(char **paths, gint x, gint y, uintptr_t window) {
++    received = 0;
++    while (paths[received] != NULL) received++;
++}
++
++static void check(const char *body, gsize size, gboolean expected, unsigned int count) {
++    WhatsUpNativeDrop state = {0};
++    state.bytes = g_byte_array_new();
++    g_byte_array_append(state.bytes, (const guint8 *)body, size);
++    received = 0;
++    gboolean actual = whatsup_native_drop_paths(&state);
++    g_byte_array_unref(state.bytes);
++    if (actual != expected || received != count) exit(2);
++}
++
++int main(void) {
++    const char *valid = "file:///tmp/synthetic.png\r\n";
++    check(valid, strlen(valid), TRUE, 1);
++    const char *comments = "#comment\r\nfile:///tmp/synthetic%20file.pdf\r\n";
++    check(comments, strlen(comments), TRUE, 1);
++    const char *remote = "https://example.invalid/file.pdf\r\n";
++    check(remote, strlen(remote), FALSE, 0);
++    check("", 0, FALSE, 0);
++    const char hidden[] = "file:///tmp/a\0file:///tmp/b";
++    check(hidden, sizeof(hidden)-1, FALSE, 0);
++    const char invalid[] = "file:///tmp/\xff";
++    check(invalid, sizeof(invalid)-1, FALSE, 0);
++    GString *large = g_string_new(NULL);
++    for (unsigned int i=0;i<17;i++) g_string_append(large,valid);
++    check(large->str,large->len,FALSE,0);
++    g_string_free(large,TRUE);
++    char *oversized = g_malloc(262145);
++    memset(oversized,'a',262145);
++    check(oversized,262145,FALSE,0);
++    g_free(oversized);
++    puts("{\"cases\":8,\"passed\":true}");
++    return 0;
++}
+--- a/pkg/application/webview_window.go
++++ b/pkg/application/webview_window.go
+@@ -499,6 +499,9 @@
+ }
+ 
+ func (w *WebviewWindow) Run() {
++	if w.options.NativeFileDropHandler != nil && w.options.EnableFileDrop {
++		panic("native-only and browser file drop modes are mutually exclusive")
++	}
+ 	if w.impl != nil {
+ 		return
+ 	}
+@@ -1946,6 +1949,10 @@
+ 	if w.impl == nil || w.isDestroyed() {
+ 		return
+ 	}
++	if w.options.NativeFileDropHandler != nil {
++		w.deliverNativeFiles(filenames)
++		return
++	}
+ 
+ 	filenamesJSON, err := json.Marshal(filenames)
+ 	if err != nil {
+@@ -1973,6 +1980,22 @@
+ 	})
+ }
+ 
++// deliverNativeFiles is called only by native OS drop paths, never window RPC.
++func (w *WebviewWindow) deliverNativeFiles(paths []string) bool {
++	if w.isDestroyed() || w.options.NativeFileDropHandler == nil || len(paths) == 0 || len(paths) > 16 {
++		return false
++	}
++	total := 0
++	for _, path := range paths {
++		total += len(path)
++		if path == "" || len(path) > 131072 || total > 262144 {
++			return false
++		}
++	}
++	w.options.NativeFileDropHandler(append([]string(nil), paths...))
++	return true
++}
++
+ // HandleDragEnter is called when drag enters the window (Linux only, since GTK intercepts drag events)
+ func (w *WebviewWindow) HandleDragEnter() {
+ 	if w.impl == nil || w.isDestroyed() || !w.runtimeLoaded {
+--- a/pkg/application/webview_window_linux.go
++++ b/pkg/application/webview_window_linux.go
+@@ -451,7 +451,7 @@
+ 	}
+ 	app.registerWindow(w.window, w.parent.id) // record our mapping
+ 	w.connectSignals()
+-	if w.parent.options.EnableFileDrop {
++	if w.parent.options.EnableFileDrop || w.parent.options.NativeFileDropHandler != nil {
+ 		w.enableDND()
+ 	} else {
+ 		w.disableDND()
+--- a/pkg/application/webview_window_options.go
++++ b/pkg/application/webview_window_options.go
+@@ -187,6 +187,11 @@
+ 	// When enabled, files dragged from the OS onto elements with the
+ 	// `data-file-drop-target` attribute will trigger a FilesDropped event.
+ 	EnableFileDrop bool
++
++	// NativeFileDropHandler selects application-private native-only file drops.
++	// It is mutually exclusive with EnableFileDrop. The callback runs on the UI
++	// thread and must only enqueue work. Paths never enter browser DOM objects.
++	NativeFileDropHandler func(paths []string) `json:"-"`
+ 
+ 	// Permissions controls how capability requests (camera, microphone, …)
+ 	// from the web content are handled, per PermissionType. Unset entries use
+--- a/pkg/application/webview_window_windows.go
++++ b/pkg/application/webview_window_windows.go
+@@ -39,6 +39,7 @@
+ }
+ 
+ type windowsWebviewWindow struct {
++	nativeDrop               *whatsUpNativeDrop
+ 	requestCancellation      *windowsRequestCancellation
+ 	windowImpl               unsafe.Pointer
+ 	parent                   *WebviewWindow
+@@ -488,11 +489,15 @@
+ // construction the two drifted, and a rebuilt window silently lost non-client
+ // region support, composition hosting and cursor handling.
+ func (w *windowsWebviewWindow) newChromium() *edge.Chromium {
++	if w.parent.options.NativeFileDropHandler != nil {
++		w.parent.options.Windows.WebView2CompositionHosting = true
++	}
+ 	options := w.parent.options
+ 
+ 	chromium := edge.NewChromium()
+ 	chromium.NonClientRegionSupportEnabled = options.Windows.NonClientRegionSupport
+-	chromium.CompositionControllerEnabled = options.Windows.WebView2CompositionHosting
++	chromium.CompositionControllerEnabled = options.Windows.WebView2CompositionHosting || options.NativeFileDropHandler != nil
++	chromium.RequireComposition = options.NativeFileDropHandler != nil
+ 	chromium.SetCursorChangedCallback(w.applyCompositionCursor)
+ 	if globalApplication.options.ErrorHandler != nil {
+ 		chromium.SetErrorCallback(globalApplication.options.ErrorHandler)
+@@ -972,6 +977,7 @@
+ }
+ 
+ func (w *windowsWebviewWindow) destroy() {
++	w.stopNativeDrop()
+ 	w.requestCancellation.close()
+ 	// Re-enable parent window if this was a modal window
+ 	if w.parentHWND != 0 {
+@@ -2639,6 +2645,17 @@
+ 		}
+ 	} else if !chromium.Embed(w.hwnd) {
+ 		return false
++	}
++	if w.parent.options.NativeFileDropHandler != nil {
++		if w.parent.options.EnableFileDrop || !chromium.CompositionControllerReady() {
++			return w.setupChromiumConfigError(recovering, errors.New("native-only file drops require exclusive composition hosting"))
++		}
++		if err := chromium.AllowExternalDrag(false); err != nil {
++			return w.setupChromiumConfigError(recovering, errors.New("browser external drop could not be disabled"))
++		}
++		if err := w.startNativeDrop(); err != nil {
++			return w.setupChromiumConfigError(recovering, err)
++		}
+ 	}
+ 
+ 	// Configure who owns the WebView2 rasterization scale on a monitor-DPI
+@@ -3023,6 +3040,9 @@
+ 	args *edge.ICoreWebView2WebMessageReceivedEventArgs,
+ ) {
+ 	if strings.HasPrefix(message, "file:drop:") {
++		if w.parent.options.NativeFileDropHandler != nil {
++			return
++		}
+ 		objs, err := args.GetAdditionalObjects()
+ 		if err != nil {
+ 			globalApplication.handleError(err)
+--- /dev/null
++++ b/pkg/application/whatsup_completed_reader.go
+@@ -0,0 +1,214 @@
++package application
++
++import (
++	"context"
++	"errors"
++	"io"
++	"net/http"
++	"strconv"
++	"strings"
++	"sync"
++)
++
++// WhatsUpPatchVersion identifies the reviewed, application-private native patch.
++const WhatsUpPatchVersion = 1
++
++// ServeCompletedReader takes ownership of reader, including on error. The reader
++// must contain immutable, complete content; it must not wait for a producer.
++// Callers must set a trusted Content-Type and their own security headers first.
++// GET, HEAD and a single byte range are supported. The handler goroutine remains
++// alive until native consumption ends, so its request cancellation stays valid.
++func ServeCompletedReader(w http.ResponseWriter, r *http.Request, reader io.ReadSeekCloser, length int64) error {
++	if reader == nil {
++		return errors.New("completed reader is nil")
++	}
++	owned := &completedReader{reader: reader}
++	defer owned.Close()
++	if w == nil || r == nil || length < 0 || w.Header().Get("Content-Type") == "" {
++		return errors.New("invalid completed response")
++	}
++	if err := r.Context().Err(); err != nil {
++		return err
++	}
++	if r.Method != http.MethodGet && r.Method != http.MethodHead {
++		w.Header().Set("Allow", "GET, HEAD")
++		w.WriteHeader(http.StatusMethodNotAllowed)
++		return nil
++	}
++	start, count, partial, ok := completedRange(r, length)
++	if !ok {
++		w.Header().Set("Content-Range", "bytes */"+strconv.FormatInt(length, 10))
++		w.Header().Set("Content-Length", "0")
++		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
++		return nil
++	}
++	w.Header().Set("Accept-Ranges", "bytes")
++	w.Header().Set("Content-Length", strconv.FormatInt(count, 10))
++	code := http.StatusOK
++	if partial {
++		code = http.StatusPartialContent
++		w.Header().Set("Content-Range", "bytes "+strconv.FormatInt(start, 10)+"-"+strconv.FormatInt(start+count-1, 10)+"/"+strconv.FormatInt(length, 10))
++	}
++	if r.Method == http.MethodHead || count == 0 {
++		w.WriteHeader(code)
++		return nil
++	}
++	if _, err := owned.Seek(start, io.SeekStart); err != nil {
++		return err
++	}
++	section := &completedSection{reader: owned, start: start, length: count}
++	// Discover the native capability before committing the outer wrappers. Never
++	// bypass their header propagation or content-type bookkeeping.
++	var native interface {
++		SetCompletedReader(context.Context, io.ReadSeekCloser, int64) error
++	}
++	current := w
++	for depth := 0; depth < 16; depth++ {
++		if candidate, ok := current.(interface {
++			SetCompletedReader(context.Context, io.ReadSeekCloser, int64) error
++		}); ok {
++			native = candidate
++			break
++		}
++		u, ok := current.(interface{ Unwrap() http.ResponseWriter })
++		if !ok {
++			break
++		}
++		next := u.Unwrap()
++		if next == nil || next == current {
++			break
++		}
++		current = next
++	}
++	w.WriteHeader(code)
++	if native != nil {
++		return native.SetCompletedReader(r.Context(), section, count)
++	}
++	stop := context.AfterFunc(r.Context(), func() { _ = owned.Close() })
++	defer stop()
++	written, err := io.CopyBuffer(w, section, make([]byte, 64<<10))
++	if err == nil && written != count {
++		return io.ErrUnexpectedEOF
++	}
++	return err
++}
++
++func completedRange(r *http.Request, size int64) (start, count int64, partial, ok bool) {
++	value := r.Header.Get("Range")
++	if value == "" || r.Method != http.MethodGet || r.Header.Get("If-Range") != "" {
++		return 0, size, false, true
++	}
++	if !strings.HasPrefix(value, "bytes=") || strings.Contains(value, ",") || size == 0 {
++		return 0, 0, false, false
++	}
++	left, right, found := strings.Cut(strings.TrimPrefix(value, "bytes="), "-")
++	if !found {
++		return 0, 0, false, false
++	}
++	parse := func(s string) (int64, bool) {
++		if s == "" {
++			return 0, false
++		}
++		for _, c := range s {
++			if c < '0' || c > '9' {
++				return 0, false
++			}
++		}
++		n, err := strconv.ParseInt(s, 10, 64)
++		return n, err == nil
++	}
++	if left == "" {
++		n, valid := parse(right)
++		if !valid || n <= 0 {
++			return 0, 0, false, false
++		}
++		if n > size {
++			n = size
++		}
++		return size - n, n, true, true
++	}
++	first, valid := parse(left)
++	if !valid || first >= size {
++		return 0, 0, false, false
++	}
++	last := size - 1
++	if right != "" {
++		n, valid := parse(right)
++		if !valid || n < first {
++			return 0, 0, false, false
++		}
++		if n < last {
++			last = n
++		}
++	}
++	return first, last - first + 1, true, true
++}
++
++type completedReader struct {
++	mu     sync.Mutex
++	reader io.ReadSeekCloser
++	closed bool
++}
++
++func (r *completedReader) Read(p []byte) (int, error) {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	if r.closed {
++		return 0, io.ErrClosedPipe
++	}
++	return r.reader.Read(p)
++}
++func (r *completedReader) Seek(n int64, whence int) (int64, error) {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	if r.closed {
++		return 0, io.ErrClosedPipe
++	}
++	return r.reader.Seek(n, whence)
++}
++func (r *completedReader) Close() error {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	if r.closed {
++		return nil
++	}
++	r.closed = true
++	return r.reader.Close()
++}
++
++type completedSection struct {
++	reader                  *completedReader
++	start, length, position int64
++}
++
++func (s *completedSection) Read(p []byte) (int, error) {
++	if s.position >= s.length {
++		return 0, io.EOF
++	}
++	if int64(len(p)) > s.length-s.position {
++		p = p[:s.length-s.position]
++	}
++	n, err := s.reader.Read(p)
++	s.position += int64(n)
++	return n, err
++}
++func (s *completedSection) Seek(n int64, whence int) (int64, error) {
++	switch whence {
++	case io.SeekCurrent:
++		n += s.position
++	case io.SeekEnd:
++		n += s.length
++	case io.SeekStart:
++	default:
++		return 0, errors.New("invalid completed seek")
++	}
++	if n < 0 || n > s.length {
++		return 0, errors.New("completed seek out of bounds")
++	}
++	if _, err := s.reader.Seek(s.start+n, io.SeekStart); err != nil {
++		return 0, err
++	}
++	s.position = n
++	return n, nil
++}
++func (s *completedSection) Close() error { return s.reader.Close() }
+--- /dev/null
++++ b/pkg/application/whatsup_completed_reader_test.go
+@@ -0,0 +1,98 @@
++package application
++
++import (
++	"bytes"
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++)
++
++type whatsUpTestReader struct {
++	*bytes.Reader
++	closes int
++}
++
++func (r *whatsUpTestReader) Close() error { r.closes++; return nil }
++func TestWhatsUpCompletedReaderRangesAndClose(t *testing.T) {
++	for _, c := range []struct {
++		method, rangeHeader, ifRange, want string
++		code                               int
++	}{
++		{"GET", "", "", "0123456789", 200}, {"GET", "bytes=2-4", "", "234", 206}, {"GET", "bytes=-3", "", "789", 206}, {"GET", "bytes=7-", "", "789", 206}, {"GET", "bytes=0-99", "", "0123456789", 206},
++		{"GET", "bytes=3-1", "", "", 416}, {"GET", "bytes=0-1,4-5", "", "", 416}, {"GET", "bytes=9223372036854775808-", "", "", 416}, {"GET", "bytes=-0", "", "", 416},
++		{"HEAD", "bytes=2-4", "", "", 200}, {"POST", "", "", "", 405}, {"GET", "bytes=2-4", "unmatched", "0123456789", 200},
++	} {
++		t.Run(c.method+"/"+c.rangeHeader+"/"+c.ifRange, func(t *testing.T) {
++			r := &whatsUpTestReader{Reader: bytes.NewReader([]byte("0123456789"))}
++			w := httptest.NewRecorder()
++			w.Header().Set("Content-Type", "video/mp4")
++			req := httptest.NewRequest(c.method, "/opaque", nil)
++			req.Header.Set("Range", c.rangeHeader)
++			req.Header.Set("If-Range", c.ifRange)
++			if err := ServeCompletedReader(w, req, r, 10); err != nil {
++				t.Fatal(err)
++			}
++			if w.Code != c.code || w.Body.String() != c.want || r.closes != 1 {
++				t.Fatalf("code=%d body=%q closes=%d", w.Code, w.Body.String(), r.closes)
++			}
++		})
++	}
++}
++
++type whatsUpNativeWriter struct {
++	*httptest.ResponseRecorder
++	received string
++	length   int64
++}
++
++func (w *whatsUpNativeWriter) SetCompletedReader(ctx context.Context, r io.ReadSeekCloser, length int64) error {
++	w.length = length
++	data, err := io.ReadAll(r)
++	w.received = string(data)
++	return err
++}
++
++type whatsUpWrappedWriter struct{ http.ResponseWriter }
++
++func (w whatsUpWrappedWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
++func TestWhatsUpCompletedReaderNativeCapabilityThroughWrappers(t *testing.T) {
++	r := &whatsUpTestReader{Reader: bytes.NewReader([]byte("complete"))}
++	native := &whatsUpNativeWriter{ResponseRecorder: httptest.NewRecorder()}
++	native.Header().Set("Content-Type", "image/png")
++	request := httptest.NewRequest("GET", "/opaque", nil)
++	request.Header.Set("Range", "bytes=2-4")
++	if err := ServeCompletedReader(whatsUpWrappedWriter{native}, request, r, 8); err != nil {
++		t.Fatal(err)
++	}
++	if native.received != "mpl" || native.length != 3 || native.Code != 206 || native.Body.Len() != 0 || r.closes != 1 {
++		t.Fatalf("native response not bounded/owned: %#v closes=%d", native, r.closes)
++	}
++}
++func TestWhatsUpCompletedReaderRejectsUntrustedHeadersAndInvalidLength(t *testing.T) {
++	for _, length := range []int64{-1, 1} {
++		r := &whatsUpTestReader{Reader: bytes.NewReader([]byte("x"))}
++		if err := ServeCompletedReader(httptest.NewRecorder(), httptest.NewRequest("GET", "/opaque", nil), r, length); err == nil || r.closes != 1 {
++			t.Fatal("invalid response accepted or leaked")
++		}
++	}
++}
++func TestWhatsUpNativeFilesRemainGoOnlyAndBounded(t *testing.T) {
++	var got []string
++	w := &WebviewWindow{options: WebviewWindowOptions{NativeFileDropHandler: func(paths []string) { got = paths }}}
++	original := []string{"/synthetic/file.pdf"}
++	if !w.deliverNativeFiles(original) {
++		t.Fatal("native file refused")
++	}
++	original[0] = "changed"
++	if got[0] != "/synthetic/file.pdf" {
++		t.Fatal("callback borrowed native slice")
++	}
++	for _, paths := range [][]string{nil, {""}, make([]string, 17), {strings.Repeat("x", 131073)}} {
++		if w.deliverNativeFiles(paths) {
++			t.Fatal("invalid native input accepted")
++		}
++	}
++}
+--- /dev/null
++++ b/pkg/application/whatsup_native_drop_linux.c
+@@ -0,0 +1,138 @@
++//go:build linux && !android && !gtk3 && !purego && !server
++
++#include "linux_cgo.h"
++#include <string.h>
++
++// The top-level capture controller owns every drop before WebKit. Only a
++// bounded local URI list is read; arbitrary browser File objects are not made.
++typedef struct {
++    GdkDrop *drop;
++    GCancellable *cancel;
++    GInputStream *stream;
++    GByteArray *bytes;
++    guint timeout;
++    uintptr_t window;
++    gint x, y;
++} WhatsUpNativeDrop;
++
++static guint whatsup_native_drop_pending = 0;
++static const char *whatsup_native_drop_mimes[] = { "text/uri-list", NULL };
++
++static gboolean whatsup_native_drop_timeout(gpointer data) {
++    WhatsUpNativeDrop *state = data;
++    state->timeout = 0;
++    g_cancellable_cancel(state->cancel);
++    return G_SOURCE_REMOVE;
++}
++
++static void whatsup_native_drop_finish(WhatsUpNativeDrop *state, gboolean accepted) {
++    if (state->timeout != 0) g_source_remove(state->timeout);
++    if (state->stream != NULL) {
++        g_input_stream_close_async(state->stream, G_PRIORITY_DEFAULT, NULL, NULL, NULL);
++        g_object_unref(state->stream);
++    }
++    gdk_drop_finish(state->drop, accepted ? GDK_ACTION_COPY : 0);
++    g_object_unref(state->drop);
++    g_object_unref(state->cancel);
++    g_byte_array_unref(state->bytes);
++    g_free(state);
++    whatsup_native_drop_pending--;
++}
++
++static gboolean whatsup_native_drop_paths(WhatsUpNativeDrop *state) {
++    if (state->bytes->len == 0 || state->bytes->len > (256u << 10) || !g_utf8_validate((const char *)state->bytes->data, state->bytes->len, NULL)) return FALSE;
++    g_byte_array_append(state->bytes, (const guint8 *)"", 1);
++    char **uris = g_uri_list_extract_uris((const char *)state->bytes->data);
++    if (uris == NULL) return FALSE;
++    guint count = g_strv_length(uris);
++    if (count == 0 || count > 16) { g_strfreev(uris); return FALSE; }
++    char **paths = g_new0(char *, count + 1);
++    gboolean valid = TRUE;
++    for (guint index = 0; index < count; index++) {
++        GFile *file = g_file_new_for_uri(uris[index]);
++        paths[index] = g_file_get_path(file);
++        g_object_unref(file);
++        if (paths[index] == NULL) valid = FALSE;
++    }
++    if (valid) onDropFiles(paths, state->x, state->y, state->window);
++    for (guint index = 0; index < count; index++) g_free(paths[index]);
++    g_free(paths);
++    g_strfreev(uris);
++    return valid;
++}
++
++static void whatsup_native_drop_read(GObject *source, GAsyncResult *result, gpointer data);
++
++static void whatsup_native_drop_read( GObject *source, GAsyncResult *result, gpointer data) {
++    WhatsUpNativeDrop *state = data;
++    GError *error = NULL;
++    GBytes *chunk = g_input_stream_read_bytes_finish(G_INPUT_STREAM(source), result, &error);
++    if (error != NULL || chunk == NULL) {
++        if (error != NULL) g_error_free(error);
++        if (chunk != NULL) g_bytes_unref(chunk);
++        whatsup_native_drop_finish(state, FALSE);
++        return;
++    }
++    gsize length;
++    const guint8 *bytes = g_bytes_get_data(chunk, &length);
++    if (length == 0) {
++        g_bytes_unref(chunk);
++        gboolean accepted = whatsup_native_drop_paths(state);
++        whatsup_native_drop_finish(state, accepted);
++        return;
++    }
++    if (length > (256u << 10) - state->bytes->len) {
++        g_bytes_unref(chunk);
++        whatsup_native_drop_finish(state, FALSE);
++        return;
++    }
++    g_byte_array_append(state->bytes, bytes, length);
++    g_bytes_unref(chunk);
++    g_input_stream_read_bytes_async(state->stream, 16u << 10, G_PRIORITY_DEFAULT, state->cancel, whatsup_native_drop_read, state);
++}
++
++static void whatsup_native_drop_open(GObject *source, GAsyncResult *result, gpointer data) {
++    WhatsUpNativeDrop *state = data;
++    GError *error = NULL;
++    const char *mime = NULL;
++    state->stream = gdk_drop_read_finish(GDK_DROP(source), result, &mime, &error);
++    if (error != NULL || state->stream == NULL || mime == NULL || strcmp(mime, "text/uri-list") != 0) {
++        if (error != NULL) g_error_free(error);
++        whatsup_native_drop_finish(state, FALSE);
++        return;
++    }
++    g_input_stream_read_bytes_async(state->stream, 16u << 10, G_PRIORITY_DEFAULT, state->cancel, whatsup_native_drop_read, state);
++}
++
++static gboolean whatsup_native_drop_accept(GtkDropTargetAsync *target, GdkDrop *drop, gpointer data) { return TRUE; }
++static GdkDragAction whatsup_native_drop_enter(GtkDropTargetAsync *target, GdkDrop *drop, double x, double y, gpointer data) {
++    GdkDragAction actions = gdk_drop_get_actions(drop);
++    if (actions & GDK_ACTION_COPY) return GDK_ACTION_COPY;
++    if (actions & GDK_ACTION_MOVE) return GDK_ACTION_MOVE;
++    if (actions & GDK_ACTION_LINK) return GDK_ACTION_LINK;
++    return actions & GDK_ACTION_ASK;
++}
++static gboolean whatsup_native_drop_received(GtkDropTargetAsync *target, GdkDrop *drop, double x, double y, gpointer data) {
++    // Consume unsupported actions/formats too; they must not fall through.
++    if (whatsup_native_drop_pending >= 8 || !(gdk_drop_get_actions(drop) & GDK_ACTION_COPY)) { gdk_drop_finish(drop, 0); return TRUE; }
++    whatsup_native_drop_pending++;
++    WhatsUpNativeDrop *state = g_new0(WhatsUpNativeDrop, 1);
++    state->drop = g_object_ref(drop);
++    state->cancel = g_cancellable_new();
++    state->bytes = g_byte_array_new();
++    state->window = (uintptr_t)data;
++    state->x = (gint)x; state->y = (gint)y;
++    state->timeout = g_timeout_add_seconds(5, whatsup_native_drop_timeout, state);
++    gdk_drop_read_async(drop, whatsup_native_drop_mimes, G_PRIORITY_DEFAULT, state->cancel, whatsup_native_drop_open, state);
++    return TRUE;
++}
++
++void enableNativeDND(GtkWidget *window, uintptr_t winID) {
++    GtkDropTargetAsync *target = gtk_drop_target_async_new(NULL, GDK_ACTION_COPY | GDK_ACTION_MOVE | GDK_ACTION_LINK | GDK_ACTION_ASK);
++    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(target), GTK_PHASE_CAPTURE);
++    g_signal_connect(target, "accept", G_CALLBACK(whatsup_native_drop_accept), (gpointer)winID);
++    g_signal_connect(target, "drag-enter", G_CALLBACK(whatsup_native_drop_enter), (gpointer)winID);
++    g_signal_connect(target, "drag-motion", G_CALLBACK(whatsup_native_drop_enter), (gpointer)winID);
++    g_signal_connect(target, "drop", G_CALLBACK(whatsup_native_drop_received), (gpointer)winID);
++    gtk_widget_add_controller(window, GTK_EVENT_CONTROLLER(target));
++}
+--- /dev/null
++++ b/pkg/application/whatsup_native_drop_linux_test.go
+@@ -0,0 +1,36 @@
++//go:build linux && !android && !gtk3 && !purego && !server
++
++package application
++
++import (
++	"context"
++	"os/exec"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestWhatsUpNativeURIListBoundsAndLocalOnly(t *testing.T) {
++	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
++	defer cancel()
++	flags, err := exec.CommandContext(ctx, "pkg-config", "--cflags", "--libs", "gtk4", "webkitgtk-6.0").Output()
++	if err != nil {
++		t.Fatal("native GTK4 development flags unavailable")
++	}
++	// These are the same trusted system SDK flags used by the cgo backend;
++	// execution never goes through a shell. Refuse quoting instead of guessing.
++	if strings.ContainsAny(string(flags), `'"\`) {
++		t.Fatal("native test SDK paths need an explicit argument parser")
++	}
++	binary := filepath.Join(t.TempDir(), "uri-parser")
++	args := []string{"-Wall", "-Wextra", "-Wno-unused-parameter", filepath.Join("testdata", "whatsup-native-uri", "main.c"), "-o", binary}
++	args = append(args, strings.Fields(string(flags))...)
++	if output, err := exec.CommandContext(ctx, "cc", args...).CombinedOutput(); err != nil {
++		t.Fatalf("native URI probe compile: %v\n%s", err, output)
++	}
++	output, err := exec.CommandContext(ctx, binary).CombinedOutput()
++	if err != nil || strings.TrimSpace(string(output)) != `{"cases":8,"passed":true}` {
++		t.Fatalf("native URI bounds/local-only probe failed: %v", err)
++	}
++}
+--- /dev/null
++++ b/pkg/application/whatsup_native_drop_windows.go
+@@ -0,0 +1,216 @@
++//go:build windows && !server && (amd64 || arm64)
++
++package application
++
++import (
++	"errors"
++	"sync"
++	"sync/atomic"
++	"syscall"
++	"unsafe"
++
++	"golang.org/x/sys/windows"
++)
++
++// Native-only OLE ownership: no IDataObject or file is forwarded to WebView2.
++// POINTL is packed into one argument by the 64-bit Windows ABI.
++type whatsUpNativeDrop struct {
++	native   uintptr
++	refs     atomic.Int64
++	window   *windowsWebviewWindow
++	accepted bool
++}
++
++var nativeDropObjects = struct {
++	sync.RWMutex
++	entries map[uintptr]*whatsUpNativeDrop
++}{entries: make(map[uintptr]*whatsUpNativeDrop)}
++var nativeDropVTable = [7]uintptr{windows.NewCallback(nativeDropQuery), windows.NewCallback(nativeDropAddRef), windows.NewCallback(nativeDropRelease), windows.NewCallback(nativeDropEnter), windows.NewCallback(nativeDropOver), windows.NewCallback(nativeDropLeave), windows.NewCallback(nativeDropDrop)}
++var nativeDropOle = windows.NewLazySystemDLL("ole32.dll")
++var nativeDropRegister = nativeDropOle.NewProc("RegisterDragDrop")
++var nativeDropRevoke = nativeDropOle.NewProc("RevokeDragDrop")
++var nativeDropInitialize = nativeDropOle.NewProc("OleInitialize")
++var nativeDropUninitialize = nativeDropOle.NewProc("OleUninitialize")
++var nativeDropReleaseMedium = nativeDropOle.NewProc("ReleaseStgMedium")
++var nativeDropQueryFile = windows.NewLazySystemDLL("shell32.dll").NewProc("DragQueryFileW")
++var nativeDropIUnknown, _ = windows.GUIDFromString("{00000000-0000-0000-C000-000000000046}")
++var nativeDropIID, _ = windows.GUIDFromString("{00000122-0000-0000-C000-000000000046}")
++
++type nativeDropFormat struct {
++	format uint16
++	target uintptr
++	aspect uint32
++	index  int32
++	medium uint32
++}
++type nativeDropMedium struct {
++	kind    uint32
++	handle  uintptr
++	release uintptr
++}
++
++func (w *windowsWebviewWindow) startNativeDrop() error {
++	if w.nativeDrop != nil {
++		return nil
++	}
++	hr, _, _ := nativeDropInitialize.Call(0)
++	if int32(hr) < 0 {
++		return errors.New("native drop OLE initialization failed")
++	}
++	memory, allocationError := windows.LocalAlloc(0, uint32(unsafe.Sizeof(uintptr(0))))
++	if allocationError != nil || memory == 0 {
++		nativeDropUninitialize.Call()
++		return errors.New("native drop allocation failed")
++	}
++	address := uintptr(memory)
++	*(*uintptr)(unsafe.Pointer(address)) = uintptr(unsafe.Pointer(&nativeDropVTable))
++	d := &whatsUpNativeDrop{native: address, window: w}
++	d.refs.Store(1)
++	nativeDropObjects.Lock()
++	nativeDropObjects.entries[address] = d
++	nativeDropObjects.Unlock()
++	hr, _, _ = nativeDropRegister.Call(uintptr(w.hwnd), address)
++	if int32(hr) < 0 {
++		nativeDropRelease(address)
++		nativeDropUninitialize.Call()
++		return errors.New("native drop registration failed")
++	}
++	w.nativeDrop = d
++	return nil
++}
++func (w *windowsWebviewWindow) stopNativeDrop() {
++	if w.nativeDrop == nil {
++		return
++	}
++	d := w.nativeDrop
++	w.nativeDrop = nil
++	_, _, _ = nativeDropRevoke.Call(uintptr(w.hwnd))
++	nativeDropRelease(d.native)
++	nativeDropUninitialize.Call()
++}
++func nativeDropState(this uintptr) *whatsUpNativeDrop {
++	nativeDropObjects.RLock()
++	d := nativeDropObjects.entries[this]
++	nativeDropObjects.RUnlock()
++	return d
++}
++func nativeDropQuery(this, riid, out uintptr) uintptr {
++	if riid == 0 || out == 0 {
++		return 0x80004003
++	}
++	*(*uintptr)(unsafe.Pointer(out)) = 0
++	id := *(*windows.GUID)(unsafe.Pointer(riid))
++	if id != nativeDropIUnknown && id != nativeDropIID {
++		return 0x80004002
++	}
++	if nativeDropAddRef(this) == 0 {
++		return 0x80004002
++	}
++	*(*uintptr)(unsafe.Pointer(out)) = this
++	return 0
++}
++func nativeDropAddRef(this uintptr) uintptr {
++	if d := nativeDropState(this); d != nil {
++		return uintptr(d.refs.Add(1))
++	}
++	return 0
++}
++func nativeDropRelease(this uintptr) uintptr {
++	d := nativeDropState(this)
++	if d == nil {
++		return 0
++	}
++	n := d.refs.Add(-1)
++	if n == 0 {
++		nativeDropObjects.Lock()
++		delete(nativeDropObjects.entries, this)
++		nativeDropObjects.Unlock()
++		_, _ = windows.LocalFree(windows.Handle(this))
++	}
++	return uintptr(n)
++}
++func nativeDropSupports(data uintptr) bool {
++	if data == 0 {
++		return false
++	}
++	vt := *(*[12]uintptr)(unsafe.Pointer(*(*uintptr)(unsafe.Pointer(data))))
++	f := nativeDropFormat{format: 15, aspect: 1, index: -1, medium: 1}
++	hr, _, _ := syscall.SyscallN(vt[5], data, uintptr(unsafe.Pointer(&f)))
++	return int32(hr) == 0
++}
++func nativeDropEnter(this, data, key, point, effect uintptr) uintptr {
++	d := nativeDropState(this)
++	if effect == 0 || d == nil {
++		return 0x80004003
++	}
++	d.accepted = nativeDropSupports(data)
++	if d.accepted {
++		*(*uint32)(unsafe.Pointer(effect)) &= 1
++	} else {
++		*(*uint32)(unsafe.Pointer(effect)) = 0
++	}
++	return 0
++}
++func nativeDropOver(this, key, point, effect uintptr) uintptr {
++	d := nativeDropState(this)
++	if effect == 0 || d == nil {
++		return 0x80004003
++	}
++	if d.accepted {
++		*(*uint32)(unsafe.Pointer(effect)) &= 1
++	} else {
++		*(*uint32)(unsafe.Pointer(effect)) = 0
++	}
++	return 0
++}
++func nativeDropLeave(this uintptr) uintptr {
++	if d := nativeDropState(this); d != nil {
++		d.accepted = false
++	}
++	return 0
++}
++func nativeDropDrop(this, data, key, point, effect uintptr) uintptr {
++	if effect == 0 {
++		return 0x80004003
++	}
++	*(*uint32)(unsafe.Pointer(effect)) = 0
++	d := nativeDropState(this)
++	if d == nil || !nativeDropSupports(data) {
++		return 0
++	}
++	d.accepted = false
++	f := nativeDropFormat{format: 15, aspect: 1, index: -1, medium: 1}
++	var medium nativeDropMedium
++	vt := *(*[12]uintptr)(unsafe.Pointer(*(*uintptr)(unsafe.Pointer(data))))
++	hr, _, _ := syscall.SyscallN(vt[3], data, uintptr(unsafe.Pointer(&f)), uintptr(unsafe.Pointer(&medium)))
++	if int32(hr) < 0 {
++		return 0
++	}
++	defer nativeDropReleaseMedium.Call(uintptr(unsafe.Pointer(&medium)))
++	if medium.kind != 1 || medium.handle == 0 {
++		return 0
++	}
++	count, _, _ := nativeDropQueryFile.Call(medium.handle, 0xffffffff, 0, 0)
++	if count == 0 || count > 16 {
++		return 0
++	}
++	paths := make([]string, 0, int(count))
++	total := 0
++	for i := uintptr(0); i < count; i++ {
++		length, _, _ := nativeDropQueryFile.Call(medium.handle, i, 0, 0)
++		if length == 0 || length > 32767 || total+int(length) > 65536 {
++			return 0
++		}
++		buffer := make([]uint16, int(length)+1)
++		n, _, _ := nativeDropQueryFile.Call(medium.handle, i, uintptr(unsafe.Pointer(&buffer[0])), length+1)
++		if n != length {
++			return 0
++		}
++		paths = append(paths, windows.UTF16ToString(buffer))
++		total += int(length)
++	}
++	if !d.window.parent.isDestroyed() && d.window.parent.deliverNativeFiles(paths) {
++		*(*uint32)(unsafe.Pointer(effect)) = 1
++	}
++	return 0
++}
+--- /dev/null
++++ b/pkg/application/whatsup_native_drop_windows_test.go
+@@ -0,0 +1,106 @@
++//go:build windows && !server && (amd64 || arm64)
++
++package application
++
++import (
++	"testing"
++	"unsafe"
++
++	"golang.org/x/sys/windows"
++)
++
++type whatsUpDropFixture struct {
++	vtable    *[12]uintptr
++	handle    uintptr
++	supported bool
++}
++
++var whatsUpDropFixtureTable = [12]uintptr{0, 0, 0, windows.NewCallback(whatsUpDropFixtureData), 0, windows.NewCallback(whatsUpDropFixtureQuery)}
++
++func whatsUpDropFixtureQuery(this, format uintptr) uintptr {
++	object := (*whatsUpDropFixture)(unsafe.Pointer(this))
++	value := (*nativeDropFormat)(unsafe.Pointer(format))
++	if !object.supported || value.format != 15 || value.aspect != 1 || value.index != -1 || value.medium != 1 {
++		return 0x80040064
++	}
++	return 0
++}
++func whatsUpDropFixtureData(this, format, out uintptr) uintptr {
++	if whatsUpDropFixtureQuery(this, format) != 0 {
++		return 0x80040064
++	}
++	object := (*whatsUpDropFixture)(unsafe.Pointer(this))
++	*(*nativeDropMedium)(unsafe.Pointer(out)) = nativeDropMedium{kind: 1, handle: object.handle}
++	object.handle = 0
++	return 0
++}
++func whatsUpDropFixtureHandle(t *testing.T, paths []string) uintptr {
++	t.Helper()
++	var values []uint16
++	for _, path := range paths {
++		value, err := windows.UTF16FromString(path)
++		if err != nil {
++			t.Fatal(err)
++		}
++		values = append(values, value...)
++	}
++	values = append(values, 0)
++	kernel := windows.NewLazySystemDLL("kernel32.dll")
++	size := 20 + 2*len(values)
++	handle, _, _ := kernel.NewProc("GlobalAlloc").Call(2, uintptr(size))
++	if handle == 0 {
++		t.Fatal("fixture allocation")
++	}
++	pointer, _, _ := kernel.NewProc("GlobalLock").Call(handle)
++	if pointer == 0 {
++		t.Fatal("fixture lock")
++	}
++	data := unsafe.Slice((*byte)(unsafe.Pointer(pointer)), size)
++	clear(data)
++	*(*uint32)(unsafe.Pointer(pointer)) = 20
++	*(*int32)(unsafe.Pointer(pointer + 16)) = 1
++	copy(unsafe.Slice((*uint16)(unsafe.Pointer(pointer+20)), len(values)), values)
++	kernel.NewProc("GlobalUnlock").Call(handle)
++	return handle
++}
++func TestWhatsUpNativeDropUsesRealHDROPAndReleasesMedium(t *testing.T) {
++	for _, count := range []int{1, 16, 17} {
++		paths := make([]string, count)
++		for index := range paths {
++			paths[index] = `C:\synthetic\drop.pdf`
++		}
++		handle := whatsUpDropFixtureHandle(t, paths)
++		object := &whatsUpDropFixture{vtable: &whatsUpDropFixtureTable, handle: handle, supported: true}
++		var received []string
++		parent := &WebviewWindow{options: WebviewWindowOptions{NativeFileDropHandler: func(paths []string) { received = paths }}}
++		native := &windowsWebviewWindow{parent: parent}
++		memory, err := windows.LocalAlloc(0, uint32(unsafe.Sizeof(uintptr(0))))
++		if err != nil {
++			t.Fatal(err)
++		}
++		address := uintptr(memory)
++		*(*uintptr)(unsafe.Pointer(address)) = uintptr(unsafe.Pointer(&nativeDropVTable))
++		state := &whatsUpNativeDrop{native: address, window: native}
++		state.refs.Store(1)
++		nativeDropObjects.Lock()
++		nativeDropObjects.entries[address] = state
++		nativeDropObjects.Unlock()
++		var effect uint32 = 1
++		hr := nativeDropDrop(address, uintptr(unsafe.Pointer(object)), 0, 0, uintptr(unsafe.Pointer(&effect)))
++		nativeDropRelease(address)
++		if hr != 0 || object.handle != 0 {
++			t.Fatal("native data not consumed")
++		}
++		if count <= 16 {
++			if effect != 1 || len(received) != count || received[0] != paths[0] {
++				t.Fatal("native local paths not delivered")
++			}
++		} else if effect != 0 || len(received) != 0 {
++			t.Fatal("oversized drop reached application")
++		}
++		size, _, _ := windows.NewLazySystemDLL("kernel32.dll").NewProc("GlobalSize").Call(handle)
++		if size != 0 {
++			t.Fatal("drop medium was not released")
++		}
++	}
++}
+--- /dev/null
++++ b/pkg/application/whatsup_native_windows_test.go
+@@ -0,0 +1,58 @@
++//go:build windows && !server
++
++package application
++
++import (
++	"context"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestWhatsUpNativeReaderAndStrictDropStartup(t *testing.T) {
++	if os.Getenv("WHATSUP_NATIVE_WAILS") != "1" {
++		t.Skip("set WHATSUP_NATIVE_WAILS=1 in a native Windows desktop session")
++	}
++	root, err := os.Getwd()
++	if err != nil {
++		t.Fatal(err)
++	}
++	for {
++		data, _ := os.ReadFile(filepath.Join(root, "go.mod"))
++		if strings.HasPrefix(string(data), "module whatsup\n") {
++			break
++		}
++		parent := filepath.Dir(root)
++		if parent == root {
++			t.Fatal("authoritative frozen graph not found")
++		}
++		root = parent
++	}
++	directory, err := os.MkdirTemp(filepath.Join(root, ".local"), "wails-native-qa-")
++	if err != nil {
++		t.Fatal(err)
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
++	defer cancel()
++	binary := filepath.Join(directory, "native.exe")
++	command := exec.CommandContext(ctx, filepath.Join(runtime.GOROOT(), "bin/go.exe"), "build", "-mod=readonly", "-o", binary, "github.com/wailsapp/wails/v3/pkg/application/testdata/whatsup-native")
++	command.Dir = root
++	command.Env = append(os.Environ(), "GOTOOLCHAIN=local", "GOWORK=off", "CGO_ENABLED=0")
++	if output, err := command.CombinedOutput(); err != nil {
++		t.Fatalf("native probe build failed: %v\n%s", err, output)
++	}
++	command = exec.CommandContext(ctx, binary)
++	command.Dir = directory
++	output, err := command.CombinedOutput()
++	if err != nil {
++		t.Fatalf("native probe failed: %v\n%s", err, output)
++	}
++	if !strings.Contains(string(output), `"nativeReaderRanges":true`) {
++		t.Fatal("native probe result absent")
++	}
++	t.Log(strings.TrimSpace(string(output)))
++}

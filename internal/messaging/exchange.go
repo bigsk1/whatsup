@@ -11,6 +11,7 @@ import (
 	"whatsup/internal/chat"
 	"whatsup/internal/profile"
 	"whatsup/internal/sessionauth"
+	"whatsup/internal/transfer"
 )
 
 const (
@@ -19,16 +20,18 @@ const (
 	pongPacket        byte = 3
 	profilePacket     byte = 4
 	capacityPacket    byte = 5
+	transferPacket    byte = 6
 	heartbeatInterval      = 4 * time.Second
 	peerTimeout            = 12 * time.Second
 	writeTimeout           = 8 * time.Second
 )
 
 type packet struct {
-	kind  byte
-	frame chat.Frame
-	nonce [16]byte
-	name  string
+	kind       byte
+	frame      chat.Frame
+	nonce      [16]byte
+	name       string
+	attachment transfer.Frame
 }
 
 var errProtocol = errors.New("authenticated messaging protocol failed")
@@ -40,6 +43,10 @@ func readPacket(reader io.Reader) (packet, error) {
 	}
 	p := packet{kind: kind[0]}
 	switch p.kind {
+	case transferPacket:
+		frame, err := transfer.ReadFrame(reader)
+		p.attachment = frame
+		return p, err
 	case dataPacket, capacityPacket:
 		frame, err := chat.ReadFrame(reader)
 		// A capacity refusal carries only the message ID, encoded using the
@@ -80,6 +87,9 @@ func writePacket(session *sessionauth.Session, p packet) error {
 	if _, err := session.Write([]byte{p.kind}); err != nil {
 		return err
 	}
+	if p.kind == transferPacket {
+		return transfer.WriteFrame(session, p.attachment)
+	}
 	if p.kind == dataPacket || p.kind == capacityPacket {
 		if p.kind == capacityPacket && p.frame.Type != chat.AckFrame {
 			return errProtocol
@@ -97,6 +107,21 @@ func writePacket(session *sessionauth.Session, p packet) error {
 }
 
 func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, conversation *chat.Conversation) error {
+	m.mu.Lock()
+	engine := m.transfers
+	m.mu.Unlock()
+	if engine == nil {
+		var err error
+		engine, err = m.attachmentEngine(m.record.ID)
+		if err != nil {
+			return err
+		}
+	}
+	epoch, err := engine.Begin(ctx, func() error { return session.WithLivePeer(m.record.Peer, func() error { return nil }) })
+	if err != nil {
+		return err
+	}
+	defer engine.End(epoch)
 	// A cancellation must interrupt the initial profile write as well as the
 	// main select loop; otherwise a peer that stops reading could delay joining.
 	stop := context.AfterFunc(ctx, func() { _ = session.Close() })
@@ -163,103 +188,160 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 	}
 	var profileLimit profileBudget
 	sent := make(map[string]bool)
-	sendDue := func() error {
+	sendDue := func() (bool, error) {
 		frame, due, err := conversation.NextAttempt(m.record.Peer)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if due {
 			if err := writePacket(session, packet{kind: dataPacket, frame: frame}); err != nil {
-				return err
+				return false, err
 			}
 			sent[frame.ID] = true
 		}
-		return nil
+		return due, nil
 	}
 	if err := sendProfile(); err != nil {
 		return err
 	}
-	if err := sendDue(); err != nil {
+	if _, err := sendDue(); err != nil {
 		return err
 	}
+	handleReceived := func(got received) error {
+		if got.err != nil {
+			return errProtocol
+		}
+		switch got.packet.kind {
+		case capacityPacket:
+			if !sent[got.packet.frame.ID] {
+				return errProtocol
+			}
+			return errPeerCapacity
+		case profilePacket:
+			unchanged := profileLimit.seen && profileLimit.last == got.packet.name
+			if !profileLimit.accept(got.packet.name, time.Now()) || session.WithLivePeer(m.record.Peer, func() error { return nil }) != nil {
+				return errProtocol
+			}
+			if unchanged {
+				return nil
+			}
+			if err := m.application.SetPeerDisplayName(m.record.ID, m.record.Peer, got.packet.name); err != nil {
+				return err
+			}
+			m.changed("connected")
+		case pingPacket:
+			if writePacket(session, packet{kind: pongPacket, nonce: got.packet.nonce}) != nil {
+				return errProtocol
+			}
+		case pongPacket:
+			if pingAt.IsZero() || subtle.ConstantTimeCompare(pendingNonce[:], got.packet.nonce[:]) != 1 {
+				return errProtocol
+			}
+			pingAt = time.Time{}
+			clear(pendingNonce[:])
+		case transferPacket:
+			// The session guard is bounded and performs no file IO. The
+			// attachment actor rechecks it before each repository operation.
+			if session.WithLivePeer(m.record.Peer, func() error { return nil }) != nil || engine.Submit(epoch, got.packet.attachment) != nil {
+				return errProtocol
+			}
+		case dataPacket:
+			frame := got.packet.frame
+			switch frame.Type {
+			case chat.MessageFrame:
+				ack, inserted, err := conversation.ReceiveCommitted(m.record.Peer, frame)
+				if errors.Is(err, chat.ErrCapacity) {
+					// Best-effort refusal over this exact authenticated session.
+					// Neither side acknowledges, evicts or loses the queued text.
+					_ = writePacket(session, packet{kind: capacityPacket, frame: chat.Frame{Version: chat.ProtocolVersion, Type: chat.AckFrame, ID: frame.ID}})
+					return err
+				}
+				if err != nil {
+					return err
+				}
+				m.changed("connected")
+				if inserted {
+					m.notifyIncoming(frame.ID)
+				}
+				if writePacket(session, packet{kind: dataPacket, frame: ack}) != nil {
+					return errProtocol
+				}
+			case chat.AckFrame:
+				if err := conversation.Acknowledge(m.record.Peer, frame); err != nil {
+					return err
+				}
+				delete(sent, frame.ID)
+				m.changed("connected")
+			default:
+				return errProtocol
+			}
+		default:
+			return errProtocol
+		}
+		return nil
+	}
+	var pendingTransfer *transfer.Outbound
 	for {
+		if pendingTransfer != nil {
+			// Drain control and chat packets between writes, then exhaust due
+			// chat frames before writing one bounded attachment chunk. Slow file
+			// staging/hash verification never runs in this TLS writer.
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case failed := <-engine.Failures():
+				if failed.Epoch == epoch {
+					return failed.Err
+				}
+			case got := <-incoming:
+				if err := handleReceived(got); err != nil {
+					return err
+				}
+				continue
+			default:
+			}
+			if due, err := sendDue(); err != nil {
+				return err
+			} else if due {
+				continue
+			}
+			if pendingTransfer.Epoch == epoch {
+				if err := writePacket(session, packet{kind: transferPacket, attachment: pendingTransfer.Frame}); err != nil {
+					return err
+				}
+				if err := engine.Written(epoch, pendingTransfer.Frame); err != nil {
+					return err
+				}
+			}
+			pendingTransfer = nil
+			continue
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case got := <-incoming:
-			if got.err != nil {
-				return errProtocol
+			if err := handleReceived(got); err != nil {
+				return err
 			}
-			switch got.packet.kind {
-			case capacityPacket:
-				if !sent[got.packet.frame.ID] {
-					return errProtocol
-				}
-				return errPeerCapacity
-			case profilePacket:
-				unchanged := profileLimit.seen && profileLimit.last == got.packet.name
-				if !profileLimit.accept(got.packet.name, time.Now()) || session.WithLivePeer(m.record.Peer, func() error { return nil }) != nil {
-					return errProtocol
-				}
-				if unchanged {
-					continue
-				}
-				if err := m.application.SetPeerDisplayName(m.record.ID, m.record.Peer, got.packet.name); err != nil {
-					return err
-				}
-				m.changed("connected")
-			case pingPacket:
-				if writePacket(session, packet{kind: pongPacket, nonce: got.packet.nonce}) != nil {
-					return errProtocol
-				}
-			case pongPacket:
-				if pingAt.IsZero() || subtle.ConstantTimeCompare(pendingNonce[:], got.packet.nonce[:]) != 1 {
-					return errProtocol
-				}
-				pingAt = time.Time{}
-				clear(pendingNonce[:])
-			case dataPacket:
-				frame := got.packet.frame
-				switch frame.Type {
-				case chat.MessageFrame:
-					ack, inserted, err := conversation.ReceiveCommitted(m.record.Peer, frame)
-					if errors.Is(err, chat.ErrCapacity) {
-						// Best-effort refusal over this exact authenticated session.
-						// Neither side acknowledges, evicts or loses the queued text.
-						_ = writePacket(session, packet{kind: capacityPacket, frame: chat.Frame{Version: chat.ProtocolVersion, Type: chat.AckFrame, ID: frame.ID}})
-						return err
-					}
-					if err != nil {
-						return err
-					}
-					m.changed("connected")
-					if inserted {
-						m.notifyIncoming(frame.ID)
-					}
-					if writePacket(session, packet{kind: dataPacket, frame: ack}) != nil {
-						return errProtocol
-					}
-				case chat.AckFrame:
-					if err := conversation.Acknowledge(m.record.Peer, frame); err != nil {
-						return err
-					}
-					delete(sent, frame.ID)
-					m.changed("connected")
-				default:
-					return errProtocol
-				}
-			default:
-				return errProtocol
+		case failed := <-engine.Failures():
+			if failed.Epoch == epoch {
+				return failed.Err
+			}
+		case outbound := <-engine.Output():
+			if outbound.Epoch == epoch {
+				pendingTransfer = &outbound
 			}
 		case <-m.wake:
 			if err := sendProfile(); err != nil {
 				return err
 			}
-			if err := sendDue(); err != nil {
+			engine.Wake()
+			if _, err := sendDue(); err != nil {
 				return err
 			}
 		case <-pathSamples.C:
 			m.samplePath()
+			engine.Wake()
 		case <-retry.C:
 			if !pingAt.IsZero() && time.Since(pingAt) > peerTimeout {
 				return errProtocol
@@ -267,7 +349,7 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 			if err := sendProfile(); err != nil {
 				return err
 			}
-			if err := sendDue(); err != nil {
+			if _, err := sendDue(); err != nil {
 				return err
 			}
 		case <-heartbeat.C:

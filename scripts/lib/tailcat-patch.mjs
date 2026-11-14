@@ -69,7 +69,10 @@ export function verifyTailcatPatch(root, pins) {
     if (!/^module github\.com\/tailscale\/tailcat\r?$/m.test(localModule) || /^\s*replace\b/m.test(localModule)) fail();
     const rootModule = regularFile(path.join(root, 'go.mod'), 1 << 20).toString('utf8');
     const replacements = rootModule.match(/^\s*replace\b.*$/gm) ?? [];
-    if (replacements.length !== 1 || replacements[0].trim() !== `replace ${moduleName} => ${replacementPath}`
+    const declaredReplacement = `replace ${moduleName} => ${replacementPath}`;
+    const others = replacements.filter((line) => line.trim() !== declaredReplacement);
+    if (!replacements.some((line) => line.trim() === declaredReplacement) || replacements.length !== others.length + 1
+        || others.length > 1 || (others.length === 1 && others[0].trim() !== 'replace github.com/wailsapp/wails/v3 => ./.local/modules/wails-v3')
         || !rootModule.split(/\r?\n/).some((line) => line.trim() === `${moduleName} ${moduleVersion}`)) fail();
     const approval = Object.freeze({ module: moduleName, version: moduleVersion, path: replacementPath, root,
       manifestSHA256: hash(manifestBytes), patchVersion: manifest.patchVersion });
