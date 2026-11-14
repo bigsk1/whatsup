@@ -41,12 +41,24 @@ export function CancelInvitation(): $CancellablePromise<pairflow$0.Snapshot> {
     return $Call.ByID(3037999004);
 }
 
+export function CancelRecoveryImport(handle: string): $CancellablePromise<void> {
+    return $Call.ByID(2861266029, handle);
+}
+
 export function ChooseAttachment(id: string, sendAsFile: boolean): $CancellablePromise<$models.AttachmentDraft> {
     return $Call.ByID(145270285, id, sendAsFile);
 }
 
 export function ClearHistory(contactID: string): $CancellablePromise<messaging$0.Snapshot> {
     return $Call.ByID(2511817842, contactID);
+}
+
+export function CommitRecoveryImport(handle: string, newAppSecret: string, requirePassphrase: boolean, confirmReplace: boolean): $CancellablePromise<$models.Status> {
+    return $Call.ByID(3937950106, handle, newAppSecret, requirePassphrase, confirmReplace);
+}
+
+export function ConfigurePassphrase(currentSecret: string, newSecret: string, enabled: boolean): $CancellablePromise<$models.Status> {
+    return $Call.ByID(4099959579, currentSecret, newSecret, enabled);
 }
 
 /**
@@ -75,6 +87,10 @@ export function DenyPairing(requestID: string): $CancellablePromise<pairflow$0.S
 
 export function DiscardAttachment(id: string, handle: string): $CancellablePromise<void> {
     return $Call.ByID(3824909412, id, handle);
+}
+
+export function ExportRecovery(secret: string): $CancellablePromise<$models.RecoveryExportResult> {
+    return $Call.ByID(1161439080, secret);
 }
 
 /**
@@ -125,6 +141,10 @@ export function GetProfile(): $CancellablePromise<$models.ProfileSnapshot> {
 
 export function GetStatus(): $CancellablePromise<$models.Status> {
     return $Call.ByID(3129447825);
+}
+
+export function GetStorageSecurity(): $CancellablePromise<$models.StorageSecurity> {
+    return $Call.ByID(743660954);
 }
 
 /**
@@ -199,6 +219,10 @@ export function ShowSavedAttachment(id: string, handle: string): $CancellablePro
     return $Call.ByID(948564322, id, handle);
 }
 
+export function StageRecoveryImport(secret: string): $CancellablePromise<$models.RecoveryImportPreview> {
+    return $Call.ByID(3049925459, secret);
+}
+
 /**
  * UnlockStorage opens OS-protected identity and approved local chat state. The
  * native construction policy automatically connects saved approved contacts;
@@ -207,4 +231,8 @@ export function ShowSavedAttachment(id: string, handle: string): $CancellablePro
  */
 export function UnlockStorage(): $CancellablePromise<$models.Status> {
     return $Call.ByID(4289999910);
+}
+
+export function UnlockWithPassphrase(secret: string): $CancellablePromise<$models.Status> {
+    return $Call.ByID(786214657, secret);
 }

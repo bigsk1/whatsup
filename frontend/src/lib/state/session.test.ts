@@ -115,3 +115,51 @@ it('native visibility changes have no storage authority and malformed hints are 
   expect(get(session.state).status).toEqual(unlocked);
   stop();
 });
+
+it('native passphrase hints retire old permissions and wait for authoritative status', async () => {
+  const events = environment(),
+    held = deferred<Status>();
+  const request = vi
+    .fn()
+    .mockResolvedValueOnce(unlocked)
+    .mockReturnValueOnce(held.promise);
+  const session = createSession(request, events.subscribe);
+  const work: Promise<unknown>[] = [];
+  const stop = session.mount(() => work.push(session.refresh()));
+  await work[0];
+  events.emit('whatsup:storage-changed', {
+    state: 'locked',
+    requiresPassphrase: true,
+  });
+  expect(get(session.state).status.requiresPassphrase).toBe(true);
+  expect(get(session.state).status.identityFingerprint).toBe('');
+  expect(get(session.state).status.messagingAvailable).toBe(false);
+  held.resolve({
+    ...unavailableStatus,
+    storageState: 'locked',
+    requiresPassphrase: true,
+  });
+  await work[1];
+  expect(get(session.state).status.storageState).toBe('locked');
+  stop();
+});
+
+it('an authoritative security result retires older status requests', async () => {
+  const events = environment(),
+    held = deferred<Status>();
+  const session = createSession(() => held.promise, events.subscribe);
+  let requested: Promise<unknown> | undefined;
+  const stop = session.mount(() => {
+    requested = session.refresh();
+  });
+  const locked = {
+    ...unavailableStatus,
+    storageState: 'locked',
+    requiresPassphrase: true,
+  };
+  session.adopt(locked);
+  held.resolve(unlocked);
+  await requested;
+  expect(get(session.state).status).toEqual(locked);
+  stop();
+});

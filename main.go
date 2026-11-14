@@ -128,7 +128,10 @@ func main() {
 		log.Fatal("WhatsUp could not configure its desktop runtime")
 	}
 	if err := desktop.ConfigureAppPreferences(service, desktop.AppPreferenceRuntimeOptions{SetStartAtLogin: host.setStartAtLogin, OnChanged: host.preferencesChanged}); err != nil {
-		log.Fatal("WhatsUp could not authenticate its app preferences")
+		record(diagnostics.RuntimeWarning)
+	}
+	if err := host.configureSecurity(); err != nil {
+		log.Fatal("WhatsUp could not initialize local recovery controls")
 	}
 	if err := host.configureFiles(); err != nil {
 		log.Fatal("WhatsUp could not initialize private file input")

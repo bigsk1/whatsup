@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import {
     ArrowUpRight,
     Check,
@@ -31,6 +31,9 @@
   import { createSession } from './lib/state/session';
   import ContactList from './lib/components/ContactList.svelte';
   import AttachmentPanel from './lib/components/AttachmentPanel.svelte';
+  import PassphraseDialog from './lib/components/PassphraseDialog.svelte';
+  import RecoveryDialog from './lib/components/RecoveryDialog.svelte';
+  import { createSecurity, type SecurityOperation } from './lib/state/security';
   import { createAttachments } from './lib/state/attachments';
   import {
     createContacts,
@@ -38,7 +41,7 @@
     contactLabel,
     connectionLabel as describeConnection,
   } from './lib/state/contacts';
-  import { type StatusMethod } from './lib/backend';
+  import { type Status, type StatusMethod } from './lib/backend';
   import { hasPairingIdentity } from './lib/pairing';
   import { createPairing } from './lib/state/pairing';
   import { validMessageText, type ConversationSnapshot } from './lib/messaging';
@@ -55,10 +58,22 @@
   const appPreferencesState = appPreferences.state;
   const session = createSession();
   const sessionState = session.state;
+  const security = createSecurity({
+    changed: applySecurityStatus,
+    failed: () => void tick().then(() => refresh()),
+    beforeImport: () => {
+      clearPairing();
+      clearConversation();
+      clearProfile();
+    },
+  });
+  const securityState = security.state;
   const status = $derived($sessionState.status);
   let preferences = $state(readPreferences());
   const native = $derived($sessionState.native);
-  const busy = $derived($sessionState.busy);
+  const busy = $derived(
+    $sessionState.busy || $securityState.busy || $securityState.summary.busy,
+  );
   let notice = $state('');
   let search = $state('');
   let settings: SettingsDialog;
@@ -151,6 +166,7 @@
     if (open) {
       void refreshLocalProfile();
       if (native) void appPreferences.load();
+      if (native) void security.load();
     }
   }
 
@@ -301,6 +317,7 @@
   async function refresh(method: StatusMethod = 'GetStatus') {
     if (busy) return;
     if (method === 'LockStorage' || method === 'UnlockStorage') {
+      security.reset();
       clearPairing();
       clearConversation();
       clearProfile();
@@ -308,6 +325,8 @@
     notice = '';
     const result = await session.refresh(method);
     if (!mounted || result === null) return;
+    security.startup(result);
+    void security.load();
     void appPreferences.load();
     if (result.storageState !== 'unlocked') {
       clearPairing();
@@ -322,7 +341,30 @@
 
   function storageAction() {
     const unlock = status.storageState !== 'unlocked';
+    if (unlock && status.requiresPassphrase) {
+      security.begin('unlock');
+      return;
+    }
     void refresh(unlock ? 'UnlockStorage' : 'LockStorage');
+  }
+
+  function applySecurityStatus(result: Status) {
+    if (!mounted) return;
+    session.adopt(result);
+    security.startup(result);
+    clearPairing();
+    clearConversation();
+    clearProfile();
+    if (result.storageState === 'unlocked') {
+      void refreshLocalProfile();
+      startPairingPolling();
+      startConversationEvents();
+    }
+    void appPreferences.load();
+  }
+  function securityAction(operation: SecurityOperation) {
+    if (!native || busy) return;
+    security.begin(operation);
   }
 
   function updatePreferences(value: Preferences) {
@@ -338,6 +380,7 @@
     contacts.setVisible(!document.hidden);
     const stopSession = session.mount(() => void refresh(), {
       storage: () => {
+        security.reset();
         clearPairing();
         clearConversation();
         clearProfile();
@@ -377,6 +420,7 @@
       clearProfile();
       stopSession();
       appPreferences.stop();
+      security.reset();
       media.removeEventListener('change', updateSystemTheme);
       window.removeEventListener('keydown', keyboard);
       window.removeEventListener('focus', recoverContacts);
@@ -921,6 +965,9 @@
   appPreferences={$appPreferencesState}
   onapppreferences={(value) => void appPreferences.save(value)}
   onreloadapppreferences={() => void appPreferences.load()}
+  security={$securityState}
+  onsecurity={securityAction}
+  onreloadsecurity={() => void security.load()}
   onpreferences={updatePreferences}
   onstorage={storageAction}
   canForget={hasContact && status.storageState === 'unlocked'}
@@ -935,6 +982,25 @@
   {contactSaving}
   {contactNotice}
   onsavecontact={(contactID, name) => void updateContactName(contactID, name)}
+/>
+
+<PassphraseDialog
+  operation={$securityState.operation}
+  busy={$securityState.busy}
+  notice={$securityState.notice}
+  requiresPassphrase={status.requiresPassphrase}
+  onsubmit={(current, secret) => void security.submit(current, secret)}
+  oncancel={security.cancel}
+/>
+<RecoveryDialog
+  preview={$securityState.operation === 'import-confirm'
+    ? $securityState.preview
+    : null}
+  busy={$securityState.busy}
+  notice={$securityState.notice}
+  onconfirm={(secret, required, replace) =>
+    void security.commit(secret, required, replace)}
+  oncancel={security.cancel}
 />
 
 <ForgetContactDialog

@@ -3,6 +3,7 @@ import { Events } from '@wailsio/runtime';
 import {
   hasDesktopBridge,
   requestStatus,
+  validateStatus,
   unavailableStatus,
   type StatusMethod,
 } from '../backend';
@@ -49,7 +50,11 @@ export function createSession(
         return;
       const record = value as Record<string, unknown>;
       if (
-        Object.keys(record).length !== 1 ||
+        (Object.keys(record).length !== 1 &&
+          !(
+            Object.keys(record).length === 2 &&
+            typeof record.requiresPassphrase === 'boolean'
+          )) ||
         !['locked', 'unlocked', 'unavailable'].includes(record.state as string)
       )
         return;
@@ -64,6 +69,7 @@ export function createSession(
           ...unavailableStatus,
           storageState:
             record.state === 'unavailable' ? 'unavailable' : 'locked',
+          requiresPassphrase: record.requiresPassphrase === true,
         },
         notice: '',
       }));
@@ -121,5 +127,11 @@ export function createSession(
       }
     }
   }
-  return { state, mount, refresh };
+  function adopt(input: unknown) {
+    const status = validateStatus(input);
+    generation += 1;
+    busy = false;
+    state.update((value) => ({ ...value, busy, status, notice: '' }));
+  }
+  return { state, mount, refresh, adopt };
 }

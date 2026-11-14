@@ -31,6 +31,7 @@ func ConfigureAppPreferences(s *Service, options AppPreferenceRuntimeOptions) er
 	if s.preferenceState != nil {
 		return errors.New("App preferences are already configured")
 	}
+	s.preferenceOptions = options
 	store, err := preferences.Open(s.directory, s.keys)
 	if err != nil {
 		return errors.New("App preferences could not be authenticated")
@@ -50,7 +51,7 @@ func (s *Service) appPreferences() (*appPreferenceState, error) {
 		if err != nil {
 			return nil, errors.New("App preferences could not be authenticated")
 		}
-		s.preferenceState = &appPreferenceState{store: store}
+		s.preferenceState = &appPreferenceState{store: store, options: s.preferenceOptions}
 	}
 	return s.preferenceState, nil
 }
@@ -205,4 +206,20 @@ func CloseAppPreferences(s *Service) error {
 		return errors.New("App preferences could not be closed")
 	}
 	return nil
+}
+
+// ReopenAppPreferences is Go-only recovery integration. It retains native
+// callbacks and is never an ordinary unlock fallback for unreadable preferences.
+func ReopenAppPreferences(s *Service) error {
+	if s == nil {
+		return errors.New("App preferences are unavailable")
+	}
+	if err := CloseAppPreferences(s); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	options := s.preferenceOptions
+	s.preferenceState = nil
+	s.mu.Unlock()
+	return ConfigureAppPreferences(s, options)
 }

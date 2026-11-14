@@ -7,10 +7,11 @@ export interface Status {
   pairingAvailable: boolean;
   messagingAvailable: boolean;
   attachmentsAvailable: boolean;
+  requiresPassphrase: boolean;
 }
 
 export const unavailableStatus: Status = Object.freeze({
-  version: '0.0.9',
+  version: '0.0.10',
   identityFingerprint: '',
   storageState: 'unavailable',
   networkState: 'unavailable',
@@ -18,6 +19,7 @@ export const unavailableStatus: Status = Object.freeze({
   pairingAvailable: false,
   messagingAvailable: false,
   attachmentsAvailable: false,
+  requiresPassphrase: false,
 });
 
 export type StatusMethod = 'GetStatus' | 'UnlockStorage' | 'LockStorage';
@@ -39,6 +41,7 @@ export function validateStatus(value: unknown): Status {
     'pairingAvailable',
     'messagingAvailable',
     'attachmentsAvailable',
+    'requiresPassphrase',
   ] as const;
   if (
     strings.some(

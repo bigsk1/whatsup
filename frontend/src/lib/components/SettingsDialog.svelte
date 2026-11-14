@@ -17,8 +17,10 @@
   import { validDisplayName, type LocalProfile } from '../profile';
   import type { Accent, Preferences, Theme } from '../themes/preferences';
   import type { AppPreferences } from '../state/preferences';
+  import type { StorageSecurity, SecurityOperation } from '../state/security';
 
-  type Page = 'profile' | 'contact' | 'appearance' | 'privacy' | 'app';
+  type Page =
+    'profile' | 'contact' | 'appearance' | 'privacy' | 'app' | 'security';
   let {
     status,
     preferences,
@@ -41,6 +43,9 @@
     appPreferences,
     onapppreferences,
     onreloadapppreferences,
+    security,
+    onsecurity,
+    onreloadsecurity,
   }: {
     status: Status;
     preferences: Preferences;
@@ -68,6 +73,14 @@
     };
     onapppreferences: (value: AppPreferences) => void;
     onreloadapppreferences: () => void;
+    security: {
+      summary: StorageSecurity;
+      loaded: boolean;
+      busy: boolean;
+      notice: string;
+    };
+    onsecurity: (operation: SecurityOperation) => void;
+    onreloadsecurity: () => void;
   } = $props();
   let open = $state(false);
   let selected = $state<Page>('profile');
@@ -89,6 +102,7 @@
     { id: 'contact', title: 'Contact', icon: ContactRound },
     { id: 'appearance', title: 'Appearance', icon: Palette },
     { id: 'app', title: 'App behavior', icon: Bell },
+    { id: 'security', title: 'Security & recovery', icon: LockKeyhole },
     { id: 'privacy', title: 'Privacy & diagnostics', icon: ShieldCheck },
   ] as const;
   const pageTitle = $derived(pages.find((page) => page.id === selected)!.title);
@@ -127,7 +141,11 @@
 
 <svelte:window
   onkeydown={(event) => {
-    if (open && event.key === 'Escape') {
+    if (
+      open &&
+      event.key === 'Escape' &&
+      !document.querySelector('dialog[open]')
+    ) {
       event.preventDefault();
       close();
     }
@@ -553,6 +571,71 @@
                   >Reload app preferences</button
                 >{/if}
             </section>
+          {:else if selected === 'security'}
+            <section
+              class="settings-card"
+              aria-labelledby="app-passphrase-heading"
+            >
+              <h2 id="app-passphrase-heading">App passphrase</h2>
+              <p class="muted small">
+                Your OS credential protects local data. An optional app
+                passphrase also requires a secret when WhatsUp starts or goes
+                online.
+              </p>
+              <p>
+                {status.requiresPassphrase
+                  ? 'An app passphrase is required.'
+                  : 'Local data uses OS protection without an app passphrase.'}
+              </p>
+              <button
+                class="secondary-button compact"
+                disabled={!native || !unlocked || busy || security.busy}
+                onclick={() =>
+                  onsecurity(status.requiresPassphrase ? 'disable' : 'enable')}
+                >{status.requiresPassphrase
+                  ? 'Disable app passphrase…'
+                  : 'Require app passphrase…'}</button
+              >
+              {#if !unlocked}<p class="muted small">
+                  Go online before changing your app passphrase.
+                </p>{/if}
+            </section>
+            <section
+              class="settings-card settings-section"
+              aria-labelledby="recovery-heading"
+            >
+              <h2 id="recovery-heading">Encrypted recovery copies</h2>
+              <p class="muted small">
+                Export your identity, saved contacts and history with a separate
+                recovery passphrase. Import authenticates the entire copy before
+                you confirm replacement. Native file dialogs keep file paths out
+                of the interface.
+              </p>
+              <div class="settings-storage-row">
+                <button
+                  class="secondary-button compact"
+                  disabled={!native ||
+                    !unlocked ||
+                    busy ||
+                    security.busy ||
+                    !security.loaded ||
+                    !security.summary.recoveryAvailable}
+                  onclick={() => onsecurity('export')}
+                  >Export recovery copy…</button
+                ><button
+                  class="secondary-button compact"
+                  disabled={!native || busy || security.busy}
+                  onclick={() => onsecurity('import')}
+                  >Import recovery copy…</button
+                >
+              </div>
+              {#if security.notice}<p role="status">{security.notice}</p>{/if}
+              {#if native && !security.loaded}<button
+                  class="text-button"
+                  disabled={security.busy}
+                  onclick={onreloadsecurity}>Reload security settings</button
+                >{/if}
+            </section>
           {:else}
             <section class="settings-card" aria-labelledby="storage-heading">
               <div class="settings-card-heading">
@@ -656,6 +739,7 @@
   .settings-sidebar {
     display: flex;
     flex-direction: column;
+    min-width: 0;
     min-height: 0;
     background: var(--rail);
     border-right: 1px solid var(--border);

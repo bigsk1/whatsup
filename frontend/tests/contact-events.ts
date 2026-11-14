@@ -13,10 +13,21 @@ const preferenceBinding = generated.match(
 if (!preferenceBinding)
   throw new Error('Missing generated app preferences binding');
 const preferencesID = Number(preferenceBinding[1]);
+const securityID = Number(
+  generated.match(
+    /export function GetStorageSecurity\([\s\S]*?\$Call\.ByID\((\d+)/,
+  )?.[1],
+);
 
 export async function serveDefaultAppPreferences(
   route: Route,
 ): Promise<boolean> {
+  if (route.request().postDataJSON().args?.methodID === securityID) {
+    await route.fulfill({
+      json: { requiresPassphrase: false, recoveryAvailable: true, busy: false },
+    });
+    return true;
+  }
   if (route.request().postDataJSON().args?.methodID !== preferencesID)
     return false;
   await route.fulfill({ json: defaultAppPreferences });

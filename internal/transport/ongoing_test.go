@@ -136,7 +136,7 @@ func ongoingConnectionPair(t *testing.T, ctx context.Context, listener *OngoingL
 	go func() { conn, err := listener.Accept(ctx); ready <- accepted{conn, err} }()
 	client, err := DialOngoing(ctx, record, profile, RelayFallback, true)
 	if err != nil {
-		t.Fatal("ongoing dial failed")
+		t.Fatalf("ongoing dial failed (fixture deadline reached: %t)", ctx.Err() != nil)
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	select {
@@ -168,7 +168,10 @@ func requireOngoingBytes(t *testing.T, sender, receiver net.Conn) {
 func TestRealOngoingPreservesKeysAndEndpointAcrossReconnectAndRestart(t *testing.T) {
 	profile := loopbackRelayProfile(t)
 	owner, joiner := ongoingRecords(t, profile)
-	ctx, cancel := context.WithTimeout(context.Background(), 18*time.Second)
+	// This fixture starts three complete Tailcat engines and also probes a
+	// rejected tunnel port. Give their combined lifecycle a bounded budget;
+	// individual application connection deadlines are unchanged.
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	options := OngoingOptions{Record: owner, Profile: profile, Policy: RelayFallback, AllowRelayFallback: true}
 	listener, err := NewOngoingListener(ctx, options)

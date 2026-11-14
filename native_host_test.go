@@ -68,6 +68,26 @@ func TestNativeOfflineJoinsStartupBeforeLockAndNeverEmitsLateUnlock(t *testing.T
 	}
 }
 
+func TestNativeProtectedStartupLeavesOnePassphrasePromptToFrontend(t *testing.T) {
+	h := newNativeTasks(nil)
+	t.Cleanup(h.stopTasks)
+	hints := make(chan string, 1)
+	h.unlock = func() (desktop.Status, error) {
+		return desktop.Status{StorageState: "locked", RequiresPassphrase: true}, context.Canceled
+	}
+	h.emitStorage = func(state string) { hints <- state }
+	h.startStartup()
+	h.startupMu.Lock()
+	done := h.startupDone
+	h.startupMu.Unlock()
+	awaitNative(t, done)
+	select {
+	case <-hints:
+		t.Fatal("expected protected startup emitted a duplicate lock hint")
+	default:
+	}
+}
+
 func TestNativeIncomingQueueIsBoundedAndShutdownCancelsDelivery(t *testing.T) {
 	h := newNativeTasks(nil)
 	entered := make(chan struct{})

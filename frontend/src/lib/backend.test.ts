@@ -24,6 +24,7 @@ describe('desktop status boundary', () => {
       {},
       [],
       { ...unavailableStatus, messagingAvailable: 'true' },
+      { ...unavailableStatus, requiresPassphrase: 'false' },
       { ...unavailableStatus, identityFingerprint: 'x'.repeat(257) },
     ]) {
       expect(() => validateStatus(value)).toThrow('invalid status');

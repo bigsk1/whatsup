@@ -207,9 +207,9 @@ test('separate contacts keep drafts and unread counts independent, and Forget pr
   await expect(page.getByRole('log', { name: 'Messages' })).toContainText(
     'Synthetic second history',
   );
-  expect(calls.filter((item) => item.method === 'ForgetContact')).toEqual([
-    { method: 'ForgetContact', args: [first] },
-  ]);
+  await expect
+    .poll(() => calls.filter((item) => item.method === 'ForgetContact'))
+    .toEqual([{ method: 'ForgetContact', args: [first] }]);
   expect(errors).toEqual([]);
 });
 

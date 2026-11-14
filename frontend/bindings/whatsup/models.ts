@@ -7,4 +7,5 @@
  */
 export interface NativeStorageHint {
     "state": string;
+    "requiresPassphrase": boolean;
 }

@@ -14,6 +14,9 @@ export type {
     InvitationInspection,
     InvitationShare,
     ProfileSnapshot,
+    RecoveryExportResult,
+    RecoveryImportPreview,
     SavedAttachment,
-    Status
+    Status,
+    StorageSecurity
 } from "./models.js";

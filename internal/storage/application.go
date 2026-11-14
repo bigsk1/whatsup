@@ -347,6 +347,12 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 		_ = a.closeMessageStoreLocked()
 		return nil, err
 	}
+	if err := a.finishRecoveryLocked(); err != nil {
+		a.failed = true
+		_ = a.closeAttachmentStoreLocked()
+		_ = a.closeMessageStoreLocked()
+		return nil, err
+	}
 	return a, nil
 }
 

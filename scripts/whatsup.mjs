@@ -344,8 +344,8 @@ async function credentialCheck() {
   requireGo();
   const race = raceAvailable();
   run('go', ['test', '-mod=readonly', ...(race ? ['-race'] : []), '-count=1',
-    `-tags=oscredentials,${privacyTags}`, '-run=^TestRealOSCredentialProtectedVault$', '-v', './tests/integration'], { timeout: 120000 });
-  console.log('Real OS credential persistence and missing-key rejection passed with disposable validation credentials. No production identity was used.');
+    `-tags=oscredentials,${privacyTags}`, '-run=^TestRealOSCredential', '-v', './tests/integration'], { timeout: 120000 });
+  console.log('Real OS credential persistence, app passphrase and lost-key recovery passed with disposable validation credentials. No production identity was used.');
 }
 
 async function wslCheck() {

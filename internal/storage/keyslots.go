@@ -23,9 +23,14 @@ type sealedRootValue struct {
 	Ciphertext []byte `json:"ciphertext"`
 }
 
-// The reserved slot is deliberately unsupported. A non-null value must never
-// silently fall back to OS-only unlocking before passphrase mode is implemented.
-type reservedPassphraseSlot struct{}
+// The passphrase layer is itself inside the authenticated OS wrapper. Neither
+// factor has an independent route to the master in protected mode.
+type reservedPassphraseSlot struct {
+	Version int    `json:"version"`
+	KDF     string `json:"kdf"`
+	Salt    []byte `json:"salt"`
+	Nonce   []byte `json:"nonce"`
+}
 type rootKeySlots struct {
 	OS         sealedRootValue         `json:"os"`
 	Passphrase *reservedPassphraseSlot `json:"passphrase"`
@@ -36,10 +41,11 @@ type rootMetadata struct {
 	Slots   rootKeySlots `json:"slots"`
 }
 type rootEnvelope struct {
-	Version int             `json:"version"`
-	Mode    string          `json:"mode"`
-	Slots   rootKeySlots    `json:"slots"`
-	Payload sealedRootValue `json:"payload"`
+	Version       int              `json:"version"`
+	Mode          string           `json:"mode"`
+	Slots         rootKeySlots     `json:"slots"`
+	Payload       sealedRootValue  `json:"payload"`
+	ManagedMaster *sealedRootValue `json:"managedMaster,omitempty"`
 }
 
 func messageFilesExist(directory string) bool {
@@ -131,11 +137,37 @@ func (v *Vault) sealRootLocked(plaintext []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	slot, err := sealRootValue(wrapping, v.master, append(append([]byte(nil), rootHeader...), []byte("os-only master slot")...))
+	mode := v.protectionMode
+	if mode == "" {
+		mode = "os-only"
+	}
+	wrapped := v.master
+	var profile *reservedPassphraseSlot
+	osAAD := append(append([]byte(nil), rootHeader...), []byte("os-only master slot")...)
+	if mode == "os-plus-passphrase" {
+		if len(v.passKey) != 32 || len(v.passSalt) != 16 {
+			return nil, ErrPassphraseRequired
+		}
+		profile = &reservedPassphraseSlot{Version: 1, KDF: "argon2id-rfc9106-second", Salt: bytes.Clone(v.passSalt), Nonce: make([]byte, 24)}
+		if _, err := rand.Read(profile.Nonce); err != nil {
+			return nil, err
+		}
+		passAEAD, err := rootAEAD(v.passKey)
+		if err != nil {
+			return nil, err
+		}
+		innerAAD := passphraseAAD(profile, "master")
+		wrapped = passAEAD.Seal(nil, profile.Nonce, v.master, innerAAD)
+		defer clear(wrapped)
+		osAAD = passphraseAAD(profile, "os-layer")
+	} else if mode != "os-only" {
+		return nil, ErrCorrupt
+	}
+	slot, err := sealRootValue(wrapping, wrapped, osAAD)
 	if err != nil {
 		return nil, err
 	}
-	metadata := rootMetadata{Version: 2, Mode: "os-only", Slots: rootKeySlots{OS: slot}}
+	metadata := rootMetadata{Version: 2, Mode: mode, Slots: rootKeySlots{OS: slot, Passphrase: profile}}
 	aad, err := rootAAD(metadata)
 	if err != nil {
 		return nil, err
@@ -161,19 +193,47 @@ func (v *Vault) sealRootLocked(plaintext []byte) ([]byte, error) {
 	return append(append([]byte(nil), rootHeader...), encoded...), nil
 }
 
+func decodeRoot(encoded []byte) (root rootEnvelope, result error) {
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&root) != nil || decoder.Decode(new(any)) != io.EOF {
+		return root, ErrCorrupt
+	}
+	canonical, err := json.Marshal(root)
+	if err != nil || !bytes.Equal(canonical, encoded) || root.Version != 2 || len(root.Slots.OS.Nonce) != chacha20poly1305.NonceSizeX || len(root.Payload.Nonce) != chacha20poly1305.NonceSizeX || len(root.Payload.Ciphertext) < chacha20poly1305.Overhead || len(root.Payload.Ciphertext) > MaxStateBytes+chacha20poly1305.Overhead {
+		return root, ErrCorrupt
+	}
+	if root.Mode == "os-only" {
+		if root.Slots.Passphrase != nil || len(root.Slots.OS.Ciphertext) != 48 {
+			return root, ErrCorrupt
+		}
+	} else if root.Mode == "os-plus-passphrase" {
+		p := root.Slots.Passphrase
+		if p == nil || p.Version != 1 || p.KDF != "argon2id-rfc9106-second" || len(p.Salt) != 16 || len(p.Nonce) != 24 || len(root.Slots.OS.Ciphertext) != 64 {
+			return root, ErrCorrupt
+		}
+	} else {
+		return root, ErrCorrupt
+	}
+	if root.ManagedMaster != nil && (len(root.ManagedMaster.Nonce) != 24 || len(root.ManagedMaster.Ciphertext) != 48) {
+		return root, ErrCorrupt
+	}
+	return root, nil
+}
+
+func passphraseAAD(p *reservedPassphraseSlot, purpose string) []byte {
+	encoded, _ := json.Marshal(p)
+	result := append(append([]byte(nil), rootHeader...), []byte("os-plus-passphrase "+purpose+"\x00")...)
+	return append(result, encoded...)
+}
+
 func (v *Vault) loadRootLocked(encoded []byte) ([]byte, error) {
 	if v == nil || v.vaultState == nil || v.closed {
 		return nil, ErrLocked
 	}
-	var root rootEnvelope
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&root) != nil || decoder.Decode(new(any)) != io.EOF {
-		return nil, ErrCorrupt
-	}
-	canonical, err := json.Marshal(root)
-	if err != nil || !bytes.Equal(canonical, encoded) || root.Version != 2 || root.Mode != "os-only" || root.Slots.Passphrase != nil || len(root.Slots.OS.Nonce) != chacha20poly1305.NonceSizeX || len(root.Slots.OS.Ciphertext) != keymaterial.KeyBytes+chacha20poly1305.Overhead || len(root.Payload.Nonce) != chacha20poly1305.NonceSizeX || len(root.Payload.Ciphertext) < chacha20poly1305.Overhead || len(root.Payload.Ciphertext) > MaxStateBytes+chacha20poly1305.Overhead {
-		return nil, ErrCorrupt
+	root, err := decodeRoot(encoded)
+	if err != nil {
+		return nil, err
 	}
 	wrapKey, err := keymaterial.Derive(v.key, "os-master-wrap/v2")
 	if err != nil {
@@ -184,8 +244,34 @@ func (v *Vault) loadRootLocked(encoded []byte) ([]byte, error) {
 	if err != nil {
 		return nil, ErrCorrupt
 	}
-	master, err := wrapping.Open(nil, root.Slots.OS.Nonce, root.Slots.OS.Ciphertext, append(append([]byte(nil), rootHeader...), []byte("os-only master slot")...))
-	if err != nil || len(master) != keymaterial.KeyBytes {
+	osAAD := append(append([]byte(nil), rootHeader...), []byte("os-only master slot")...)
+	if root.Mode == "os-plus-passphrase" {
+		osAAD = passphraseAAD(root.Slots.Passphrase, "os-layer")
+	}
+	master, err := wrapping.Open(nil, root.Slots.OS.Nonce, root.Slots.OS.Ciphertext, osAAD)
+	if err != nil {
+		clear(master)
+		return nil, ErrCorrupt
+	}
+	if root.Mode == "os-plus-passphrase" {
+		if len(v.passKey) != 32 || !bytes.Equal(v.passSalt, root.Slots.Passphrase.Salt) {
+			clear(master)
+			return nil, ErrPassphraseRequired
+		}
+		passAEAD, err := rootAEAD(v.passKey)
+		if err != nil {
+			clear(master)
+			return nil, ErrPassphrase
+		}
+		inner := master
+		master, err = passAEAD.Open(nil, root.Slots.Passphrase.Nonce, inner, passphraseAAD(root.Slots.Passphrase, "master"))
+		clear(inner)
+		if err != nil {
+			clear(master)
+			return nil, ErrPassphrase
+		}
+	}
+	if len(master) != 32 {
 		clear(master)
 		return nil, ErrCorrupt
 	}
@@ -210,5 +296,6 @@ func (v *Vault) loadRootLocked(encoded []byte) ([]byte, error) {
 	v.master = bytes.Clone(master)
 	v.masterPersisted = true
 	v.legacy = false
+	v.protectionMode = root.Mode
 	return plaintext, nil
 }

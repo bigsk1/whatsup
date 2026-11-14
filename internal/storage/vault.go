@@ -4,6 +4,7 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -22,12 +23,14 @@ import (
 const MaxStateBytes = 4 << 20
 
 var (
-	ErrLocked     = errors.New("local state is locked")
-	ErrBusy       = errors.New("local state is already open in another process")
-	ErrCredential = errors.New("OS credential protection is unavailable; local state remains locked")
-	ErrCorrupt    = errors.New("local state could not be authenticated")
-	ErrUnsafePath = errors.New("local state requires a private directory and regular files")
-	header        = []byte("WUPVAULT\x01")
+	ErrLocked             = errors.New("local state is locked")
+	ErrBusy               = errors.New("local state is already open in another process")
+	ErrCredential         = errors.New("OS credential protection is unavailable; local state remains locked")
+	ErrCorrupt            = errors.New("local state could not be authenticated")
+	ErrUnsafePath         = errors.New("local state requires a private directory and regular files")
+	ErrPassphraseRequired = errors.New("a local passphrase is required")
+	ErrPassphrase         = errors.New("the local passphrase could not authenticate storage")
+	header                = []byte("WUPVAULT\x01")
 )
 
 // KeyStore is backend-only. Test implementations must never be used by the app.
@@ -57,6 +60,10 @@ type vaultState struct {
 	master          []byte
 	masterPersisted bool
 	legacy          bool
+	protectionMode  string
+	passSalt        []byte
+	passKey         []byte
+	recoveryContext context.Context
 }
 
 func (Vault) String() string               { return "[locked backend-only WhatsUp vault]" }
@@ -104,6 +111,10 @@ func regular(filename string) error {
 }
 
 func Open(directory string, keys KeyStore) (*Vault, error) {
+	return openWithSecret(directory, keys, nil)
+}
+
+func openWithSecret(directory string, keys KeyStore, secret []byte) (*Vault, error) {
 	if keys == nil || !filepath.IsAbs(directory) {
 		return nil, ErrUnsafePath
 	}
@@ -125,7 +136,9 @@ func Open(directory string, keys KeyStore) (*Vault, error) {
 	if err := regular(lockPath); err != nil {
 		return nil, err
 	}
-	if _, err := os.Lstat(statePath); os.IsNotExist(err) && messageFilesExist(directory) {
+	_, journalErr := os.Lstat(filepath.Join(directory, recoveryJournalFilename))
+	journalExists := !os.IsNotExist(journalErr)
+	if _, err := os.Lstat(statePath); os.IsNotExist(err) && messageFilesExist(directory) && !journalExists {
 		// A surviving database must never acquire a newly generated master or
 		// OS credential merely because its root envelope was lost.
 		return nil, ErrCorrupt
@@ -141,6 +154,9 @@ func Open(directory string, keys KeyStore) (*Vault, error) {
 	fail := func(err error) (*Vault, error) { _ = lock.Close(); return nil, err }
 	encoded, err := keys.Get()
 	if errors.Is(err, keyring.ErrNotFound) {
+		if journalExists {
+			return fail(ErrRecoveryPending)
+		}
 		// A missing credential must never silently replace the key of an existing vault.
 		if _, statErr := os.Lstat(statePath); !os.IsNotExist(statErr) {
 			return fail(ErrCredential)
@@ -171,6 +187,12 @@ func Open(directory string, keys KeyStore) (*Vault, error) {
 	if err != nil || len(key) != 32 {
 		clear(key)
 		return fail(ErrCredential)
+	}
+	if journalExists {
+		if err := reconcileRecoveryDirectory(directory, key, secret); err != nil {
+			clear(key)
+			return fail(err)
+		}
 	}
 	return &Vault{vaultState: &vaultState{directory: directory, key: key, lock: lock}}, nil
 }
@@ -328,6 +350,10 @@ func (v *Vault) Close() error {
 	clear(v.key)
 	v.key = nil
 	v.clearMasterLocked()
+	clear(v.passKey)
+	v.passKey = nil
+	clear(v.passSalt)
+	v.passSalt = nil
 	// If the OS refuses unlock, keep the handle so callers can retry. Access to
 	// plaintext stays closed regardless of the lock release result.
 	var err error

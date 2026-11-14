@@ -14,7 +14,7 @@ import (
 	"whatsup/internal/storage"
 )
 
-const Version = "0.0.9"
+const Version = "0.0.10"
 
 type Status struct {
 	Version              string `json:"version"`
@@ -25,25 +25,28 @@ type Status struct {
 	PairingAvailable     bool   `json:"pairingAvailable"`
 	MessagingAvailable   bool   `json:"messagingAvailable"`
 	AttachmentsAvailable bool   `json:"attachmentsAvailable"`
+	RequiresPassphrase   bool   `json:"requiresPassphrase"`
 }
 
 type Service struct {
-	mu              sync.Mutex
-	directory       string
-	keys            storage.KeyStore
-	vault           *storage.Vault
-	application     *storage.ApplicationState
-	pairing         *pairflow.Coordinator
-	invitations     *invitationControl
-	messages        *messaging.Registry
-	revisions       *messaging.Revisions
-	events          *contactEvents
-	preferenceState *appPreferenceState
-	runtimeOptions  RuntimeOptions
-	attachments     *attachmentControl
-	fingerprint     string
-	state           string
-	record          func(diagnostics.Event)
+	mu                sync.Mutex
+	directory         string
+	keys              storage.KeyStore
+	vault             *storage.Vault
+	application       *storage.ApplicationState
+	pairing           *pairflow.Coordinator
+	invitations       *invitationControl
+	messages          *messaging.Registry
+	revisions         *messaging.Revisions
+	events            *contactEvents
+	preferenceState   *appPreferenceState
+	preferenceOptions AppPreferenceRuntimeOptions
+	runtimeOptions    RuntimeOptions
+	attachments       *attachmentControl
+	security          *securityControl
+	fingerprint       string
+	state             string
+	record            func(diagnostics.Event)
 }
 
 func New(directory string, keys storage.KeyStore, listeners ...func(diagnostics.Event)) *Service {
@@ -64,6 +67,13 @@ func NewWithEvents(directory string, keys storage.KeyStore, record func(diagnost
 
 func (s *Service) status() Status {
 	status := Status{Version: Version, IdentityFingerprint: s.fingerprint, StorageState: s.state, NetworkState: "unavailable", PairingAvailable: s.state == "unlocked" && s.invitations != nil}
+	if protection, err := storage.InspectProtectionWithKeys(s.directory, s.keys); err == nil {
+		status.RequiresPassphrase = protection.RequiresPassphrase
+	}
+	if s.security != nil && s.security.operation != nil && s.security.operation.quiesced {
+		status.IdentityFingerprint = ""
+		status.StorageState = "locked"
+	}
 	status.AttachmentsAvailable = s.state == "unlocked" && s.attachments != nil && s.attachments.session != nil
 	if s.state == "unlocked" && s.messages != nil {
 		contacts, err := s.messages.Contacts()
@@ -110,8 +120,22 @@ func makeControllers(local *identity.Identity, app *storage.ApplicationState, re
 // component constructors remain offline unless that policy is explicitly set.
 // Unlock never emits an invitation or grants a pending pairing chat authority.
 func (s *Service) UnlockStorage() (Status, error) {
+	return s.unlockStorage(nil)
+}
+
+func (s *Service) unlockStorage(secret []byte) (Status, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.unlockStorageLocked(secret)
+}
+
+func (s *Service) unlockStorageLocked(secret []byte) (Status, error) {
+	if s.security != nil && s.security.options.Life != nil && s.security.options.Life.Err() != nil {
+		return s.status(), errors.New("The desktop is shutting down")
+	}
+	if s.security != nil && s.security.operation != nil {
+		return s.status(), errors.New("A local security operation is in progress")
+	}
 	if s.vault != nil {
 		if s.state == "unlocked" {
 			return s.status(), nil
@@ -123,8 +147,17 @@ func (s *Service) UnlockStorage() (Status, error) {
 		s.vault = nil
 		s.application = nil
 	}
-	vault, err := storage.Open(s.directory, s.keys)
+	vault, err := storage.OpenWithPassphrase(s.directory, s.keys, secret)
 	if err != nil {
+		if errors.Is(err, storage.ErrPassphraseRequired) {
+			s.state = "locked"
+			return s.status(), errors.New("Enter the app passphrase to go online")
+		}
+		if len(secret) != 0 {
+			s.state = "locked"
+			s.record(diagnostics.StorageUnavailable)
+			return s.status(), errors.New("Local storage could not be unlocked. Check the passphrase and OS credential protection.")
+		}
 		s.state = "unavailable"
 		s.record(diagnostics.StorageUnavailable)
 		return s.status(), errors.New("Local storage could not be unlocked. Check OS credential protection and whether WhatsUp is already running.")
@@ -139,10 +172,20 @@ func (s *Service) UnlockStorage() (Status, error) {
 	}
 	application, err := storage.OpenApplication(vault)
 	if err != nil {
+		if errors.Is(err, storage.ErrPassphrase) || errors.Is(err, storage.ErrPassphraseRequired) {
+			if closeErr := vault.Close(); closeErr != nil {
+				s.vault = vault
+			}
+			s.state = "locked"
+			return s.status(), errors.New("Local storage could not be unlocked. Check the passphrase and OS credential protection.")
+		}
 		return fail()
 	}
 	local, err := application.Identity()
 	if err != nil {
+		return fail()
+	}
+	if s.security != nil && s.security.options.Life != nil && s.security.options.Life.Err() != nil {
 		return fail()
 	}
 	messages, pairing, invitations, err := makeControllers(local, application, s.revisions, s.events.enqueue, s.runtimeOptions, s.record)
@@ -173,6 +216,11 @@ func (s *Service) UnlockStorage() (Status, error) {
 func (s *Service) LockStorage() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.cancelSecurityLocked()
+	return s.lockStorageLocked()
+}
+
+func (s *Service) lockStorageLocked() Status {
 	s.stopAttachmentsLocked()
 	if s.messages != nil {
 		s.messages.Close()

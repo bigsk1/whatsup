@@ -24,6 +24,7 @@ const names = [
   'GetMessages',
   'GetAppPreferences',
   'SetAppPreferences',
+  'GetStorageSecurity',
   'MarkRead',
 ] as const;
 type Operation = (typeof names)[number];
@@ -72,6 +73,16 @@ async function fixture(page: Page) {
     if (!operation) throw new Error('Unexpected daily-use fixture operation');
     const args = request.args.args ?? [];
     calls.push({ operation, args });
+    if (operation === 'GetStorageSecurity') {
+      await route.fulfill({
+        json: {
+          requiresPassphrase: false,
+          recoveryAvailable: true,
+          busy: false,
+        },
+      });
+      return;
+    }
     if (['GetStatus', 'LockStorage', 'UnlockStorage'].includes(operation)) {
       if (operation === 'GetStatus' && state.holdStatus) {
         const hold = state.holdStatus;

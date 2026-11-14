@@ -9,6 +9,8 @@ import (
 	"crypto/sha256"
 	"errors"
 	"strings"
+	"sync"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -20,9 +22,20 @@ const (
 	ArgonParallelism   uint8  = 4
 	ArgonSaltBytes            = 16
 	MaxPassphraseBytes        = 4096
+	MinSecretBytes            = 12
+	MaxSecretBytes            = 1024
 )
 
 var ErrMaterial = errors.New("invalid local key material")
+var passphraseGate sync.Mutex
+
+// ValidateSecret preserves exact UTF-8 bytes; spaces are part of the secret.
+func ValidateSecret(secret []byte) error {
+	if len(secret) < MinSecretBytes || len(secret) > MaxSecretBytes || !utf8.Valid(secret) {
+		return ErrMaterial
+	}
+	return nil
+}
 
 // RandomKey produces a new 256-bit master or wrapping component. Callers own
 // the returned buffer and must clear it when its lifetime ends.
@@ -62,5 +75,7 @@ func PassphraseKey(passphrase, salt []byte) ([]byte, error) {
 	if len(passphrase) == 0 || len(passphrase) > MaxPassphraseBytes || len(salt) != ArgonSaltBytes {
 		return nil, ErrMaterial
 	}
+	passphraseGate.Lock()
+	defer passphraseGate.Unlock()
 	return argon2.IDKey(passphrase, salt, ArgonTime, ArgonMemoryKiB, ArgonParallelism, KeyBytes), nil
 }

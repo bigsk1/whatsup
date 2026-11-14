@@ -25,7 +25,8 @@ const nativeWindowVisibleEvent = "whatsup:window-visible"
 // NativeStorageHint carries no identity or permission. The frontend must fetch
 // authoritative status after retiring its previous decrypted generation.
 type NativeStorageHint struct {
-	State string `json:"state"`
+	State              string `json:"state"`
+	RequiresPassphrase bool   `json:"requiresPassphrase"`
 }
 
 type nativeNotifier interface {
@@ -104,7 +105,7 @@ func newNativeHost(app *application.App, backend *desktop.Service, record func(d
 			state = "unavailable"
 		}
 		if h.life.Err() == nil {
-			app.Event.Emit(nativeStorageChangedEvent, NativeStorageHint{State: state})
+			app.Event.Emit(nativeStorageChangedEvent, NativeStorageHint{State: state, RequiresPassphrase: backend.GetStatus().RequiresPassphrase})
 		}
 	}
 	h.notifier = notify.New(func(string) { go h.focus() })
@@ -348,6 +349,9 @@ func (h *nativeHost) startStartup() {
 			}
 			return
 		}
+		if status.StorageState == "locked" && status.RequiresPassphrase {
+			return
+		}
 		if err != nil {
 			h.record(diagnostics.StorageUnavailable)
 		}
@@ -423,7 +427,10 @@ func (n *nativeLifecycle) ServiceStartup(ctx context.Context, _ application.Serv
 	context.AfterFunc(ctx, h.stopTasks)
 	values, err := h.backend.GetAppPreferences()
 	if err != nil {
-		return errors.New("App preferences are unavailable")
+		// Unreadable preferences must not prevent explicit recovery, and must
+		// not reconcile unknown startup/notification choices to defaults.
+		h.record(diagnostics.RuntimeWarning)
+		return nil
 	}
 	h.preferencesChanged(values)
 	if h.reconcileStartup(values) != nil {

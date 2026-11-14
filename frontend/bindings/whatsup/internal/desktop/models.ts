@@ -61,6 +61,20 @@ export interface ProfileSnapshot {
     "shareDisplayName": boolean;
 }
 
+export interface RecoveryExportResult {
+    "saved": boolean;
+}
+
+export interface RecoveryImportPreview {
+    "handle": string;
+    "contacts": number;
+    "messages": number;
+    "attachments": number;
+    "sourceRequiresPassphrase": boolean;
+    "replaceRequired": boolean;
+    "credentialResetRequired": boolean;
+}
+
 export interface SavedAttachment {
     "handle": string;
 }
@@ -74,4 +88,11 @@ export interface Status {
     "pairingAvailable": boolean;
     "messagingAvailable": boolean;
     "attachmentsAvailable": boolean;
+    "requiresPassphrase": boolean;
+}
+
+export interface StorageSecurity {
+    "requiresPassphrase": boolean;
+    "recoveryAvailable": boolean;
+    "busy": boolean;
 }
