@@ -15,6 +15,7 @@ The commands invoke programs with argument arrays, not concatenated shell comman
 | Verify OS credentials | `npm run test:credentials` | Actual Credential Manager/Secret Service persistence and missing-key rejection with disposable validation credentials. |
 | Run the Linux workflow from Windows | `npm run wsl -- test:app` | Synchronize a derived WSL snapshot, run the same Node command runner, and verify source equality before/after. |
 | Build development candidate | `npm run build` | Frozen native Windows/Linux binary under `build/bin`; unsigned and not approved for distribution. |
+| Preserve a private test build | `npm run build:review` | Frozen native build plus an immutable versioned development snapshot, manifest and checksums. |
 | Validate | `npm run check` | Frozen installs, formatting, types, Go tests/race tests, integration/E2E, build, known-vulnerability scans. |
 | Update dependencies | `npm run update` | Require clean git, discover stable versions, update exact pins/locks, install, and run all checks. |
 | Repackage | `npm run package` | All checks, native packaging, versioned output, SHA-256 sums, toolchain/commit manifest. |
@@ -78,9 +79,9 @@ runner respects these explicit major constraints, resolves peers, and fails on
 incompatibility. Tailcat and its reviewed transport modules stay pinned as
 documented in docs/transport-review.md; their movement needs source/API review.
 
-The workspace has a local Git repository on main, prepared for its first commit.
-There is no commit or remote yet. Setup, development, component tests and native
-development builds work without a commit. Update and packaging require an existing
+The owner recorded the first local Git commit on main. No remote is configured.
+Follow-up development changes are left uncommitted for review. Setup, development,
+component tests and ordinary native builds work without a commit. Update and packaging require an existing
 clean checkout and commit. They do not initialize Git,
 commit, reset, create a remote, or discard work. `applicationReady` and
 `transportIntegrationVerified` must stay false until actual product/security and
@@ -92,9 +93,9 @@ The application has no selected public license, publisher or signing credentials
 
 ## Run and review this workspace
 
-Nothing was committed, pushed or published. The first local baseline is staged
-for review; see [first-commit preparation](first-commit.md). The update command
-will deliberately refuse until a clean Git commit exists. Recording a source
+The owner created the first local baseline commit; see [baseline notes](first-commit.md).
+No push or publication occurred. The update command requires a clean Git checkout.
+Recording a source
 baseline does not open the application's release or transport gates.
 
 In a fresh Windows PowerShell terminal:
@@ -138,8 +139,8 @@ npm run wsl -- test:app
 npm run wsl -- build
 ```
 
-The bridge supports doctor, setup, tooling-test, test:app, test:credentials and
-build (the internal test-app/test-credentials names also work). It delegates to
+The bridge supports doctor, setup, tooling-test, test:app, test:credentials,
+build and build:review (the internal test-app/test-credentials names also work). It delegates to
 scripts/whatsup.mjs; the shell helper only synchronizes
 source and selects Linux NVM/npm. It does not introduce a separate build recipe.
 Run setup once for the derived workspace or after dependency/tool changes. Linux

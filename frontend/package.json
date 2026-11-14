@@ -1,7 +1,7 @@
 {
   "name": "whatsup-frontend",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.2",
   "type": "module",
   "engines": {
     "node": ">=26.13.1 <27"
@@ -10,7 +10,7 @@
     "dev": "vite",
     "build:dev": "vite build --minify false --mode development",
     "build": "vite build --mode production",
-    "preview": "vite preview --host 127.0.0.1",
+    "preview": "vite preview --host 127.0.0.2",
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc --noEmit --project tsconfig.node.json",
     "format:check": "prettier --check src tests *.ts *.js *.json index.html",
     "format": "prettier --write src tests *.ts *.js *.json index.html",

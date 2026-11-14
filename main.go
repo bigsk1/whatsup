@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"flag"
 	"log"
 	"net/http"
 	"runtime"
@@ -16,6 +17,14 @@ import (
 var assets embed.FS
 
 func main() {
+	softwareRendering := flag.Bool("software-rendering", false, "Use WebKit software rendering on Linux")
+	flag.Parse()
+	if flag.NArg() != 0 {
+		log.Fatal("WhatsUp does not accept positional launch arguments")
+	}
+	if *softwareRendering && runtime.GOOS != "linux" {
+		log.Fatal("Software rendering mode is available on Linux only")
+	}
 	directory, err := storage.DefaultDirectory()
 	if err != nil {
 		log.Fatal("WhatsUp cannot locate a private local state directory")
@@ -73,10 +82,15 @@ func main() {
 			},
 		},
 	})
+	linuxWindow := application.LinuxWindow{}
+	if *softwareRendering {
+		linuxWindow.WebviewGpuPolicy = application.WebviewGpuPolicyNever
+	}
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title: "WhatsUp", Width: 1180, Height: 780, MinWidth: 760, MinHeight: 560,
 		BackgroundColour: application.NewRGB(12, 20, 23), URL: "/",
 		DevToolsEnabled: false, DefaultContextMenuDisabled: true,
+		Linux: linuxWindow,
 	})
 	if err := app.Run(); err != nil {
 		record(diagnostics.RuntimeError)

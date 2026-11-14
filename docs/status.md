@@ -68,9 +68,58 @@ Recorded 2026-11-13 (America/Los_Angeles).
 - Real manifests/locks, current scanner pin, reviewed immutable transport revisions,
   full-SHA-pinned component CI and Dependabot for the manifests that now exist.
   No remote repository exists and no GitHub CI has run.
-- A local main branch and reviewed first-commit index are prepared, with no
-  commit or remote. Repository text uses explicit LF endings; copied Wails build
-  assets retain their upstream MIT notice. See [first-commit preparation](first-commit.md).
+- The owner recorded the first local main-branch commit, 27e4c48. No remote is
+  configured. Repository text uses explicit LF endings; copied Wails build assets
+  retain their upstream MIT notice. See [baseline notes](first-commit.md).
+- The first application/test version is 0.0.1. Patch increments identify new
+  delivered test revisions; rebuilds use separate timestamp/source build IDs.
+  Minor and major changes are deliberate milestones. Native metadata and runtime
+  versions are checked together. See [version policy](versioning.md).
+- A build:review command preserves immutable Windows/Linux development candidates
+  under artifacts/development with checksums, manifests, base commit, dirty-source
+  state and a digest of actual source inputs. Derived WSL source is verified
+  against the Windows inventory. Release/package gates remain independent.
+- The initial paired 0.0.1 review builds have matching source digests and verified
+  executable/manifest checksums. The first Linux candidate was installed per user
+  in the VMware Ubuntu Desktop VM; it was superseded by the scoped 0.0.2
+  installation described below. Windows has a Start-menu launcher selecting its
+  retained review executable. Both are named WhatsUp (Development).
+  The VM's real Secret Service roundtrip/missing-key rejection and actual headless
+  WebKit profile tests passed on the 0.0.1 test binaries. Actual UI checks are
+  recorded separately below. See [native testing](native-testing.md).
+- The owner's Ubuntu GUI attempt exposed a missing installation requirement:
+  Ubuntu's restricted unprivileged-user-namespace policy denied Bubblewrap's UID
+  map during real WebKit process startup. Earlier profile-only checks did not
+  spawn that process and therefore missed this failure. The per-user raw-copy
+  installation is not sufficient evidence of native launch readiness.
+- Test revision 0.0.2 adds an explicit Linux software-rendering option and a bounded
+  native renderer probe that loads synthetic local HTML and verifies JavaScript.
+  A narrowly scoped root-installed development profile permits WebKit's required
+  namespaces on restricted AppArmor hosts. The profile does not confine WhatsUp's
+  Go process or disable WebKit's sandbox. Installation and current native results
+  remain separate from release packaging; see [Linux support](linux-support.md).
+- The owner completed the 0.0.2 Ubuntu integration setup. SSH verification confirms
+  root-owned 0755 stable executables, matching installed hashes, a loaded
+  application-specific profile and a launcher selecting software rendering.
+  The global AppArmor user-namespace restriction remains 1. The installed real
+  WebKit renderer/local-JavaScript probe passes in the desktop user's session.
+  The owner then confirmed that the 0.0.2 app opens, unlocks and passes the
+  lock/quit/reopen/unlock identity-continuity check. SSH inspection confirms the
+  running app uses the expected application-specific AppArmor profile; its
+  per-user data and cache roots are owned by the desktop user with mode 0700.
+  WebKitCache is also 0700. The local 0.0.2 log records startup, unlock, lock,
+  shutdown and another startup/unlock using only the six allowed fields and
+  finite event codes; no identity fingerprint was retrieved or recorded.
+  VMware shared files are staged on local ext4 before sudo;
+  the root installer revalidates them and reuses only byte-identical archives.
+- The Linux menu launcher now uses desktop ID whatsup.desktop to match GTK's
+  existing program name, with a hidden alias for the earlier development ID.
+  The unprivileged setup supports optional desktop/GNOME dock shortcuts while
+  preserving other favorites. Both were installed on the VM and validated through
+  GIO, including executable/trusted desktop metadata and Terminal=false. The owner
+  confirms icon launch, window close and icon relaunch work without a terminal.
+  The installed 0.0.2 ELF has the production build tag and no development watcher;
+  no native code change or version increment was needed for this launcher fix.
 
 ## Environment established
 
@@ -111,7 +160,8 @@ packages and Linux race testing. Both commands return nonzero solely for the
 documented frontend advisory. The Linux run verified source equality before and
 after validation. Full product/release readiness remains blocked separately.
 
-- Fourteen workflow safety tests cover runtime/dependency/tool-graph selection and workflow
+- Twenty-five workflow safety tests cover runtime/dependency/tool-graph selection, review
+  snapshot integrity/provenance, application-version alignment and workflow
   safety. Node syntax checks pass.
 - Backend identity, invitation, chat, transport admission, desktop and storage tests
   pass on Windows. Windows has no configured C compiler and runs without -race.
@@ -191,8 +241,9 @@ after validation. Full product/release readiness remains blocked separately.
   The owner reports successful Windows native GetStatus, unlock, lock, real
   window close, fresh launch and unlock with the same identity fingerprint.
   Startup returns locked; Dark/Teal appearance was preserved. The real fingerprint
-  is deliberately omitted from source and fixtures. Ubuntu Desktop UI unlock and
-  restart continuity remain unverified; recopy the refreshed binary before testing.
+  is deliberately omitted from source and fixtures. The owner also reports
+  successful Ubuntu Desktop 0.0.2 native unlock and restart identity continuity
+  after installing the scoped sandbox integration and selecting software rendering.
   Earlier native process startup checks did not catch this frontend lifecycle
   bug. Visual redesign remains deferred.
 - The Windows native process was additionally verified to use the dedicated

@@ -37,6 +37,11 @@ verify_snapshot() {
   fi
 }
 verify_snapshot
+if [[ $task = build-review || $task = test-app ]]; then
+  mkdir -p -m 700 "$snapshot/.local"
+  [[ -f "$source_dir/.local/review-source.json" && ! -L "$source_dir/.local/review-source.json" ]] || exit 2
+  cp -- "$source_dir/.local/review-source.json" "$snapshot/.local/review-source.json"
+fi
 export NVM_DIR="$HOME/.nvm"
 . "$NVM_DIR/nvm.sh" --no-use
 cd "$snapshot"
@@ -53,7 +58,7 @@ result=$?
 set -e
 verify_snapshot
 mkdir -p "$source_dir/.local"
-for report in doctor-linux-x64.json validation-linux-x64.json; do
+for report in doctor-linux-x64.json validation-linux-x64.json review-build-linux-x64.json; do
   if [[ -f "$snapshot/.local/$report" && ! -L "$snapshot/.local/$report" ]]; then
     cp -- "$snapshot/.local/$report" "$source_dir/.local/$report"
   fi

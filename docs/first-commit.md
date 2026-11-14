@@ -2,9 +2,11 @@
 
 This baseline records the current private development foundation. It does not
 claim a complete messenger, a green release gate, or permission to publish.
-Git is initialized locally on main. The intended source files are staged for
-review, but no commit, remote, push, tag, release or relay deployment was created.
-The proposed commit message remains in the ignored `.local` directory.
+The owner recorded the reviewed foundation as local main-branch commit
+`27e4c4898dbc4c2ac86c3590bec3a5bf09b27399`. No remote, push, tag, release or relay
+deployment was created. The owner subsequently authorized a local checkpoint
+for versioned review builds and the verified 0.0.2 native integration. These
+notes preserve the scope of the original baseline.
 
 ## Included source
 
@@ -33,8 +35,9 @@ unlocks and locks storage, starts locked after a real quit/relaunch, and restore
 the same identity after another unlock. No real fingerprint belongs in the source
 or fixtures. Real OS-provider tests separately passed on Windows and the VMware
 Ubuntu Desktop session using disposable credentials. Ubuntu native UI unlock and
-quit/reopen identity continuity still need owner verification with the refreshed
-Linux binary. Appearance redesign remains deferred.
+quit/reopen identity continuity were pending at this baseline. The subsequent
+0.0.2 integration and owner checks pass; see [current status](status.md).
+Appearance redesign remains deferred.
 
 The component commands remain red on unpatched LOW GHSA-gcqx-w48m-w2h4
 (`deepmerge` through the Svelte Vite plugin). No advisory exception was added.
@@ -42,35 +45,28 @@ Full check/package remain blocked by unfinished mutual authentication, live
 transport integration and release requirements. A local source commit is useful
 as a review/rollback baseline while these limitations remain explicit.
 
-## Review and record the baseline
+## Inspect the baseline and later changes
 
 From the project root:
 
 ```powershell
 git status --short
-git diff --cached --stat
-git diff --cached --check
-git diff --cached
+git log -1 --oneline
+git show --stat HEAD
+git diff
 ```
 
-The prepared message can be reviewed at `.local/first-commit-message.txt`.
-When the owner chooses to make the first commit, the local command is:
-
-```powershell
-git commit -F .local/first-commit-message.txt
-```
-
-That command has not been run. No hosting service or remote is required for this
-local baseline. Git author details come from the existing local/global configuration.
+No hosting service or remote is required for local source history. Git author
+details come from the existing local/global configuration. A source commit does
+not publish the app or make its product/security gates pass.
 
 ## What comes next
 
-1. Review and record this baseline locally, then use later small commits for each
-   tested integration slice.
-2. Recopy the refreshed Linux candidate into the VM's private review directory.
-   Test desktop status, real unlock/lock, quit/reopen identity continuity and private
-   WebKit data/cache permissions. This needs the existing desktop Secret Service,
-   not WSLg or a new relay.
+1. Keep subsequent feature changes reviewable; local commits remain controlled
+   by the owner's instructions. The 0.0.2 native integration checkpoint is authorized.
+2. Retain versioned private candidates and repeat native checks when relevant app
+   behavior changes. Ubuntu 0.0.2 startup/storage/restart checks now pass with
+   its scoped installation and software rendering; see [native testing](native-testing.md).
 3. Review the reciprocal approval and identity-to-transport-key binding protocol.
    Integrate durable activation/revocation before exposing contact history or live
    sessions. Stored contact pins alone grant no session authority.

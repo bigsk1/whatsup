@@ -21,8 +21,10 @@ Run these from the project root, in PowerShell or a Linux shell:
 | `npm test` | Test the dependency-free workflow tools. |
 | `npm run test:app` | Check implemented components, frontend behavior and vulnerability gates. |
 | `npm run test:credentials` | Test the real OS credential provider using disposable validation credentials. |
+| `npm run test:native` | On Linux, start a real WebKit process, load local HTML and verify JavaScript with the sandbox enabled. |
 | `npm run wsl -- test:app` | From Windows, synchronize current sources and run the same Linux component workflow. |
 | `npm run build` | Build a native development binary from the frozen graph. |
+| `npm run build:review` | Build and retain a versioned private test executable with checksums and source provenance. |
 | `npm run setup` | Install frozen app dependencies and the exact Wails CLI. |
 | `npm run dev` | Run the native desktop development loop. |
 | `npm run check` | Run the complete application validation gates. |
@@ -34,6 +36,15 @@ implementation without claiming messenger completion. `check` and `package` stay
 blocked until real transport/security integration gates exist. Known dependency
 advisories also fail validation; see [current status](docs/status.md).
 There is no placeholder connection, sample conversation or fake delivery indicator.
+
+The first application version is **0.0.1**. New delivered test revisions can use
+patch increments such as 0.0.2; rebuilds use a separate timestamp/source build ID.
+Minor and major versions are deliberate milestones. See [versioning](docs/versioning.md).
+Review candidates stay under `artifacts/development/<version>/<build-id>/`;
+they are unsigned executables, not release installers. See [native testing](docs/native-testing.md).
+Test revision **0.0.2** adds Linux sandbox integration and an explicit software
+rendering mode. Linux runtime requirements and tested scope are documented in
+[Linux support](docs/linux-support.md).
 
 Windows remains the authoritative source workspace. The WSL command creates a
 derived Linux snapshot with separate dependencies, checks source equality before
@@ -90,6 +101,6 @@ downloads and requested environment/network checks still contact their services.
 - Encrypted local state, explicit encrypted backups, and verified application updates.
 
 Read [SECURITY.md](SECURITY.md) and [AGENTS.md](AGENTS.md) before implementation.
-The local baseline is prepared for review; see [first-commit preparation](docs/first-commit.md).
+The owner recorded the local source baseline; see [baseline notes](docs/first-commit.md).
 Retained upstream build assets are covered by [third-party notices](THIRD_PARTY_NOTICES.md).
 No remote repository, relay deployment, signing key, or publishing target is set.

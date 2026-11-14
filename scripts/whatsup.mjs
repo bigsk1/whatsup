@@ -5,6 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { archiveReviewBuild } from './lib/review-build.mjs';
+import { captureReviewSource } from './lib/review-source.mjs';
 import {
   assertNodeRuntime, assertReviewedGoGraph, assertToolBuildInfo, atLeast, checksums, collectArtifacts, collectSourceFiles,
   latestLtsNode, parseVersion, privateToolEnvironment, readJson, requireApp, requireFrontendScripts, requireFullReadiness,
@@ -22,7 +24,7 @@ const toolDirectory = path.join(root, '.local/tools', `${process.platform}-${pro
 // diagnostics are independent from these upstream collectors/uploaders.
 const privacyTags = 'ts_omit_logtail,ts_omit_netlog,ts_omit_clientmetrics,ts_omit_usermetrics,ts_omit_runtimemetrics';
 const commands = new Set([
-  'doctor', 'tooling-test', 'setup', 'dev', 'test-app', 'test-credentials', 'wsl', 'build', 'check', 'update', 'package', 'verify-release',
+  'doctor', 'tooling-test', 'setup', 'dev', 'test-app', 'test-credentials', 'native-check', 'wsl', 'build', 'build-review', 'check', 'update', 'package', 'verify-release',
   // Reviewed Wails Taskfiles delegate to these same cross-platform implementations.
   'native-build', 'native-package', 'frontend-dev', 'frontend-build', 'generate-bindings', 'run-native',
 ]);
@@ -228,6 +230,10 @@ function raceAvailable() {
 }
 
 async function implementedCheck() {
+  // Optional provenance keeps source-only/no-Git component checks available.
+  // Development snapshots claim matching evidence only when this digest exists.
+  let sourceBefore = null;
+  try { sourceBefore = await captureReviewSource(root); } catch { /* no verified source metadata */ }
   await requireApp(root);
   requireNativePlatform();
   requireGo();
@@ -259,10 +265,16 @@ async function implementedCheck() {
     catch (error) { scans.push({ name, passed: false, error: error.message }); }
   }
   assertTransportPins();
+  let sourceAfter = null;
+  try { sourceAfter = await captureReviewSource(root); } catch { /* evidence remains unbound */ }
+  if (sourceBefore && (!sourceAfter || sourceAfter.sourceDigest !== sourceBefore.sourceDigest || sourceAfter.sourceCommit !== sourceBefore.sourceCommit)) {
+    throw new Error('Source changed during component checks; rerun before relying on the result');
+  }
   const report = path.join(root, '.local', `validation-${process.platform}-${process.arch}.json`);
   await writeJson(report, {
     recordedAt: new Date().toISOString(), platform: process.platform, arch: process.arch,
     scope: 'implemented components only', functionalChecksPassed: true, goRaceEnabled: race,
+    source: sourceBefore && sourceAfter ? { commit: sourceAfter.sourceCommit, dirty: sourceAfter.sourceDirty, digestSHA256: sourceAfter.sourceDigest } : null,
     scans, applicationReady: false, transportIntegrationVerified: false,
   });
   if (scans.some((scan) => !scan.passed)) throw new Error(`Security scans failed: ${scans.filter((scan) => !scan.passed).map((scan) => scan.name).join(', ')}. No advisory exception was applied. Local report: ${report}`);
@@ -293,9 +305,13 @@ async function credentialCheck() {
 async function wslCheck() {
   if (process.platform !== 'win32') throw new Error('The WSL bridge runs from the authoritative Windows workspace');
   const requested = flags[0] ?? 'doctor';
-  const task = ({ 'test:app': 'test-app', 'test:credentials': 'test-credentials', test: 'tooling-test' })[requested] ?? requested;
-  if (!['doctor', 'setup', 'tooling-test', 'test-app', 'test-credentials', 'build'].includes(task)) {
-    throw new Error('WSL supports doctor, setup, tooling-test, test-app, test-credentials, or build; use Ubuntu Desktop for native UI testing');
+  const task = ({ 'test:app': 'test-app', 'test:credentials': 'test-credentials', 'test:native': 'native-check', 'build:review': 'build-review', test: 'tooling-test' })[requested] ?? requested;
+  if (!['doctor', 'setup', 'tooling-test', 'test-app', 'test-credentials', 'native-check', 'build', 'build-review'].includes(task)) {
+    throw new Error('WSL supports doctor, setup, test, test:app, test:credentials, test:native, build or build:review; use Ubuntu Desktop for native UI testing');
+  }
+  if (['build-review', 'test-app'].includes(task)) {
+    await mkdir(path.join(root, '.local'), { recursive: true });
+    await writeJson(path.join(root, '.local/review-source.json'), await captureReviewSource(root));
   }
   const linuxRoot = run('wsl.exe', ['-d', 'Ubuntu', '--exec', 'wslpath', '-a', root.replaceAll('\\', '/')], { capture: true });
   if (!linuxRoot.startsWith('/')) throw new Error('Cannot resolve the Windows source directory in WSL');
@@ -453,6 +469,81 @@ async function build() {
   run(wailsPath(), ['build'], { timeout: 600000 });
 }
 
+async function buildNativeProbe() {
+  requireNativePlatform();
+  if (process.platform !== 'linux') throw new Error('The native WebKit smoke check is Linux-only');
+  requireGo();
+  await mkdir(toolDirectory, { recursive: true });
+  const executable = path.join(toolDirectory, 'whatsup-webview-check');
+  run('go', ['build', '-mod=readonly', '-trimpath', '-buildvcs=false', '-ldflags=-s -w',
+    '-o', executable, './cmd/whatsup-webview-check'], { timeout: 300000, env: { CGO_ENABLED: '1' } });
+  return executable;
+}
+
+async function nativeCheck() {
+  const built = await buildNativeProbe();
+  let executable = built;
+  const installed = '/opt/whatsup-development/whatsup-webview-check';
+  if (existsSync(installed)) {
+    const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
+    if (digest(await readFile(installed)) === digest(await readFile(built))) executable = installed;
+  }
+  // The installed path supplies the app-specific policy context on restricted
+  // systems. Other developer hosts can use a disposable virtual display.
+  if (process.env.WSL_DISTRO_NAME || (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY)) {
+    run('xvfb-run', ['-a', executable], { timeout: 35000, env: { GDK_BACKEND: 'x11', WAYLAND_DISPLAY: '' } });
+  } else run(executable, [], { timeout: 35000 });
+  console.log('A real sandboxed WebKit process loaded local HTML and executed JavaScript. Visible GPU/UI and storage QA remain separate.');
+}
+
+async function buildReview() {
+  if (flags.length && (flags.length !== 2 || flags[0] !== '--review-id')) throw new Error('Use build:review with optional --review-id <ID>');
+  const source = await captureReviewSource(root);
+  const version = (await readJson(path.join(frontendDirectory, 'package.json'))).version;
+  await build();
+  const probe = process.platform === 'linux' ? await buildNativeProbe() : null;
+  const after = await captureReviewSource(root);
+  if (after.sourceCommit !== source.sourceCommit || after.sourceDirty !== source.sourceDirty || after.sourceDigest !== source.sourceDigest) {
+    throw new Error('Source changed during the development build; no review snapshot was archived');
+  }
+  let validation = {};
+  try {
+    const report = await readJson(path.join(root, '.local', `validation-${process.platform}-${process.arch}.json`));
+    if (report.source?.digestSHA256 === source.sourceDigest && report.source.commit === source.sourceCommit
+        && Array.isArray(report.scans) && report.scans.length === 5 && report.scans.every((entry) => typeof entry.passed === 'boolean')) {
+      validation = {
+        componentChecks: report.functionalChecksPassed === true ? 'passed' : 'not-run-for-this-snapshot',
+        advisoryGate: report.scans.every((entry) => entry.passed) ? 'passed' : 'failed',
+      };
+    }
+  } catch { /* Do not infer validation from a missing or stale report. */ }
+  const result = await archiveReviewBuild({ root, version, platform: process.platform, arch: process.arch,
+    sourceCommit: source.sourceCommit, sourceDirty: source.sourceDirty, sourceDigest: source.sourceDigest,
+    toolchain: { go: requireGo(), node: process.versions.node, wails: policy.wailsVersion },
+    reviewID: flags[1], validation });
+  let probeRelativeDirectory;
+  if (probe) {
+    const directory = path.join(path.dirname(result.directory), `native-check-linux-${process.arch}`);
+    await mkdir(directory, { mode: 0o700 });
+    const bytes = await readFile(probe);
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    await writeFile(path.join(directory, 'whatsup-webview-check'), bytes, { flag: 'wx', mode: 0o700 });
+    const manifest = { schemaVersion: 1, kind: 'linux-webview-check', version, reviewID: result.reviewID,
+      sourceDigestSHA256: source.sourceDigest, files: [{ name: 'whatsup-webview-check', size: bytes.length, sha256 }] };
+    const manifestBytes = JSON.stringify(manifest, null, 2) + '\n';
+    await writeFile(path.join(directory, 'probe-manifest.json'), manifestBytes, { flag: 'wx', mode: 0o600 });
+    await writeFile(path.join(directory, 'SHA256SUMS'), `${sha256}  whatsup-webview-check\n${createHash('sha256').update(manifestBytes).digest('hex')}  probe-manifest.json\n`, { flag: 'wx', mode: 0o600 });
+    probeRelativeDirectory = path.relative(root, directory).split(path.sep).join('/');
+  }
+  await writeJson(path.join(root, '.local', `review-build-${process.platform}-${process.arch}.json`), {
+    reviewID: result.reviewID, version, platform: process.platform, arch: process.arch,
+    relativeDirectory: path.relative(root, result.directory).split(path.sep).join('/'),
+    sourceDigest: source.sourceDigest, sha256: result.manifest.files[0].sha256,
+    ...(probeRelativeDirectory ? { probeRelativeDirectory } : {}),
+  });
+  console.log(`Preserved development review build: ${result.directory}\nThis is an unsigned test executable; release/package gates remain closed.`);
+}
+
 async function nativePackage() {
   await requireFullReadiness(root, policy);
   cleanGitCommit();
@@ -491,7 +582,7 @@ async function packageApp() {
 try {
   if (!commands.has(command)) throw new Error(`Unknown command: ${command}`);
   const allowedFlags = command === 'doctor' ? ['--network'] : [];
-  if (command !== 'wsl' && flags.some((flag) => !allowedFlags.includes(flag))) throw new Error('Unsupported command option');
+  if (!['wsl', 'build-review'].includes(command) && flags.some((flag) => !allowedFlags.includes(flag))) throw new Error('Unsupported command option');
   assertNodeRuntime(process.versions.node, policy.minimumNode);
   if (command === 'doctor') await doctor();
   if (command === 'tooling-test') await toolingTest();
@@ -505,8 +596,10 @@ try {
   }
   if (command === 'test-app') await implementedCheck();
   if (command === 'test-credentials') await credentialCheck();
+  if (command === 'native-check') await nativeCheck();
   if (command === 'wsl') await wslCheck();
   if (command === 'build') await build();
+  if (command === 'build-review') await buildReview();
   if (command === 'check') await applicationCheck();
   if (command === 'update') await update();
   if (command === 'package') await packageApp();

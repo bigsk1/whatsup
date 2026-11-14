@@ -1,0 +1,12 @@
+# WhatsUp development user-namespace compatibility policy.
+# This enables WebKit's own sandbox; it is not full confinement of the Go app.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile whatsup-development /opt/whatsup-development/whatsup flags=(unconfined) {
+    userns,
+}
+
+profile whatsup-development-webview-check /opt/whatsup-development/whatsup-webview-check flags=(unconfined) {
+    userns,
+}
