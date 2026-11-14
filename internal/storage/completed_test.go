@@ -222,7 +222,8 @@ func TestSchemaThreeMigrationPreservesSeedKeyPinsChatAndPending(t *testing.T) {
 	if err := app.SavePendingContact(record); err != nil {
 		t.Fatal(err)
 	}
-	legacy, err := json.Marshal(applicationEnvelopeV3{Version: 3, Identity: app.state.Identity, Contacts: app.state.Contacts, PendingContacts: app.state.PendingContacts})
+	old := legacySnapshotForTest(app.state)
+	legacy, err := json.Marshal(applicationEnvelopeV3{Version: 3, Identity: old.Identity, Contacts: old.Contacts, PendingContacts: old.PendingContacts})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +241,7 @@ func TestSchemaThreeMigrationPreservesSeedKeyPinsChatAndPending(t *testing.T) {
 	restored, _ := app.Identity()
 	pending, _ := app.PendingContacts()
 	committed, _ := app.CommittedContacts()
-	if app.state.Version != 4 || restored.Seed() != seed || keys.writes != 1 || len(pending) != 1 || pending[0] != record || committed == nil || len(committed) != 0 || !bytes.Equal(readChat(t, app, pin), payload) {
+	if app.state.Version != ApplicationSchemaVersion || restored.Seed() != seed || keys.writes != 1 || len(pending) != 1 || pending[0] != record || committed == nil || len(committed) != 0 || !bytes.Equal(readChat(t, app, pin), payload) {
 		t.Fatal("schema three migration replaced existing state")
 	}
 }

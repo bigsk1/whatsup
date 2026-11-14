@@ -44,6 +44,5 @@ jobs:
       - name: Build native development candidate
         run: npm run build
 
-# No remote repository exists yet. This job has not run on GitHub. A LOW
-# deepmerge advisory currently fails the audit gate; there is no exception.
-# Component CI does not authorize a messenger release or claim transport QA.
+# Component CI does not authorize a release or establish native transport QA.
+# Dependency advisories remain enforced without exceptions.

@@ -27,7 +27,7 @@ test('starts with empty conversations and unavailable delivery actions', async (
   ).toBeDisabled();
   await expect(
     page.getByRole('textbox', {
-      name: 'Message unavailable until messaging is implemented',
+      name: 'Message unavailable without an approved contact',
     }),
   ).toBeDisabled();
   await expect(
@@ -46,15 +46,16 @@ test('opens settings by keyboard, retains focus, and saves appearance only', asy
   });
   await trigger.focus();
   await page.keyboard.press('Enter');
-  const dialog = page.getByRole('dialog', { name: 'Settings' });
+  const dialog = page.getByRole('region', { name: 'Settings', exact: true });
   await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByRole('button', { name: 'Unlock and connect' }),
+  ).toBeDisabled();
+  await dialog.getByRole('button', { name: 'Appearance', exact: true }).click();
   await page.getByRole('radio', { name: 'Light', exact: true }).check();
   await page.getByRole('radio', { name: 'Rose', exact: true }).check();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await expect(page.locator('html')).toHaveAttribute('data-accent', 'rose');
-  await expect(
-    page.getByRole('button', { name: 'Unlock storage' }),
-  ).toBeDisabled();
   await page.keyboard.press('Escape');
   await expect(dialog).not.toBeVisible();
   await expect(trigger).toBeFocused();
@@ -79,6 +80,7 @@ test('follows system appearance and ignores malformed stored preferences', async
   await page
     .getByRole('button', { name: 'Open settings', exact: true })
     .click();
+  await page.getByRole('button', { name: 'Appearance', exact: true }).click();
   await page.getByRole('radio', { name: 'System', exact: true }).check();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await page.emulateMedia({ colorScheme: 'dark' });
@@ -117,8 +119,11 @@ test('handles an unavailable preference store without breaking the interface', a
   await page
     .getByRole('button', { name: 'Open settings', exact: true })
     .click();
+  await page.getByRole('button', { name: 'Appearance', exact: true }).click();
   await page.getByRole('radio', { name: 'Blue', exact: true }).check();
-  await page.getByRole('button', { name: 'Done', exact: true }).click();
+  await page
+    .getByRole('button', { name: 'Back to chats', exact: true })
+    .click();
   await expect(page.getByRole('alert')).toContainText(
     'This device could not save the preference.',
   );
@@ -142,6 +147,59 @@ test('keeps its main controls visible at a narrow window size', async ({
     ),
   ).toBe(true);
 });
+
+for (const viewport of [
+  { width: 1280, height: 900 },
+  { width: 520, height: 500 },
+]) {
+  test(`Settings occupies the workspace and keeps navigation and scrolling reachable at ${viewport.width}×${viewport.height}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize(viewport);
+    await page.goto('/');
+    await page
+      .getByRole('button', { name: 'Open settings', exact: true })
+      .click();
+    const dialog = page.getByRole('region', { name: 'Settings', exact: true });
+    await expect(dialog).toBeVisible();
+    const box = await dialog.boundingBox();
+    expect(box).not.toBeNull();
+    if (!box) return;
+    expect(box).toEqual({
+      x: 0,
+      y: 0,
+      width: viewport.width,
+      height: viewport.height,
+    });
+    await expect(
+      page.getByRole('dialog', { name: 'Settings', exact: true }),
+    ).toHaveCount(0);
+    await dialog
+      .getByRole('button', { name: 'Privacy & diagnostics', exact: true })
+      .click();
+    const runtime = dialog.getByRole('heading', {
+      name: 'Desktop runtime',
+      exact: true,
+    });
+    await runtime.scrollIntoViewIfNeeded();
+    await expect(runtime).toBeInViewport();
+    const done = dialog.getByRole('button', {
+      name: 'Back to chats',
+      exact: true,
+    });
+    await expect(done).toBeInViewport();
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await done.click();
+    await expect(dialog).not.toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Open settings', exact: true }),
+    ).toBeFocused();
+  });
+}
 
 test('discloses local app diagnostics and the Windows runtime exception in About', async ({
   page,

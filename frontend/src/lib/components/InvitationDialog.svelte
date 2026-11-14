@@ -14,12 +14,14 @@
     oncreate,
     onjoin,
     oncancel,
+    suspended = false,
   }: {
     enabled: boolean;
     pairing: PairingStatus;
     oncreate: (url: string, consent: boolean) => Promise<InvitationShare>;
     onjoin: (link: string, url: string, consent: boolean) => Promise<void>;
     oncancel: () => Promise<void>;
+    suspended?: boolean;
   } = $props();
   let dialog = $state<HTMLDialogElement>();
   let mode = $state<'create' | 'join'>('create');
@@ -33,12 +35,16 @@
   let expiresAt = $state('');
   let error = $state('');
   let copyNotice = $state('');
+  let relayCopyNotice = $state('');
+  const publicRelayMap = 'https://tailcat.dev/derpmap.json';
   let operation = 0;
   let expiryTimer: number | undefined;
   let watchTerminal = $state(false);
   let terminalBaseline: PairingStatus | undefined;
+  let resumeAfterSettings = false;
 
   function forget() {
+    resumeAfterSettings = false;
     operation += 1;
     if (expiryTimer !== undefined) window.clearTimeout(expiryTimer);
     expiryTimer = undefined;
@@ -49,6 +55,7 @@
     expiresAt = '';
     error = '';
     copyNotice = '';
+    relayCopyNotice = '';
     stage = 'form';
     watchTerminal = false;
     terminalBaseline = undefined;
@@ -86,6 +93,19 @@
   });
 
   onDestroy(forget);
+
+  $effect(() => {
+    if (!dialog) return;
+    if (suspended) {
+      if (dialog.open) {
+        resumeAfterSettings = true;
+        dialog.close();
+      }
+    } else if (resumeAfterSettings) {
+      resumeAfterSettings = false;
+      if (enabled && pairing.state !== 'awaiting-approval') dialog.showModal();
+    }
+  });
 
   async function start() {
     if (!enabled || stage !== 'form') return;
@@ -173,6 +193,21 @@
     }
   }
 
+  async function copyRelayURL() {
+    if (!enabled || stage !== 'form') return;
+    const current = operation;
+    try {
+      await navigator.clipboard.writeText(publicRelayMap);
+      if (current === operation && stage === 'form')
+        relayCopyNotice =
+          'Public relay URL copied. Paste it into the field if you want to use it.';
+    } catch {
+      if (current === operation && stage === 'form')
+        relayCopyNotice =
+          'Copy is unavailable. Select the public relay URL and copy it.';
+    }
+  }
+
   const ready = $derived(
     enabled &&
       stage === 'form' &&
@@ -250,6 +285,25 @@
         Enter the relay map URL supplied by the operator of a service you trust.
         Opening this dialog does not contact a service.
       </p>
+      <div class="public-relay-reference">
+        <p class="muted small">Tailcat public relay map · best effort</p>
+        <div class="public-relay-copy">
+          <code>{publicRelayMap}</code>
+          <button
+            class="secondary-button compact"
+            onclick={() => void copyRelayURL()}
+            ><Copy size={14} /> Copy relay URL</button
+          >
+        </div>
+        <p class="muted small">
+          This public service is rate limited. Its operator sees your IP address
+          and availability when you connect. Copying this URL makes no
+          connection.
+        </p>
+        {#if relayCopyNotice}
+          <p class="muted small" role="status">{relayCopyNotice}</p>
+        {/if}
+      </div>
       <label class="relay-consent">
         <input type="checkbox" bind:checked={consent} />
         <span>
@@ -308,7 +362,8 @@
       <Shield size={16} />
       <p>
         Invitations stay in this session. WhatsUp has no analytics or automatic
-        diagnostic uploads. Messaging and files are not available yet.
+        diagnostic uploads. Messaging starts after both people approve and
+        contact setup completes. Files are not available yet.
       </p>
     </div>
   </div>
@@ -383,6 +438,24 @@
   }
   .service-help {
     margin: 9px 0 16px;
+  }
+  .public-relay-reference {
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .public-relay-copy {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    align-items: center;
+    margin: 7px 0;
+  }
+  .public-relay-copy code {
+    user-select: text;
+    overflow-wrap: anywhere;
+    font-size: 11px;
+    min-width: 0;
   }
   .relay-consent {
     display: flex;

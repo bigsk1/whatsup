@@ -25,6 +25,11 @@ func AssociationForRecord(record storage.PendingRecord) (channel.ActivationAssoc
 	defer clear(psk)
 	copy(result.ID[:], id)
 	result.PSKCommitment = sha256.Sum256(psk)
+	routing, err := channel.RoutingCommitment(record.RelayServiceURL, record.ServerEndpoint)
+	if err != nil {
+		return channel.ActivationAssociation{}, ErrActivation
+	}
+	result.RoutingCommitment = routing
 	if record.Role == "inviter" {
 		result.InviterIdentity, result.JoinerIdentity = record.Local, record.Peer
 		copy(result.InviterNode[:], local)
@@ -79,6 +84,7 @@ func FinalizeAuthenticated(manager *Manager, completion *channel.Completion, dur
 		contact, createErr = newContact(record.Local, record.Peer)
 		if createErr == nil {
 			contact.state.completion = completion
+			contact.state.contactID = record.ID
 		}
 		return createErr
 	})

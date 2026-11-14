@@ -24,6 +24,7 @@ type contactState struct {
 	revoked           bool
 	preparedTransport bool
 	completion        *channel.Completion
+	contactID         string
 }
 
 func (Contact) String() string   { return "[private WhatsUp contact credentials]" }
@@ -51,6 +52,15 @@ func (c *Contact) Peer() identity.PublicKey {
 		return identity.PublicKey{}
 	}
 	return c.state.peer
+}
+
+// ContactID scopes local history to this exact approved credential bundle.
+// A matching peer identity alone must not inherit another pairing's history.
+func (c *Contact) ContactID() string {
+	if c == nil || c.state == nil {
+		return ""
+	}
+	return c.state.contactID
 }
 
 // MatchesCompletion is a backend association check, not restored authority.

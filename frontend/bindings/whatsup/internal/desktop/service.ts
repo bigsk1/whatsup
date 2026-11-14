@@ -7,6 +7,9 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as messaging$0 from "../messaging/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as pairflow$0 from "../pairflow/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -14,8 +17,9 @@ import * as pairflow$0 from "../pairflow/models.js";
 import * as $models from "./models.js";
 
 /**
- * ApprovePairing confirms only the current reserved identity. It neither opens
- * a listener nor returns credentials, contact authority or history access.
+ * ApprovePairing confirms the current reserved identity. It returns public state
+ * only; successful reciprocal durable completion later starts this generation's
+ * saved connection through the coordinator callback.
  */
 export function ApprovePairing(requestID: string, peerFingerprint: string): $CancellablePromise<pairflow$0.Snapshot> {
     return $Call.ByID(1516693078, requestID, peerFingerprint);
@@ -23,6 +27,14 @@ export function ApprovePairing(requestID: string, peerFingerprint: string): $Can
 
 export function CancelInvitation(): $CancellablePromise<pairflow$0.Snapshot> {
     return $Call.ByID(3037999004);
+}
+
+/**
+ * ConnectContact starts automatic authentication/retry for an already approved
+ * identity. It never creates an invitation or requests fingerprint approval.
+ */
+export function ConnectContact(contactID: string): $CancellablePromise<messaging$0.Snapshot> {
+    return $Call.ByID(990675167, contactID);
 }
 
 export function CreateInvitation(relayMapURL: string, allowRelayFallback: boolean): $CancellablePromise<$models.InvitationShare> {
@@ -33,8 +45,30 @@ export function DenyPairing(requestID: string): $CancellablePromise<pairflow$0.S
     return $Call.ByID(2165699649, requestID);
 }
 
+/**
+ * ForgetContact is the explicitly confirmed, destructive contact action. The
+ * exact visible association ID prevents a delayed confirmation from removing a
+ * replacement contact. It removes local history/queued messages and contact
+ * credentials only; the device identity and OS wrapping credential are retained.
+ */
+export function ForgetContact(contactID: string): $CancellablePromise<messaging$0.Snapshot> {
+    return $Call.ByID(1502447616, contactID);
+}
+
+/**
+ * GetConversation returns only the selected contact's bounded local history.
+ * Polling never starts transport or chooses a relay service.
+ */
+export function GetConversation(): $CancellablePromise<messaging$0.Snapshot> {
+    return $Call.ByID(1594594120);
+}
+
 export function GetPairingStatus(): $CancellablePromise<pairflow$0.Snapshot> {
     return $Call.ByID(4143459699);
+}
+
+export function GetProfile(): $CancellablePromise<$models.ProfileSnapshot> {
+    return $Call.ByID(3306528920);
 }
 
 export function GetStatus(): $CancellablePromise<$models.Status> {
@@ -49,9 +83,22 @@ export function LockStorage(): $CancellablePromise<$models.Status> {
     return $Call.ByID(18574999);
 }
 
+export function SendMessage(contactID: string, text: string): $CancellablePromise<messaging$0.Snapshot> {
+    return $Call.ByID(2070448990, contactID, text);
+}
+
+export function SetContactName(contactID: string, localName: string): $CancellablePromise<messaging$0.Snapshot> {
+    return $Call.ByID(3486640966, contactID, localName);
+}
+
+export function SetProfile(displayName: string, shareDisplayName: boolean): $CancellablePromise<$models.ProfileSnapshot> {
+    return $Call.ByID(3658025180, displayName, shareDisplayName);
+}
+
 /**
- * UnlockStorage opens OS-protected local identity state. It starts no listener,
- * emits no invitation, and does not claim an available messaging capability.
+ * UnlockStorage opens OS-protected local identity and approved local chat state.
+ * It starts no listener or connection and emits no invitation. Offline queueing
+ * is independent of the fresh authentication required by each live session.
  */
 export function UnlockStorage(): $CancellablePromise<$models.Status> {
     return $Call.ByID(4289999910);

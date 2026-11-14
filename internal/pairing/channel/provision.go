@@ -138,18 +138,22 @@ func (s *Session) reserve(ctx context.Context, role Role, link string, reserve f
 // additionally supplies the sole random contact ID and PSK after mutual consent.
 // It is backend-only and is deliberately not JSON serializable.
 type ContactOffer struct {
-	Node         [32]byte
-	ID           [16]byte
-	PresharedKey [32]byte
+	Node            [32]byte
+	ID              [16]byte
+	PresharedKey    [32]byte
+	RelayServiceURL string
+	ServerEndpoint  string
 }
 
 // ContactAgreement is temporary backend material for the encrypted pending
 // write. It does not authorize a Contact, restore credentials, or open transport.
 type ContactAgreement struct {
-	LocalNode    [32]byte
-	PeerNode     [32]byte
-	ID           [16]byte
-	PresharedKey [32]byte
+	LocalNode       [32]byte
+	PeerNode        [32]byte
+	ID              [16]byte
+	PresharedKey    [32]byte
+	RelayServiceURL string
+	ServerEndpoint  string
 }
 
 func (ContactOffer) String() string                   { return "[private WhatsUp contact offer]" }
@@ -181,26 +185,37 @@ func (a *Approval) ExchangePending(ctx context.Context, reservation *Reservation
 		_ = (&Session{state: state}).Close()
 		return ContactAgreement{}, ErrInvalid
 	}
+	if (offer.RelayServiceURL == "" && offer.ServerEndpoint != "") || (offer.RelayServiceURL != "" && (!validRelaySelection(offer.RelayServiceURL) || (state.role == Joiner && offer.ServerEndpoint != ""))) {
+		state.mu.Unlock()
+		_ = (&Session{state: state}).Close()
+		return ContactAgreement{}, ErrInvalid
+	}
+	if state.role == Inviter {
+		if _, err := RoutingCommitment(offer.RelayServiceURL, offer.ServerEndpoint); err != nil {
+			state.mu.Unlock()
+			_ = (&Session{state: state}).Close()
+			return ContactAgreement{}, ErrInvalid
+		}
+	}
 	state.provisionStarted = true
 	binding := state.binding
 	state.mu.Unlock()
 	defer clear(binding[:])
 	defer clear(offer.PresharedKey[:])
-	result := ContactAgreement{LocalNode: offer.Node, ID: offer.ID, PresharedKey: offer.PresharedKey}
+	result := ContactAgreement{LocalNode: offer.Node, ID: offer.ID, PresharedKey: offer.PresharedKey, RelayServiceURL: offer.RelayServiceURL, ServerEndpoint: offer.ServerEndpoint}
 	defer clear(result.PresharedKey[:])
 	session := &Session{state: state}
 	err := session.operation(ctx, func() error {
 		if state.role == Joiner {
-			hello := makePacket("WUPRE001", 1, Joiner, binding, 32)
-			copy(hello[frameSize:], offer.Node[:])
-			if err := writePacket(state.tls, hello); err != nil {
+			if err := writeProvision(state.tls, 1, Joiner, binding, offer.Node[:], offer.RelayServiceURL, ""); err != nil {
 				return err
 			}
-			proposal, err := readPacket(state.tls, "WUPRE001", 2, Inviter, binding, 112)
+			proposal, endpoint, err := readProvision(state.tls, 2, Inviter, binding, 112, offer.RelayServiceURL, true)
 			if err != nil {
 				return err
 			}
 			defer clear(proposal)
+			result.ServerEndpoint = endpoint
 			copy(result.ID[:], proposal[frameSize:frameSize+16])
 			copy(result.PeerNode[:], proposal[frameSize+16:frameSize+48])
 			if subtle.ConstantTimeCompare(proposal[frameSize+48:frameSize+80], offer.Node[:]) != 1 {
@@ -218,7 +233,7 @@ func (a *Approval) ExchangePending(ctx context.Context, reservation *Reservation
 			}
 			return readPrepared(state.tls, Inviter, binding, result.ID)
 		}
-		hello, err := readPacket(state.tls, "WUPRE001", 1, Joiner, binding, 32)
+		hello, _, err := readProvision(state.tls, 1, Joiner, binding, 32, offer.RelayServiceURL, false)
 		if err != nil {
 			return err
 		}
@@ -230,13 +245,13 @@ func (a *Approval) ExchangePending(ctx context.Context, reservation *Reservation
 		if persist(result) != nil {
 			return ErrPersistence
 		}
-		proposal := makePacket("WUPRE001", 2, Inviter, binding, 112)
+		proposal := make([]byte, 112)
 		defer clear(proposal)
-		copy(proposal[frameSize:frameSize+16], result.ID[:])
-		copy(proposal[frameSize+16:frameSize+48], result.LocalNode[:])
-		copy(proposal[frameSize+48:frameSize+80], result.PeerNode[:])
-		copy(proposal[frameSize+80:], result.PresharedKey[:])
-		if err := writePacket(state.tls, proposal); err != nil {
+		copy(proposal[:16], result.ID[:])
+		copy(proposal[16:48], result.LocalNode[:])
+		copy(proposal[48:80], result.PeerNode[:])
+		copy(proposal[80:], result.PresharedKey[:])
+		if err := writeProvision(state.tls, 2, Inviter, binding, proposal, result.RelayServiceURL, result.ServerEndpoint); err != nil {
 			return err
 		}
 		if err := readPrepared(state.tls, Joiner, binding, result.ID); err != nil {

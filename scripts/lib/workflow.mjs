@@ -76,7 +76,7 @@ export async function requireApp(root) {
   for (const filename of ['go.mod', 'go.sum', 'frontend/package.json', 'frontend/package-lock.json']) {
     try { await lstat(path.join(root, filename)); }
     catch {
-      throw new Error(`Application prerequisite missing: ${filename}. Resolve the application graph before running this command; see docs/development.md.`);
+      throw new Error(`Application prerequisite missing: ${filename}. Restore the committed application manifests and lockfiles before running this command.`);
     }
   }
 }
@@ -107,7 +107,7 @@ export function requireFrontendScripts(manifest, names) {
 
 export async function requireFullReadiness(root, policy) {
   if (policy.applicationReady !== true) {
-    throw new Error('Full application checks and packaging remain blocked: product/security gates are incomplete. Use npm run test:app for the implemented components. See docs/status.md.');
+    throw new Error('Full application checks and packaging remain blocked: product/security gates are incomplete. Use npm run test:app for the implemented components. See README.md and SECURITY.md for the supported scope.');
   }
   if (policy.transportIntegrationVerified !== true) {
     throw new Error('Real direct, forced-relay, path-change, restart, and adversarial transport integration must be verified before full checks or packaging.');

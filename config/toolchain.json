@@ -15,10 +15,9 @@
     "node": "26.13.1"
   },
   "unresolved": [
-    "Native two-machine pairing QA for private 0.0.3, including forward-only schema migration and restart behavior",
+    "Expanded native platform, accessibility, delayed-peer, in-flight lock and adversarial identity verification",
     "Packet-boundary direct-only support and real direct/forced-relay/path-change tests",
-    "Fresh authenticated reconfirmation of restored contact credentials and ongoing contact transport",
-    "One active conversation binding and chat queue/acknowledgement integration with authenticated live sessions",
+    "Real forced-direct/forced-relay and NAT/path-change failure tests beyond disposable loopback integration",
     "Unpatched development dependency advisory GHSA-gcqx-w48m-w2h4 (deepmerge via Svelte Vite plugin)",
     "Bounded file transfer, tray/notifications, backups, native installers, SBOM/signatures and updater verification"
   ],

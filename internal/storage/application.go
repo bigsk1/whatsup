@@ -11,10 +11,11 @@ import (
 	"time"
 
 	"whatsup/internal/identity"
+	"whatsup/internal/profile"
 )
 
 const (
-	ApplicationSchemaVersion = 4
+	ApplicationSchemaVersion = 6
 	MaxContacts              = 32
 	maxChatBytes             = 2 << 20
 	maxChatMessages          = 256
@@ -42,13 +43,63 @@ type contactSection struct {
 	Version    int                `json:"version"`
 	Local      identity.PublicKey `json:"local"`
 	Peer       identity.PublicKey `json:"peer"`
+	ContactID  string             `json:"contactID,omitempty"`
 	Chat       json.RawMessage    `json:"chat,omitempty"`
+	LocalName  string             `json:"localName,omitempty"`
+	PeerName   string             `json:"peerDisplayName,omitempty"`
 	generation uint64
+}
+
+// Schema 5 has no profile or contact-name fields. Keep its exact shape so a
+// version-5 snapshot cannot smuggle new metadata into a migration.
+type contactSectionV5 struct {
+	Version   int                `json:"version"`
+	Local     identity.PublicKey `json:"local"`
+	Peer      identity.PublicKey `json:"peer"`
+	ContactID string             `json:"contactID,omitempty"`
+	Chat      json.RawMessage    `json:"chat,omitempty"`
+}
+
+type applicationEnvelopeV5 struct {
+	Version           int                 `json:"version"`
+	Identity          identitySection     `json:"identity"`
+	Contacts          []contactSectionV5  `json:"contacts"`
+	PendingContacts   []pendingRecordDisk `json:"pendingContacts"`
+	CommittedContacts []pendingRecordDisk `json:"committedContacts"`
+}
+
+// Exact old shapes are kept separate: migration must never accept a new
+// connection policy or contact-ID authorization under an older schema number.
+type contactSectionV1 struct {
+	Version int                `json:"version"`
+	Local   identity.PublicKey `json:"local"`
+	Peer    identity.PublicKey `json:"peer"`
+	Chat    json.RawMessage    `json:"chat,omitempty"`
+}
+type pendingRecordDiskV1 struct {
+	Version          int                `json:"version"`
+	ID               string             `json:"id"`
+	Role             string             `json:"role"`
+	Local            identity.PublicKey `json:"local"`
+	Peer             identity.PublicKey `json:"peer"`
+	LocalNodePrivate string             `json:"localNodePrivate"`
+	LocalNode        string             `json:"localNode"`
+	PeerNode         string             `json:"peerNode"`
+	PresharedKey     string             `json:"presharedKey"`
+}
+
+type applicationEnvelopeV4 struct {
+	Version           int                   `json:"version"`
+	Identity          identitySection       `json:"identity"`
+	Contacts          []contactSectionV1    `json:"contacts"`
+	PendingContacts   []pendingRecordDiskV1 `json:"pendingContacts"`
+	CommittedContacts []pendingRecordDiskV1 `json:"committedContacts"`
 }
 
 type applicationEnvelope struct {
 	Version           int                 `json:"version"`
 	Identity          identitySection     `json:"identity"`
+	Profile           profile.Local       `json:"profile"`
 	Contacts          []contactSection    `json:"contacts"`
 	PendingContacts   []pendingRecordDisk `json:"pendingContacts"`
 	CommittedContacts []pendingRecordDisk `json:"committedContacts"`
@@ -56,18 +107,18 @@ type applicationEnvelope struct {
 
 // Schema 3 is decoded exactly before adding the committed section.
 type applicationEnvelopeV3 struct {
-	Version         int                 `json:"version"`
-	Identity        identitySection     `json:"identity"`
-	Contacts        []contactSection    `json:"contacts"`
-	PendingContacts []pendingRecordDisk `json:"pendingContacts"`
+	Version         int                   `json:"version"`
+	Identity        identitySection       `json:"identity"`
+	Contacts        []contactSectionV1    `json:"contacts"`
+	PendingContacts []pendingRecordDiskV1 `json:"pendingContacts"`
 }
 
 // The canonical schema-2 shape must stay exact during migration. Adding a
 // section to it before validation would accept unknown or ambiguous old state.
 type applicationEnvelopeV2 struct {
-	Version  int              `json:"version"`
-	Identity identitySection  `json:"identity"`
-	Contacts []contactSection `json:"contacts"`
+	Version  int                `json:"version"`
+	Identity identitySection    `json:"identity"`
+	Contacts []contactSectionV1 `json:"contacts"`
 }
 
 // ApprovedContact is implemented by pairing.Contact without making storage
@@ -104,13 +155,14 @@ type ApplicationState struct {
 	save                 func([]byte) error
 	commitReceipts       map[string]*commitReceiptState
 	nextCommitGeneration uint64
+	localReceipts        map[string]*localContactReceiptState
 }
 
 func (a ApplicationState) String() string   { return "[private WhatsUp application state]" }
 func (a ApplicationState) GoString() string { return a.String() }
 
 // OpenApplication creates a new identity only when no vault snapshot exists.
-// Schema 1/2/3 snapshots migrate without changing the seed or existing chat. Unsupported,
+// Schema 1/2/3/4/5 snapshots migrate without changing the seed or existing chat. Unsupported,
 // duplicate-field, noncanonical, or malformed state is preserved and rejected.
 func OpenApplication(vault *Vault) (*ApplicationState, error) {
 	if vault == nil {
@@ -137,7 +189,7 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 			return nil, generateErr
 		}
 		seed := local.Seed()
-		a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: identitySection{Version: 1, Seed: bytes.Clone(seed[:])}, Contacts: []contactSection{}, PendingContacts: []pendingRecordDisk{}, CommittedContacts: []pendingRecordDisk{}}
+		a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: identitySection{Version: 1, Seed: bytes.Clone(seed[:])}, Profile: profile.Local{Revision: 1}, Contacts: []contactSection{}, PendingContacts: []pendingRecordDisk{}, CommittedContacts: []pendingRecordDisk{}}
 		clear(seed[:])
 		write = true
 	} else if err != nil {
@@ -160,7 +212,7 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 				clear(old.Seed)
 				return nil, ErrState
 			}
-			a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: identitySection{Version: 1, Seed: old.Seed}, Contacts: []contactSection{}, PendingContacts: []pendingRecordDisk{}, CommittedContacts: []pendingRecordDisk{}}
+			a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: identitySection{Version: 1, Seed: old.Seed}, Profile: profile.Local{Revision: 1}, Contacts: []contactSection{}, PendingContacts: []pendingRecordDisk{}, CommittedContacts: []pendingRecordDisk{}}
 			write = true
 		case 2:
 			var old applicationEnvelopeV2
@@ -171,7 +223,7 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 				}
 				return nil, ErrState
 			}
-			a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: old.Identity, Contacts: old.Contacts, PendingContacts: []pendingRecordDisk{}, CommittedContacts: []pendingRecordDisk{}}
+			a.state = migrateLegacy(old.Identity, old.Contacts, []pendingRecordDiskV1{}, []pendingRecordDiskV1{})
 			write = true
 		case 3:
 			var old applicationEnvelopeV3
@@ -183,7 +235,29 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 				clear(old.PendingContacts)
 				return nil, ErrState
 			}
-			a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: old.Identity, Contacts: old.Contacts, PendingContacts: old.PendingContacts, CommittedContacts: []pendingRecordDisk{}}
+			a.state = migrateLegacy(old.Identity, old.Contacts, old.PendingContacts, []pendingRecordDiskV1{})
+			write = true
+		case 4:
+			var old applicationEnvelopeV4
+			if decodeCanonical(payload, &old) != nil {
+				clear(old.Identity.Seed)
+				return nil, ErrState
+			}
+			a.state = migrateLegacy(old.Identity, old.Contacts, old.PendingContacts, old.CommittedContacts)
+			write = true
+		case 5:
+			var old applicationEnvelopeV5
+			if decodeCanonical(payload, &old) != nil {
+				clear(old.Identity.Seed)
+				return nil, ErrState
+			}
+			a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: old.Identity, Profile: profile.Local{Revision: 1}, PendingContacts: old.PendingContacts, CommittedContacts: old.CommittedContacts}
+			if old.Contacts != nil {
+				a.state.Contacts = make([]contactSection, len(old.Contacts))
+				for i, c := range old.Contacts {
+					a.state.Contacts[i] = contactSection{Version: c.Version, Local: c.Local, Peer: c.Peer, ContactID: c.ContactID, Chat: c.Chat}
+				}
+			}
 			write = true
 		case ApplicationSchemaVersion:
 			if decodeCanonical(payload, &a.state) != nil {
@@ -207,6 +281,28 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 		}
 	}
 	return a, nil
+}
+
+func migrateLegacy(local identitySection, contacts []contactSectionV1, pending, committed []pendingRecordDiskV1) applicationEnvelope {
+	state := applicationEnvelope{Version: ApplicationSchemaVersion, Identity: local, Profile: profile.Local{Revision: 1}}
+	if contacts != nil {
+		state.Contacts = make([]contactSection, len(contacts))
+		for i, c := range contacts {
+			state.Contacts[i] = contactSection{Version: c.Version, Local: c.Local, Peer: c.Peer, Chat: c.Chat}
+		}
+	}
+	convert := func(old []pendingRecordDiskV1) []pendingRecordDisk {
+		if old == nil {
+			return nil
+		}
+		result := make([]pendingRecordDisk, len(old))
+		for i, r := range old {
+			result[i] = pendingRecordDisk{Version: r.Version, ID: r.ID, Role: r.Role, Local: r.Local, Peer: r.Peer, LocalNodePrivate: r.LocalNodePrivate, LocalNode: r.LocalNode, PeerNode: r.PeerNode, PresharedKey: r.PresharedKey}
+		}
+		return result
+	}
+	state.PendingContacts, state.CommittedContacts = convert(pending), convert(committed)
+	return state
 }
 
 // Identity returns a backend-only copy. Only its public fingerprint belongs in
@@ -262,6 +358,7 @@ type ChatStore struct {
 	peer        identity.PublicKey
 	generation  uint64
 	loaded      bool
+	contactID   string
 }
 
 func (s ChatStore) String() string   { return "[private WhatsUp scoped chat store]" }
@@ -283,7 +380,15 @@ func (a *ApplicationState) ChatStore(contact ApprovedContact) (*ChatStore, error
 		if index < 0 {
 			return ErrContact
 		}
-		store = &ChatStore{application: a, local: localPin, peer: peerPin, generation: a.state.Contacts[index].generation}
+		section := a.state.Contacts[index]
+		id := ""
+		if scoped, ok := contact.(interface{ ContactID() string }); ok {
+			id = scoped.ContactID()
+		}
+		if section.ContactID != id {
+			return ErrContact
+		}
+		store = &ChatStore{application: a, local: localPin, peer: peerPin, contactID: id, generation: section.generation}
 		return nil
 	})
 	return store, err
@@ -300,7 +405,7 @@ func (s *ChatStore) Load() ([]byte, error) {
 		return nil, ErrScopeUsed
 	}
 	index := a.findContactLocked(s.local, s.peer)
-	if index < 0 {
+	if index < 0 || a.state.Contacts[index].ContactID != s.contactID {
 		return nil, ErrContact
 	}
 	s.loaded = true
@@ -320,7 +425,7 @@ func (s *ChatStore) Save(payload []byte) error {
 		return err
 	}
 	index := a.findContactLocked(s.local, s.peer)
-	if index < 0 {
+	if index < 0 || a.state.Contacts[index].ContactID != s.contactID {
 		return ErrContact
 	}
 	if a.state.Contacts[index].generation != s.generation {
@@ -396,11 +501,15 @@ func (a *ApplicationState) clearLocked() {
 	clear(a.state.PendingContacts)
 	clear(a.state.CommittedContacts)
 	clear(a.commitReceipts)
+	clear(a.localReceipts)
 	a.state = applicationEnvelope{}
 }
 
 func validateEnvelope(state applicationEnvelope) error {
 	if state.Version != ApplicationSchemaVersion || state.Identity.Version != 1 || len(state.Identity.Seed) != 32 || state.Contacts == nil || len(state.Contacts) > MaxContacts || state.PendingContacts == nil || len(state.PendingContacts) > MaxPendingContacts || state.CommittedContacts == nil || len(state.CommittedContacts) > MaxCommittedContacts {
+		return ErrState
+	}
+	if state.Profile.Revision == 0 || profile.ValidateName(state.Profile.DisplayName) != nil {
 		return ErrState
 	}
 	local, err := identity.FromSeed(state.Identity.Seed)
@@ -409,10 +518,13 @@ func validateEnvelope(state applicationEnvelope) error {
 	}
 	seen := make(map[identity.PublicKey]bool, len(state.Contacts))
 	for _, contact := range state.Contacts {
-		if contact.Version != 1 || !contact.Local.Equal(local.PublicKey()) || !contact.Peer.Valid() || contact.Peer.Equal(contact.Local) || seen[contact.Peer] {
+		if ((contact.Version != 1 || contact.ContactID != "") && (contact.Version != 2 || !pendingIDValid(contact.ContactID))) || !contact.Local.Equal(local.PublicKey()) || !contact.Peer.Valid() || contact.Peer.Equal(contact.Local) || seen[contact.Peer] {
 			return ErrState
 		}
 		seen[contact.Peer] = true
+		if profile.ValidateName(contact.LocalName) != nil || profile.ValidateName(contact.PeerName) != nil || (contact.Version != 2 && (contact.LocalName != "" || contact.PeerName != "")) {
+			return ErrState
+		}
 		if len(contact.Chat) != 0 && validateChat(contact.Chat, contact.Local, contact.Peer) != nil {
 			return ErrState
 		}
@@ -422,6 +534,21 @@ func validateEnvelope(state applicationEnvelope) error {
 	}
 	if err := validatePendingContacts(state.CommittedContacts, local.PublicKey()); err != nil {
 		return ErrState
+	}
+	for _, contact := range state.Contacts {
+		if contact.Version != 2 {
+			continue
+		}
+		found := false
+		for _, record := range state.CommittedContacts {
+			if record.Version == 2 && record.ID == contact.ContactID && record.Local.Equal(contact.Local) && record.Peer.Equal(contact.Peer) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ErrState
+		}
 	}
 	for _, pending := range state.PendingContacts {
 		for _, committed := range state.CommittedContacts {

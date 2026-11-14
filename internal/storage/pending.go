@@ -2,12 +2,19 @@ package storage
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	"net/netip"
+	"net/url"
+	"strconv"
+	"strings"
 
+	"github.com/tailscale/tailcat"
 	"tailscale.com/types/key"
 
 	"whatsup/internal/identity"
+	"whatsup/internal/transport/address"
 )
 
 const MaxPendingContacts = 32
@@ -23,15 +30,18 @@ var (
 // The transport owns the live credentials and must supply exactly its bundle.
 // These strings may have Go-managed copies; erasure cannot be guaranteed.
 type PendingRecord struct {
-	Version          int                `json:"version"`
-	ID               string             `json:"id"`
-	Role             string             `json:"role"`
-	Local            identity.PublicKey `json:"local"`
-	Peer             identity.PublicKey `json:"peer"`
-	LocalNodePrivate string             `json:"localNodePrivate"`
-	LocalNode        string             `json:"localNode"`
-	PeerNode         string             `json:"peerNode"`
-	PresharedKey     string             `json:"presharedKey"`
+	Version              int                `json:"version"`
+	ID                   string             `json:"id"`
+	Role                 string             `json:"role"`
+	Local                identity.PublicKey `json:"local"`
+	Peer                 identity.PublicKey `json:"peer"`
+	LocalNodePrivate     string             `json:"localNodePrivate"`
+	LocalNode            string             `json:"localNode"`
+	PeerNode             string             `json:"peerNode"`
+	PresharedKey         string             `json:"presharedKey"`
+	RelayServiceURL      string             `json:"relayServiceURL,omitempty"`
+	RelayFallbackConsent bool               `json:"relayFallbackConsent,omitempty"`
+	ServerEndpoint       string             `json:"serverEndpoint,omitempty"`
 }
 
 func (PendingRecord) String() string   { return "[private WhatsUp pending contact]" }
@@ -58,7 +68,7 @@ func pendingIDValid(encoded string) bool {
 // anything; the coordinator must have completed approval before creating it.
 // The fixed field encodings bound the canonical record to less than 2 KiB.
 func ValidatePendingRecord(record PendingRecord) error {
-	if record.Version != 1 || !pendingIDValid(record.ID) || (record.Role != "inviter" && record.Role != "joiner") || !record.Local.Valid() || !record.Peer.Valid() || record.Local.Equal(record.Peer) || len(record.LocalNodePrivate) != len("privkey:")+64 || len(record.LocalNode) != len("nodekey:")+64 || len(record.PeerNode) != len("nodekey:")+64 || len(record.PresharedKey) != 43 {
+	if (record.Version != 1 && record.Version != 2) || !pendingIDValid(record.ID) || (record.Role != "inviter" && record.Role != "joiner") || !record.Local.Valid() || !record.Peer.Valid() || record.Local.Equal(record.Peer) || len(record.LocalNodePrivate) != len("privkey:")+64 || len(record.LocalNode) != len("nodekey:")+64 || len(record.PeerNode) != len("nodekey:")+64 || len(record.PresharedKey) != 43 {
 		return ErrPending
 	}
 	var private key.NodePrivate
@@ -78,6 +88,76 @@ func ValidatePendingRecord(record PendingRecord) error {
 	defer clear(psk)
 	if err != nil || len(psk) != 32 || bytes.Equal(psk, make([]byte, 32)) || base64.RawURLEncoding.EncodeToString(psk) != record.PresharedKey {
 		return ErrPending
+	}
+	if record.Version == 1 {
+		if record.RelayServiceURL != "" || record.RelayFallbackConsent || record.ServerEndpoint != "" {
+			return ErrPending
+		}
+		return nil
+	}
+	if !record.RelayFallbackConsent || ValidateRelayServiceURL(record.RelayServiceURL) != nil {
+		return ErrPending
+	}
+	endpoint, err := address.Parse(record.ServerEndpoint)
+	if err != nil {
+		return ErrPending
+	}
+	info, err := tailcat.ParseAddr(endpoint.EncodeForTransport())
+	if err != nil || len(info.Region) != 0 || !info.RegionID.IsValid() || subtle.ConstantTimeCompare(info.PresharedKey[:], psk) != 1 {
+		return ErrPending
+	}
+	serverNode := peer
+	if record.Role == "inviter" {
+		serverNode = local
+		if !info.ServerDiscoPublic.Equal(tailcat.DiscoPublicForNode(private)) {
+			return ErrPending
+		}
+	}
+	if info.ServerPublic.NodePublic != serverNode {
+		return ErrPending
+	}
+	return nil
+}
+
+// ValidateRelayServiceURL checks the stored operator selection without DNS or
+// network IO. Actual connection startup must additionally fetch/validate a
+// public, TLS-authenticated profile at this exact URL; peers cannot replace it.
+func ValidateRelayServiceURL(raw string) error {
+	if len(raw) == 0 || len(raw) > 2048 || strings.TrimSpace(raw) != raw || strings.ContainsAny(raw, "\r\n\t ") {
+		return ErrPending
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || u.String() != raw {
+		return ErrPending
+	}
+	host := u.Hostname()
+	if strings.HasSuffix(host, ".") {
+		return ErrPending
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		if ip.Zone() != "" || ip.Is4In6() || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+			return ErrPending
+		}
+	} else {
+		if !strings.Contains(host, ".") || len(host) > 253 {
+			return ErrPending
+		}
+		for _, label := range strings.Split(host, ".") {
+			if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+				return ErrPending
+			}
+			for _, c := range label {
+				if c != '-' && !(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') && !(c >= '0' && c <= '9') {
+					return ErrPending
+				}
+			}
+		}
+	}
+	if port := u.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != port {
+			return ErrPending
+		}
 	}
 	return nil
 }

@@ -52,11 +52,10 @@ func (p PeerKey) String() string { return p.node.String() }
 
 // ContactCredentials is the sole opaque ongoing credential bundle for a locally
 // approved contact. Pairing creates no other session key or PSK. Preparing these
-// keys does not activate a contact: a reviewed reciprocal identity-to-node-key
-// binding is required before constructing a server. That protocol is not yet
-// implemented, so there is deliberately no production activation API.
-// Copies share the private state, claim and revocation; there is no secret export
-// or persistence interface until encrypted reciprocal activation is reviewed.
+// keys does not activate a contact: reciprocal identity-to-node-key evidence is
+// required before constructing a server. PromotePendingCredentials adopts the
+// exact bundle after live completion. Copies share claim and revocation; there
+// is no generic secret export or restored-record activation API here.
 type ContactCredentials struct{ state *contactCredentialState }
 
 type contactCredentialState struct {
@@ -69,10 +68,9 @@ type contactCredentialState struct {
 	revoked  bool
 }
 
-// verifiedBinding can only be populated inside this adapter by the future
-// reviewed mutual-authentication implementation. It is not a caller-supplied
-// boolean or unverified peer claim. Tests create explicitly synthetic bindings
-// to exercise admission independently of the unimplemented protocol.
+// verifiedBinding is populated by authenticated completion inside this adapter.
+// It is not a caller-supplied boolean or unverified peer claim. Legacy constructor
+// tests create synthetic bindings to exercise admission independently.
 type verifiedBinding struct {
 	localIdentity identity.PublicKey
 	peerIdentity  identity.PublicKey

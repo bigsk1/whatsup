@@ -1,167 +1,139 @@
 # WhatsUp
 
-A private, one-to-one desktop messenger in development for Windows and Linux, using
-Go, Wails, Svelte, TypeScript, Tailwind, and Tailcat.
+WhatsUp is a private, one-to-one desktop messenger for Windows and Linux.
 
-**Current state:** private test revision **0.0.3** adds explicit invitation creation
-and joining, mutual identity confirmation and durable encrypted contact setup to
-the native desktop shell. Live invitation setup uses a separately selected,
-trusted connection service and requires relay consent. Messaging, files and
-ongoing contact connections remain unavailable. This is development software,
-not a usable or audited private messenger yet.
-See [current status](docs/status.md) and the [architecture](docs/architecture.md).
+The current **0.0.6 preview** supports identity-verified pairing, text messages,
+encrypted local history and queued messages, automatic reconnection, optional
+shared display names, and private contact names.
 
-The backend reserves the one-use invitation before showing either fingerprint,
-authenticates both Ed25519 identities through TLS 1.3, and requires both people to
-approve. It commits the exact agreed contact keys before retiring the separate
-invitation transport. Saved setup cannot resume a live session after restart.
-See the [pairing protocol boundary](docs/pairing-protocol.md).
+WhatsUp is still preview software. Signed installers, automatic updates and a
+public download are not available yet. It has not undergone an independent
+security audit. See the [security information](SECURITY.md) before relying on it
+for sensitive communication.
 
-## Consistent development commands
+## Start the app
 
-Run these from the project root, in PowerShell or a Linux shell:
+On Windows, launch the WhatsUp executable. On Linux, use the installed WhatsUp
+application-menu entry. A supplied preview build does not need a development
+server or a separate browser to run.
 
-| Command | Purpose |
-| --- | --- |
-| `npm run doctor` | Check Node, Go, project readiness, and pinned tool policy. |
-| `npm run doctor -- --network` | Also check HTTPS access to dependency services. |
-| `npm test` | Test the dependency-free workflow tools. |
-| `npm run test:app` | Check implemented components, frontend behavior and vulnerability gates. |
-| `npm run test:credentials` | Test the real OS credential provider using disposable validation credentials. |
-| `npm run test:native` | On Linux, start a real WebKit process, load local HTML and verify JavaScript with the sandbox enabled. |
-| `npm run wsl -- test:app` | From Windows, synchronize current sources and run the same Linux component workflow. |
-| `npm run build` | Build a native development binary from the frozen graph. |
-| `npm run build:review` | Build and retain a versioned private test executable with checksums and source provenance. |
-| `npm run setup` | Install frozen app dependencies and the exact Wails CLI. |
-| `npm run dev` | Run the native desktop development loop. |
-| `npm run check` | Run the complete application validation gates. |
-| `npm run update` | Refresh dependencies, test, and leave a reviewable diff. |
-| `npm run package` | Validate, build native packages, and write checksums. |
+Linux requires the native libraries and desktop services described in
+[Linux support](docs/linux-support.md). Use the same preview version on both
+devices. Version 0.0.6 upgrades existing local data; installing an older executable
+does not downgrade that data.
 
-`setup`, `dev` and `build` use the pinned Wails CLI. `test:app` validates the current
-implementation without claiming messenger completion. `check` and `package` stay
-blocked until real transport/security integration gates exist. Known dependency
-advisories also fail validation; see [current status](docs/status.md).
-There is no placeholder connection, sample conversation or fake delivery indicator.
+Choose **Unlock and connect** to open local storage and reconnect to a saved
+contact. If no contact is saved, the app is ready for a new invitation. Local
+storage uses Windows Credential Manager or Linux Secret Service to protect its
+encryption key.
 
-The first application version is **0.0.1**. New delivered test revisions can use
-patch increments such as 0.0.2; rebuilds use a separate timestamp/source build ID.
-Minor and major versions are deliberate milestones. See [versioning](docs/versioning.md).
-Review candidates stay under `artifacts/development/<version>/<build-id>/`;
-they are unsigned executables, not release installers. See [native testing](docs/native-testing.md).
-Test revision **0.0.2** established Linux sandbox integration and an explicit
-software rendering mode. The new **0.0.3** pairing flow still needs native owner
-QA on both machines. Linux runtime requirements and tested scope are documented in
-[Linux support](docs/linux-support.md).
+## Pair with someone
 
-Windows remains the authoritative source workspace. The WSL command creates a
-derived Linux snapshot with separate dependencies, checks source equality before
-and after the command, and prevents concurrent use of that snapshot. Use WSL for
-builds and backend/race checks without WSLg; use an Ubuntu Desktop machine or VM
-for native Linux UI and later two-machine chat tests. See the
-[run and review instructions](docs/development.md#run-and-review-this-workspace).
+1. Launch and unlock WhatsUp on both devices.
+2. On one device, choose **Start a conversation**, then **Create invitation**.
+   Enter a trusted connection service's HTTPS relay-map URL and explicitly allow
+   encrypted relay fallback.
+3. Choose **Copy invitation** and send the link privately to the intended person.
+   Invitations expire after ten minutes and can be used once. Cancel ends the
+   invitation immediately.
+4. On the other device, choose **Paste invitation**, paste the link, enter the
+   same trusted service URL and give relay consent.
+5. Compare the full reciprocal fingerprints through a trusted channel and approve
+   on both devices. A display name is a label; the fingerprint identifies the
+   device's key.
+6. After both approvals and completed setup, the apps start connecting
+   automatically.
 
-The interface can unlock local identity through Windows Credential Manager or
-Linux Secret Service. An unavailable credential store leaves it locked. Appearance
-preferences are the only data stored in frontend local storage. Unlocking does not
-start a listener or enable messaging. Native windows close normally; tray behavior
-is not implemented.
+The relay field starts empty and consent starts unchecked. The invitation page
+lists Tailcat's public relay map with a **Copy relay URL** button:
 
-The current source uses encrypted schema 4 for identity, contact pins, chat,
-pending setup and committed contact credentials. It migrates schemas 1/2/3
-without changing identity or the wrapping credential. Older executables reject
-the newer schema; preserve existing state and its OS credential, and follow the
-[native migration test guidance](docs/native-testing.md) before trying this build
-against existing data. Restored pending or committed records remain inert;
-reconnection requires fresh authenticated peer confirmation, which is unfinished.
+    https://tailcat.dev/derpmap.json
 
-## Try the private pairing flow
+Copying it does not fill the field, grant consent or contact the service. You can
+use that public service or a compatible service you trust. The public service is
+best effort and rate limited; WhatsUp does not guarantee its availability.
 
-Run `npm run dev` for the native development loop, or build with `npm run build`
-and launch `build/bin/whatsup.exe` on Windows or `build/bin/whatsup` on Linux.
-`npm run build:review` retains a versioned executable for repeatable private QA.
-Linux installation and desktop integration use the
-[native review instructions](docs/native-testing.md), including the supported
-sandbox setup. Browser preview cannot unlock storage or create invitations.
+Automatic mode prefers a direct connection and permits encrypted relay fallback.
+The selected service can observe connection metadata, including IP addresses and
+availability. Strict direct-only mode and a live Direct/Relayed indicator are
+not available in this preview.
 
-Pairing needs a trusted operator's **HTTPS Tailcat relay-map URL**. This checkout
-does not supply, choose or deploy a service. An example placeholder is not a
-working endpoint. The service learns your IP address and availability and can
-carry encrypted pairing traffic; accepting that disclosure is a separate choice
-on each device. Strict direct-only pairing is unavailable.
+## Messages and reconnection
 
-1. Launch WhatsUp on both devices and unlock local storage in Settings.
-2. On one device, open **Start a conversation**, choose **Create invitation**,
-   enter the trusted connection-service URL and explicitly allow encrypted relay
-   fallback. Continue to create the ten-minute, one-use invitation.
-3. Use **Copy invitation** and send it privately to the intended person. The link
-   is a bearer secret; keep it out of screenshots, issue reports and logs.
-4. On the other device, choose **Paste invitation**, paste the link, independently
-   enter the same trusted service URL and give relay consent.
-5. Both devices show an Approve/Deny dialog only after authenticated reservation.
-   Compare the full reciprocal fingerprints through a trusted channel, then
-   approve on both devices. Either person can deny, including after the other
-   person has approved.
-6. Completion means the exact contact credentials were committed and the
-   invitation transport was retired. Sending messages is still disabled. After
-   restarting, saved setup shows that reconnection is required; it does not
-   automatically contact a peer. Discard saved setup before starting over.
+Send plain text in either direction. **Queued** means a message is stored
+encrypted on the sending device. **Delivered** means the authenticated receiving
+app has saved it and acknowledged receipt.
 
-Launch, unlock and opening the invitation dialog do not contact a relay. The
-service URL, unchecked consent and private link stay in transient UI state; only
-an explicit Copy action writes the invitation to the clipboard. Automated tests
-have exercised this protocol over a disposable local TLS relay. Two-machine
-native pairing, public-service operation and forced direct/relay paths remain
-unverified.
+Both apps must be running and connected to exchange messages. The relay is not
+an offline mailbox. If a contact is offline, outgoing messages remain in the
+local encrypted queue and retry after reconnection.
 
-Normal builds consume exact versions recorded in the manifests and lockfiles. Updating dependencies is a
-separate, explicit operation. See the [development and release workflow](docs/development.md).
+The saved device identities are checked automatically on every connection.
+Ordinary disconnects, restarts and reconnections do not require another
+invitation or manual fingerprint approval. An identity mismatch stops
+reconnection and preserves the saved key.
 
-## Privacy and local diagnostics
+## Names and settings
 
-WhatsUp has no application analytics or remote crash reporting. Local troubleshooting
-logs contain only fixed operational event codes, UTC time and public app/tool/platform
-versions. They exclude message text, identity fingerprints, keys, invitations, peer
-addresses, filesystem paths and raw bridge/error payloads. The active and previous
-log are limited to 256 KiB each. They stay under the user's private application-data
-directory and are never uploaded automatically. See [privacy controls](docs/privacy.md).
+Settings opens a workspace with **Profile**, **Contact**, **Appearance**, and
+**Privacy & diagnostics** pages. **Back to chats** returns without disconnecting.
 
-On Windows this app uses the system WebView2 with an app-owned profile under
-%LOCALAPPDATA%\WhatsUp\webview, separate from Edge's cookies and storage. Optional
-WebView2 diagnostic data follows Windows privacy settings; Microsoft documents that
-required diagnostics may still occur. The owner accepts that runtime limitation.
-The app preserves Wails' disabled SmartScreen setting for its bundled-content
-renderer. It does not change system-wide Windows privacy or browser policies.
+In **Profile**, save a display name and enable **Share my display name** if you
+want your approved contact to receive it. Sharing starts off. The name travels
+through the authenticated connection after pairing approval; it is not included
+in the invitation link. Saved changes are sent while connected. Changing profile
+settings while offline does not connect the app.
 
-Linux uses the system WebKitGTK. Startup prepares private per-app data and cache
-directories and verifies the paths selected by WebKit before opening a window.
-Its diagnostic profile differs from WebView2. This is not a guarantee that the host
-OS, runtime or network infrastructure sends no data.
+Clearing a shared name or disabling sharing clears the received shared label
+when the peer is connected. It does not erase their private nickname or copies
+outside WhatsUp.
 
-Go telemetry is set to off on Windows and Ubuntu, including local tool counters,
-and the workflow verifies that setting. Automatic npm version checks and install-
-time audit submissions are disabled. Explicit vulnerability scans, dependency
-downloads and requested environment/network checks still contact their services.
-The reviewed local Tailcat patch disables its optional DERP application statistics
-and bearer-address debug logging. Supported build tags omit inherited proxies,
-router port mapping and captive-portal probes; invitation startup fails closed
-when those controls are absent. See the
-[transport review](docs/transport-review.md) and
-[third-party notices](THIRD_PARTY_NOTICES.md).
+In **Contact**, assign a private name to the saved contact. This name stays on
+your device. Chat displays your private contact name first, then their shared
+display name, then the generic contact label. Changing a name does not change
+the identity fingerprint.
 
-## Intended experience
+Appearance supports dark, light and system themes, with teal, blue and rose
+accents.
 
-- Private invitation links/QR codes: one use, 10-minute default expiry, and
-  approval of a specific contact identity.
-- Direct-only message delivery with local queuing, or direct-preferred delivery
-  with encrypted relay fallback. Strict direct-only is a transport implementation
-  gate, not a UI toggle over stock fallback behavior.
-- Text, Markdown/text attachments, approved image transfers, and image paste.
-- Contact sidebar, clear connection/delivery indicators, local search, themes,
-  tray unread count, background listener, and native notifications.
-- Encrypted local state, explicit encrypted backups, and verified application updates.
+## Disconnect or forget a contact
 
-Read [SECURITY.md](SECURITY.md) and [AGENTS.md](AGENTS.md) before implementation.
-The owner recorded the local source baseline; see [baseline notes](docs/first-commit.md).
-Retained upstream build assets are covered by [third-party notices](THIRD_PARTY_NOTICES.md).
-No remote repository, relay deployment, signing key, or publishing target is set.
+**Disconnect and lock** stops networking, closes local storage and clears the
+displayed conversation and decrypted names. The saved contact, history and queued
+messages remain encrypted for the next unlock.
+
+**Forget contact…** opens a confirmation to delete that contact's local
+credentials, saved messages, queued messages and contact names. Your own profile,
+device identity, fingerprint and appearance preferences remain. You can then
+create or paste a fresh invitation without restarting.
+
+Forget affects only this device. It does not delete the other person's copies or
+guarantee physical erasure. To reuse another device with a different pairing,
+remove its old contact there too. A new pairing uses fresh contact keys.
+
+## Current limits
+
+- One saved conversation with two approved device identities.
+- Plain text only. Files, images, videos and profile pictures are not available.
+- No group chat, conversation search, backup/restore interface or recognition
+  record surviving full Forget.
+- No tray/background mode, notifications or startup preferences. Closing the last
+  window quits the app.
+- No strict direct-only mode, live path indicator, signed installer or automatic
+  update.
+
+## Privacy and security
+
+WhatsUp has no application analytics or remote crash reporting. Local diagnostics
+are bounded and redacted, with no automatic upload. Names, messages and contact
+state are encrypted locally; appearance is the only preference stored in the
+WebView.
+
+Windows uses the system WebView2 runtime with a private profile separate from
+Edge. Optional vendor diagnostics follow Windows privacy settings, and required
+WebView2 diagnostics may still occur. Linux uses the system WebKitGTK runtime and
+private application data/cache directories.
+
+Read the [privacy guide](docs/privacy.md), [security information](SECURITY.md),
+[Linux support](docs/linux-support.md), [version guide](docs/versioning.md), and
+[third-party notices](THIRD_PARTY_NOTICES.md) for details.

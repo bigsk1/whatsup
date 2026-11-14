@@ -38,7 +38,7 @@ function options(root, overrides = {}) {
 test('review snapshot copies only the native binary and binds dirty provenance to verified checksums', async (t) => {
   const { root, windowsBytes } = await fixture(t);
   const archived = await archiveReviewBuild(options(root, {
-    validation: { componentChecks: 'passed', advisoryGate: 'failed-known-advisory', nativeUI: 'owner-reported-pass', privateData: 'must not enter manifest' },
+    validation: { componentChecks: 'passed', advisoryGate: 'failed-known-advisory', nativeUI: 'reported-pass', privateData: 'must not enter manifest' },
     toolchain: { ...tools, privateData: 'must not enter manifest' },
   }));
   assert.equal(archived.reviewID, '20261114T070809123Z-g0123456789ab-dirty');
@@ -53,6 +53,7 @@ test('review snapshot copies only the native binary and binds dirty provenance t
   assert.deepEqual(manifest.source, { commit: sourceCommit, dirty: true, digestSHA256: sourceDigest });
   assert.deepEqual(manifest.toolchain, tools);
   assert.equal(manifest.validation.advisoryGate, 'failed-known-advisory');
+  assert.equal(manifest.validation.nativeUI, 'reported-pass');
   assert.equal(manifestBytes.includes(Buffer.from('privateData')), false);
   const checksumLines = (await readFile(path.join(archived.directory, 'SHA256SUMS'), 'utf8')).trim().split('\n');
   for (const line of checksumLines) {
@@ -64,6 +65,7 @@ test('review snapshot copies only the native binary and binds dirty provenance t
 test('same review ID permits the other platform but never overwrites an existing candidate', async (t) => {
   const { root, windowsBytes, linuxBytes } = await fixture(t);
   const first = await archiveReviewBuild(options(root));
+  assert.equal(first.manifest.validation.nativeUI, 'not-run');
   const second = await archiveReviewBuild(options(root, { platform: 'linux', reviewID: first.reviewID }));
   assert.equal(path.dirname(first.directory), path.dirname(second.directory));
   assert.deepEqual(await readFile(path.join(second.directory, 'whatsup')), linuxBytes);

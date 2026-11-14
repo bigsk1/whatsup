@@ -8,10 +8,12 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/tailscale/tailcat"
 	"tailscale.com/types/key"
 
 	"whatsup/internal/pairing/channel"
 	"whatsup/internal/storage"
+	"whatsup/internal/transport/address"
 )
 
 var ErrPendingCredentials = errors.New("pending contact credential exchange failed")
@@ -35,15 +37,30 @@ func (PendingCredentials) MarshalJSON() ([]byte, error) { return nil, ErrPending
 // and reciprocal consent. The inviter creates the one contact ID and PSK; the
 // joiner creates only its own node key. Save callbacks run outside channel locks.
 // Success means both pending writes were acknowledged, never contact activation.
-func ExchangePending(ctx context.Context, reservation *channel.Reservation, approval *channel.Approval, persist func(storage.PendingRecord) error) (*PendingCredentials, error) {
+func ExchangePending(ctx context.Context, reservation *channel.Reservation, approval *channel.Approval, persist func(storage.PendingRecord) error, profiles ...*RelayProfile) (*PendingCredentials, error) {
 	if ctx == nil || persist == nil || reservation == nil || approval == nil {
 		return nil, ErrPendingCredentials
+	}
+	if len(profiles) > 1 || len(profiles) == 1 && !profiles[0].Ready() {
+		return nil, ErrRelayProfile
 	}
 	if err := reservation.WithLiveApproval(approval, func() error { return nil }); err != nil {
 		return nil, ErrPendingCredentials
 	}
-	node := key.NewNode()
+	var node key.NodePrivate
+	var serverInfo tailcat.ConnInfo
+	if approval.Role() == channel.Inviter {
+		// The supported constructor supplies one node/PSK bundle and its
+		// deterministic public discovery key without starting networking.
+		generated := tailcat.NewPrivateKey()
+		node, serverInfo = generated.Private, generated.Public
+		generated.Private = key.NodePrivate{}
+		clear(generated.Public.PresharedKey[:])
+	} else {
+		node = key.NewNode()
+	}
 	defer func() { node = key.NodePrivate{} }()
+	defer clear(serverInfo.PresharedKey[:])
 	encodedPrivate, err := node.MarshalText()
 	if err != nil {
 		return nil, ErrPendingCredentials
@@ -59,6 +76,9 @@ func ExchangePending(ctx context.Context, reservation *channel.Reservation, appr
 	}
 	var offer channel.ContactOffer
 	copy(offer.Node[:], encodedPublic)
+	if len(profiles) == 1 {
+		offer.RelayServiceURL = profiles[0].state.source
+	}
 	role := "joiner"
 	if approval.Role() == channel.Inviter {
 		role = "inviter"
@@ -67,10 +87,14 @@ func ExchangePending(ctx context.Context, reservation *channel.Reservation, appr
 				return nil, ErrPendingCredentials
 			}
 		}
-		for offer.PresharedKey == [32]byte{} {
-			if _, err := rand.Read(offer.PresharedKey[:]); err != nil {
+		copy(offer.PresharedKey[:], serverInfo.PresharedKey[:])
+		if len(profiles) == 1 {
+			serverInfo.Region, serverInfo.RegionID = nil, profiles[0].state.defaultRegion
+			endpoint, err := address.Parse(string(serverInfo.Addr()))
+			if err != nil {
 				return nil, ErrPendingCredentials
 			}
+			offer.ServerEndpoint = string(endpoint.EncodeForTransport())
 		}
 	}
 	defer clear(offer.PresharedKey[:])
@@ -82,6 +106,12 @@ func ExchangePending(ctx context.Context, reservation *channel.Reservation, appr
 			LocalNode:    "nodekey:" + hex.EncodeToString(agreement.LocalNode[:]),
 			PeerNode:     "nodekey:" + hex.EncodeToString(agreement.PeerNode[:]),
 			PresharedKey: base64.RawURLEncoding.EncodeToString(agreement.PresharedKey[:]),
+		}
+		if agreement.RelayServiceURL != "" {
+			saved.Version = 2
+			saved.RelayServiceURL = agreement.RelayServiceURL
+			saved.RelayFallbackConsent = true
+			saved.ServerEndpoint = agreement.ServerEndpoint
 		}
 		if storage.ValidatePendingRecord(saved) != nil {
 			return ErrPendingCredentials

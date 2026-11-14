@@ -27,6 +27,32 @@ type invitationListener interface {
 	Close() error
 }
 
+// The approved profile stays backend-only and follows the exact transport job.
+// It is never reconstructed from peer input or put in a public status DTO.
+type selectedInvitationListener struct {
+	invitationListener
+	profile *transport.RelayProfile
+}
+type selectedInvitationConn struct {
+	net.Conn
+	profile *transport.RelayProfile
+}
+
+func (c *selectedInvitationConn) RetireInvitation(ctx context.Context, passive bool) error {
+	if retirer, ok := c.Conn.(interface {
+		RetireInvitation(context.Context, bool) error
+	}); ok {
+		return retirer.RetireInvitation(ctx, passive)
+	}
+	return transport.ErrInvitationTransport
+}
+func selectedProfiles(profile *transport.RelayProfile) []*transport.RelayProfile {
+	if profile == nil {
+		return nil
+	}
+	return []*transport.RelayProfile{profile}
+}
+
 type invitationControl struct {
 	mu              sync.Mutex
 	local           *identity.Identity
@@ -59,7 +85,11 @@ func newInvitationControl(local *identity.Identity, flow *pairflow.Coordinator) 
 			if err != nil {
 				return nil, err
 			}
-			return transport.NewInvitationListener(ctx, transport.InvitationOptions{Profile: profile, Policy: transport.RelayFallback, AllowRelayFallback: consent})
+			listener, err := transport.NewInvitationListener(ctx, transport.InvitationOptions{Profile: profile, Policy: transport.RelayFallback, AllowRelayFallback: consent})
+			if err != nil {
+				return nil, err
+			}
+			return &selectedInvitationListener{invitationListener: listener, profile: profile}, nil
 		},
 		dial: func(ctx context.Context, endpoint address.Endpoint, url string, consent bool) (net.Conn, error) {
 			if err := transport.ValidatePolicy(transport.RelayFallback, consent); err != nil {
@@ -69,7 +99,11 @@ func newInvitationControl(local *identity.Identity, flow *pairflow.Coordinator) 
 			if err != nil {
 				return nil, err
 			}
-			return transport.DialInvitation(ctx, endpoint, profile, transport.RelayFallback, consent)
+			conn, err := transport.DialInvitation(ctx, endpoint, profile, transport.RelayFallback, consent)
+			if err != nil {
+				return nil, err
+			}
+			return &selectedInvitationConn{Conn: conn, profile: profile}, nil
 		},
 	}
 }
@@ -155,7 +189,11 @@ func (c *invitationControl) create(url string, consent bool) (InvitationShare, e
 	go func() {
 		raw, err := listener.Accept(job.ctx)
 		if err == nil {
-			err = c.flow.Accept(job.ctx, raw, invite, manager)
+			var profile *transport.RelayProfile
+			if selected, ok := listener.(*selectedInvitationListener); ok {
+				profile = selected.profile
+			}
+			err = c.flow.Accept(job.ctx, raw, invite, manager, selectedProfiles(profile)...)
 		}
 		c.finish(job, err != nil)
 	}()
@@ -185,7 +223,11 @@ func (c *invitationControl) join(link, url string, consent bool) (pairflow.Snaps
 	go func() {
 		raw, err := c.dial(job.ctx, invite.Endpoint(), url, consent)
 		if err == nil {
-			err = c.flow.Join(job.ctx, raw, invite)
+			var profile *transport.RelayProfile
+			if selected, ok := raw.(*selectedInvitationConn); ok {
+				profile = selected.profile
+			}
+			err = c.flow.Join(job.ctx, raw, invite, selectedProfiles(profile)...)
 		}
 		c.finish(job, err != nil)
 	}()
@@ -252,7 +294,11 @@ func (s *Service) CreateInvitation(relayMapURL string, allowRelayFallback bool) 
 	s.mu.Lock()
 	control := s.invitations
 	available := s.state == "unlocked" && control != nil
+	occupied := available && s.messages != nil && s.messages.Snapshot().ContactID != ""
 	s.mu.Unlock()
+	if occupied {
+		return InvitationShare{}, errors.New("An approved contact already exists. Use Connect to resume it.")
+	}
 	if !available {
 		return InvitationShare{}, errors.New("Unlock local storage before creating an invitation")
 	}
@@ -273,7 +319,11 @@ func (s *Service) JoinInvitation(link, relayMapURL string, allowRelayFallback bo
 	s.mu.Lock()
 	control := s.invitations
 	available := s.state == "unlocked" && control != nil
+	occupied := available && s.messages != nil && s.messages.Snapshot().ContactID != ""
 	s.mu.Unlock()
+	if occupied {
+		return pairflow.Snapshot{State: "unavailable"}, errors.New("An approved contact already exists. Use Connect to resume it.")
+	}
 	if !available {
 		return pairflow.Snapshot{State: "unavailable"}, errors.New("Unlock local storage before joining an invitation")
 	}

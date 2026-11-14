@@ -165,7 +165,7 @@ func TestSchemaTwoMigrationPreservesIdentityPinsAndChat(t *testing.T) {
 	chat := queuedChat(t, pin, "synthetic schema two queue")
 	legacy, err := json.Marshal(applicationEnvelopeV2{
 		Version: 2, Identity: identitySection{Version: 1, Seed: seed},
-		Contacts: []contactSection{{Version: 1, Local: pin.local, Peer: pin.peer, Chat: chat}},
+		Contacts: []contactSectionV1{{Version: 1, Local: pin.local, Peer: pin.peer, Chat: chat}},
 	})
 	if err != nil || vault.Save(legacy) != nil {
 		t.Fatal("could not prepare synthetic schema two snapshot")

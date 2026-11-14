@@ -14,15 +14,16 @@ import (
 // PSKCommitment is SHA-256 of the random 256-bit PSK, not a replacement PSK or KDF.
 // It is backend-only; ordinary formatting and JSON cannot expose the association.
 type ActivationAssociation struct {
-	ID              [16]byte
-	InviterIdentity identity.PublicKey
-	JoinerIdentity  identity.PublicKey
-	InviterNode     [32]byte
-	JoinerNode      [32]byte
-	PSKCommitment   [32]byte
+	ID                [16]byte
+	InviterIdentity   identity.PublicKey
+	JoinerIdentity    identity.PublicKey
+	InviterNode       [32]byte
+	JoinerNode        [32]byte
+	PSKCommitment     [32]byte
+	RoutingCommitment [32]byte
 }
 
-const associationSize = 1 + 16 + 32*5
+const associationSize = 1 + 16 + 32*6
 
 var ErrCompletion = errors.New("contact activation completion failed")
 
@@ -42,18 +43,20 @@ func (a ActivationAssociation) Equal(other ActivationAssociation) bool {
 
 func (a ActivationAssociation) encode() [associationSize]byte {
 	var wire [associationSize]byte
-	wire[0] = 1
+	wire[0] = 2
 	copy(wire[1:17], a.ID[:])
 	copy(wire[17:49], a.InviterIdentity[:])
 	copy(wire[49:81], a.JoinerIdentity[:])
 	copy(wire[81:113], a.InviterNode[:])
 	copy(wire[113:145], a.JoinerNode[:])
-	copy(wire[145:], a.PSKCommitment[:])
+	copy(wire[145:177], a.PSKCommitment[:])
+	copy(wire[177:], a.RoutingCommitment[:])
 	return wire
 }
 
 func associationForAgreement(state *sessionState, agreement ContactAgreement) ActivationAssociation {
 	a := ActivationAssociation{ID: agreement.ID, PSKCommitment: sha256.Sum256(agreement.PresharedKey[:])}
+	a.RoutingCommitment, _ = RoutingCommitment(agreement.RelayServiceURL, agreement.ServerEndpoint)
 	if state.role == Inviter {
 		a.InviterIdentity, a.JoinerIdentity = state.local, state.peer
 		a.InviterNode, a.JoinerNode = agreement.LocalNode, agreement.PeerNode

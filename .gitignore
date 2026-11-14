@@ -1,6 +1,18 @@
 node_modules/
 frontend/node_modules/
 .local/
+# Public Markdown is opt-in. Development/session notes belong under .local/docs/.
+/*.md
+!/README.md
+!/SECURITY.md
+!/THIRD_PARTY_NOTICES.md
+!/CHANGELOG.md
+/docs/*
+!/docs/privacy.md
+!/docs/linux-support.md
+!/docs/versioning.md
+/notes/
+/dev-notes/
 artifacts/
 build/bin/
 build/tools/

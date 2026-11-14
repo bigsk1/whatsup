@@ -52,23 +52,30 @@ type completionStore interface {
 
 // Options selects the reviewed coordinator stage; it is not a permission proof.
 // Completed activation still requires both TLS and durable one-shot receipts.
-type Options struct{ CompleteActivation bool }
+type Options struct {
+	CompleteActivation bool
+	// OnCompleted belongs to this exact runtime generation. It runs after
+	// invitation retirement and durable local approval, outside our guards,
+	// and is joined by Close. It must never acquire the owning Service mutex.
+	OnCompleted func(contactID string)
+}
 
 // Copies share closure and request ownership; value formatting never traverses
 // locks, identities, stores or pending credentials.
 type Coordinator struct{ *coordinatorState }
 
 type coordinatorState struct {
-	mu       sync.Mutex
-	local    *identity.Identity
-	store    Store
-	current  *attempt
-	status   Snapshot
-	closed   bool
-	complete bool
-	active   []activeContact
-	runs     sync.WaitGroup
-	actions  sync.WaitGroup
+	mu          sync.Mutex
+	local       *identity.Identity
+	store       Store
+	current     *attempt
+	status      Snapshot
+	closed      bool
+	complete    bool
+	onCompleted func(string)
+	active      []activeContact
+	runs        sync.WaitGroup
+	actions     sync.WaitGroup
 }
 
 type activeContact struct {
@@ -112,6 +119,7 @@ func New(local *identity.Identity, store Store, options ...Options) (*Coordinato
 	c := &Coordinator{&coordinatorState{local: local, store: store, status: Snapshot{State: "idle"}}}
 	if len(options) != 0 {
 		c.complete = options[0].CompleteActivation
+		c.onCompleted = options[0].OnCompleted
 	}
 	if c.complete {
 		if _, ok := store.(completionStore); !ok {
@@ -195,14 +203,14 @@ func (c *Coordinator) Snapshot() Snapshot {
 // Accept takes ownership of raw and manager, including on failure. Only the
 // reservation callback can select a candidate, before either UI sees a key.
 // The retirement hook may close its underlying listener, never call back here.
-func (c *Coordinator) Accept(ctx context.Context, raw net.Conn, invite pairing.Invite, manager *pairing.Manager) error {
-	return c.run(ctx, raw, invite, manager, channel.Inviter)
+func (c *Coordinator) Accept(ctx context.Context, raw net.Conn, invite pairing.Invite, manager *pairing.Manager, profiles ...*transport.RelayProfile) error {
+	return c.run(ctx, raw, invite, manager, channel.Inviter, profiles...)
 }
 
 // Join uses the exact owner in the parsed invitation. The owner must acknowledge
 // bearer reservation before this endpoint publishes a confirmation request.
-func (c *Coordinator) Join(ctx context.Context, raw net.Conn, invite pairing.Invite) error {
-	return c.run(ctx, raw, invite, nil, channel.Joiner)
+func (c *Coordinator) Join(ctx context.Context, raw net.Conn, invite pairing.Invite, profiles ...*transport.RelayProfile) error {
+	return c.run(ctx, raw, invite, nil, channel.Joiner, profiles...)
 }
 
 func (c *Coordinator) begin(ctx context.Context, raw net.Conn, invite pairing.Invite, manager *pairing.Manager, role channel.Role) (*attempt, error) {
@@ -231,7 +239,7 @@ func (c *Coordinator) begin(ctx context.Context, raw net.Conn, invite pairing.In
 		return reject()
 	}
 	c.mu.Lock()
-	if c.closed || c.current != nil {
+	if c.closed || c.current != nil || len(c.active) != 0 {
 		c.mu.Unlock()
 		return reject()
 	}
@@ -285,7 +293,16 @@ func (c *Coordinator) setState(a *attempt, state string) bool {
 	return true
 }
 
-func (c *Coordinator) run(ctx context.Context, raw net.Conn, invite pairing.Invite, manager *pairing.Manager, role channel.Role) (runErr error) {
+func (c *Coordinator) run(ctx context.Context, raw net.Conn, invite pairing.Invite, manager *pairing.Manager, role channel.Role, profiles ...*transport.RelayProfile) (runErr error) {
+	if len(profiles) > 1 || len(profiles) == 1 && !profiles[0].Ready() {
+		if raw != nil {
+			_ = raw.Close()
+		}
+		if manager != nil {
+			_ = manager.Close()
+		}
+		return ErrUnavailable
+	}
 	a, err := c.begin(ctx, raw, invite, manager, role)
 	if err != nil {
 		return err
@@ -294,7 +311,12 @@ func (c *Coordinator) run(ctx context.Context, raw net.Conn, invite pairing.Invi
 	defer func() {
 		a.closeOwned()
 		stop()
-		c.finish(a, runErr)
+		if runErr == nil && a.closeErr != nil {
+			runErr = a.closeErr
+		}
+		if id := c.finish(a, runErr); id != "" {
+			c.notifyCompleted(id)
+		}
 		close(a.done)
 		c.runs.Done()
 	}()
@@ -337,7 +359,7 @@ func (c *Coordinator) run(ctx context.Context, raw net.Conn, invite pairing.Invi
 		}
 		a.saved = true
 		return a.ctx.Err()
-	})
+	}, profiles...)
 	if err != nil {
 		return ErrProtocol
 	}
@@ -378,8 +400,27 @@ func (c *Coordinator) run(ctx context.Context, raw net.Conn, invite pairing.Invi
 			a.revokeActive()
 			return ErrProtocol
 		}
+		if record.Version == 2 {
+			store, ok := c.store.(interface {
+				ApproveCommittedConversation(storage.PendingRecord, storage.ApprovedContact) error
+			})
+			if !ok || store.ApproveCommittedConversation(record, a.contact) != nil || a.ctx.Err() != nil {
+				a.revokeActive()
+				return ErrStore
+			}
+		}
 	}
 	return nil
+}
+
+func (c *Coordinator) notifyCompleted(id string) {
+	c.mu.Lock()
+	callback := c.onCompleted
+	valid := !c.closed && c.complete && id != ""
+	c.mu.Unlock()
+	if valid && callback != nil {
+		callback(id)
+	}
 }
 
 func (a *attempt) revokeActive() {
@@ -391,28 +432,28 @@ func (a *attempt) revokeActive() {
 	}
 }
 
-func (c *Coordinator) finish(a *attempt, runErr error) {
+func (c *Coordinator) finish(a *attempt, runErr error) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.current != a {
-		return
+		return ""
 	}
 	expires := a.invite.ExpiresAt()
 	a.invite = pairing.Invite{} // Retain no known bearer copy in saved pending UI state.
 	if c.closed {
 		a.revokeActive()
 		c.status = Snapshot{State: "unavailable"}
-		return
+		return ""
 	}
 	if a.explicitDeny {
 		a.revokeActive()
 		c.status = Snapshot{State: "canceled"}
-		return
+		return ""
 	}
 	if runErr == nil && a.credentials != nil && a.contact != nil {
 		c.active = append(c.active, activeContact{contact: a.contact, credentials: a.credentials})
 		c.status, c.current = Snapshot{State: "completed"}, nil
-		return
+		return a.pendingID
 	}
 	if a.saved {
 		// Even a lost remote ACK leaves an inert record to reconcile/discard.
@@ -422,7 +463,7 @@ func (c *Coordinator) finish(a *attempt, runErr error) {
 		if a.committed {
 			c.status.State = "reconnect-required"
 		}
-		return
+		return ""
 	}
 	state := "failed"
 	if !time.Now().Before(expires) {
@@ -432,6 +473,7 @@ func (c *Coordinator) finish(a *attempt, runErr error) {
 		state = "idle"
 	}
 	c.status, c.current = Snapshot{State: state}, nil
+	return ""
 }
 
 // Approve records one explicit decision and returns promptly. The bounded

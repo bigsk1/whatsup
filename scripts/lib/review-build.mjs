@@ -57,10 +57,10 @@ function toolVersions(toolchain) {
 }
 
 function validationEvidence(validation = {}) {
-  const { componentChecks = 'not-run-for-this-snapshot', advisoryGate = 'not-run-for-this-snapshot', nativeUI = 'pending-owner-review' } = validation;
+  const { componentChecks = 'not-run-for-this-snapshot', advisoryGate = 'not-run-for-this-snapshot', nativeUI = 'not-run' } = validation;
   if (!['not-run-for-this-snapshot', 'passed'].includes(componentChecks)
       || !['not-run-for-this-snapshot', 'failed', 'failed-known-advisory', 'passed'].includes(advisoryGate)
-      || !['pending-owner-review', 'owner-reported-pass'].includes(nativeUI)) {
+      || !['not-run', 'reported-pass'].includes(nativeUI)) {
     throw new Error('Unsupported development validation evidence');
   }
   return { componentChecks, advisoryGate, nativeUI };
@@ -137,7 +137,7 @@ export async function archiveReviewBuild({
     limitations: [
       'Private unsigned development candidate; not an installer or approved release.',
       'Readiness, signing, SBOM and signed-update gates remain independent and closed.',
-      'A review snapshot does not establish live transport or native UI verification; consult its validation scope and docs/status.md.',
+      'A review snapshot does not establish live transport or native UI verification; consult its recorded validation scope.',
       'Checksums detect changed bytes; they are not release signatures.',
     ],
     files: [{ name: binaryName, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }],

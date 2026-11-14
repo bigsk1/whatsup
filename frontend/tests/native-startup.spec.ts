@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
 import { unavailablePairing } from '../src/lib/pairing';
+import { unavailableConversation } from '../src/lib/messaging';
 
 type Platform = 'windows' | 'linux';
 type Operation = 'GetStatus' | 'UnlockStorage' | 'LockStorage';
@@ -20,6 +21,19 @@ const pairingBinding = readFileSync(
 if (!pairingBinding)
   throw new Error('Missing generated pairing status binding');
 const pairingStatusID = Number(pairingBinding[1]);
+const conversationBinding = readFileSync(
+  new URL('../bindings/whatsup/internal/desktop/service.ts', import.meta.url),
+  'utf8',
+).match(/export function GetConversation\([\s\S]*?\$Call\.ByID\((\d+)/);
+if (!conversationBinding)
+  throw new Error('Missing generated conversation status binding');
+const conversationStatusID = Number(conversationBinding[1]);
+const profileBinding = readFileSync(
+  new URL('../bindings/whatsup/internal/desktop/service.ts', import.meta.url),
+  'utf8',
+).match(/export function GetProfile\([\s\S]*?\$Call\.ByID\((\d+)/);
+if (!profileBinding) throw new Error('Missing generated profile binding');
+const profileID = Number(profileBinding[1]);
 
 function injectRuntime(platform: Platform) {
   const host = window as Window & {
@@ -41,7 +55,24 @@ async function syntheticDesktop(page: Page, failFirstStatus = false) {
   await page.route('**/wails/runtime', async (route) => {
     const request = route.request();
     const body = request.postDataJSON();
-    // Pairing polling is separate from these storage/lifecycle assertions.
+    if (body.args?.methodID === profileID) {
+      await route.fulfill({
+        json: { displayName: '', shareDisplayName: false },
+      });
+      return;
+    }
+    // Conversation/pairing polling are separate from storage lifecycle assertions.
+    if (
+      request.method() === 'POST' &&
+      body.object === 0 &&
+      body.method === 0 &&
+      body.args?.methodID === conversationStatusID
+    ) {
+      await route.fulfill({
+        json: { ...unavailableConversation, state: 'none' },
+      });
+      return;
+    }
     if (
       request.method() === 'POST' &&
       body.object === 0 &&
@@ -94,9 +125,12 @@ for (const platform of ['windows', 'linux'] as const) {
     await page
       .getByRole('button', { name: 'Open settings', exact: true })
       .click();
-    const dialog = page.getByRole('dialog', { name: 'Settings', exact: true });
+    const dialog = page.getByRole('region', { name: 'Settings', exact: true });
+    await dialog
+      .getByRole('button', { name: 'Privacy & diagnostics', exact: true })
+      .click();
     await expect(
-      dialog.getByRole('button', { name: 'Unlock storage' }),
+      dialog.getByRole('button', { name: 'Unlock and connect' }),
     ).toBeDisabled();
 
     // An empty runtime object and an early/spurious event must grant no actions
@@ -106,17 +140,19 @@ for (const platform of ['windows', 'linux'] as const) {
       window.dispatchEvent(new Event('wails:runtime-config-ready'));
     });
     await expect(
-      dialog.getByRole('button', { name: 'Unlock storage' }),
+      dialog.getByRole('button', { name: 'Unlock and connect' }),
     ).toBeDisabled();
     expect(calls).toEqual([]);
 
     await page.evaluate(injectRuntime, platform);
-    await expect(page.getByText('Desktop development build')).toBeVisible();
+    await expect(
+      dialog.getByRole('button', { name: 'Unlock and connect' }),
+    ).toBeEnabled();
     await expect(
       dialog.getByText('Locked on this device', { exact: true }),
     ).toBeVisible();
     await expect(
-      dialog.getByRole('button', { name: 'Unlock storage' }),
+      dialog.getByRole('button', { name: 'Unlock and connect' }),
     ).toBeEnabled();
     expect(calls).toEqual(['GetStatus']);
 
@@ -124,14 +160,14 @@ for (const platform of ['windows', 'linux'] as const) {
       for (let index = 0; index < 3; index++)
         window.dispatchEvent(new Event('wails:runtime-config-ready'));
     });
-    await dialog.getByRole('button', { name: 'Unlock storage' }).click();
+    await dialog.getByRole('button', { name: 'Unlock and connect' }).click();
     await expect(
       dialog.getByText('Unlocked on this device', { exact: true }),
     ).toBeVisible();
     await expect(dialog.locator('#identity-fingerprint')).toHaveText(
       'SYNTHETIC-IDENTITY-FINGERPRINT',
     );
-    await dialog.getByRole('button', { name: 'Lock storage' }).click();
+    await dialog.getByRole('button', { name: 'Disconnect and lock' }).click();
     await expect(
       dialog.getByText('Locked on this device', { exact: true }),
     ).toBeVisible();

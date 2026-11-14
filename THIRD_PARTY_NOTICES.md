@@ -54,5 +54,5 @@ records. Apart from the reviewed Tailcat library copy above, their full source i
 not vendored here. Other dependencies retain their own licenses. This source
 notice is not a complete binary license inventory or SBOM. Before distributing binaries, inventory direct
 and transitive dependencies, retain all required copyright/license notices, and
-complete the release gates documented in `docs/development.md`. The current
-development build and this initial Git baseline do not authorize publication.
+complete the distribution requirements described in [security information](SECURITY.md).
+The current preview is unsigned and is not an approved public release.

@@ -1,44 +1,39 @@
-# Application versions and development builds
+# Versions and compatibility
 
-WhatsUp starts at **0.0.1**. Patch numbers provide room for useful test revisions
-without quickly advancing the minor or major version. The initial foundation's
-provisional metadata is corrected to 0.0.1 before this review build is delivered;
-that correction does not rewrite the existing Git baseline or publish a release.
+WhatsUp's current preview series uses versions such as **0.0.6**. A version
+identifies an application revision; it does not certify security, completeness
+or release approval.
 
-Keep these three identifiers separate:
+## Application version and build identifier
 
-| Identifier | Purpose | Example |
-| --- | --- | --- |
-| Application version | A delivered application/test revision | `0.0.1` |
-| Development build ID | The exact rebuild, source revision and dirty state | `20261114T060000000Z-g27e4c4898dbc-dirty` |
-| Storage/protocol schema | Compatibility of persisted state or wire messages | Unchanged by an app rebuild |
+The application version appears in Settings. A separate build identifier
+distinguishes an exact rebuild of the same version. Preview bundles may also
+include checksums and a build manifest.
 
-A timestamp or Git revision belongs in the development build ID and manifest;
-it does not increment the application version. Rebuilding the same test revision,
-rerunning QA, updating documentation, or making an intermediate edit can retain
-the same app version and receive a new build ID. Build IDs never imply release
-approval, signatures or a clean source tree.
+Rebuilding an application or updating documentation does not require a new
+application version. Distinct delivered preview revisions can advance the patch
+number, such as 0.0.6 to 0.0.7. Minor and major versions mark deliberate product
+milestones rather than individual edits.
 
-Use the next patch version, such as **0.0.2**, when delivering a distinct test
-revision that needs to be identified separately from the earlier app revision.
-Do not bump the app version automatically for every feature edit, review pass,
-dependency update, commit or build. Record the reason for a patch increment and
-what changed in the delivered revision. Retain older review builds and their
-checksums instead of overwriting them.
+A build identifier or checksum helps identify a file. Neither replaces a trusted
+release signature.
 
-Minor and major changes are deliberate owner-approved milestones. Do not jump
-to 0.1.0 or 1.0.0 because a development session adds several features. A version
-number does not certify security or completeness. The current 0.0.2 app still
-has live pairing, messaging and release gates closed.
+## Device and data compatibility
 
-The frontend package version is the application-version source of truth. Keep
-the root workspace/lock metadata, Go desktop version, browser fallback version
-and native metadata aligned with it. Windows MSIX uses the corresponding fourth
-numeric component (`0.0.2.0` for 0.0.2); this is packaging metadata, not another app release.
-The dependency-free workflow tests check that alignment. The retained installer
-metadata does not mean installers, signing or release packaging are implemented.
+Use compatible versions on both devices. The 0.0.6 preview requires 0.0.6 on both
+sides for its updated messaging and shared-name connection.
 
-Application version changes do not change dependency/tool pins, the encrypted
-vault format, the OS credential account, or schema numbers. Those changes need
-their own compatibility review. Use the normal frozen build workflow for test
-builds; keep release packaging and publishing behind their existing gates.
+An application version is separate from the format of local encrypted data and
+the network protocol. A newer version may upgrade local data. An older executable
+may then be unable to open it, and replacing the executable alone does not
+downgrade the stored data.
+
+Reconnecting or changing a display name does not change a device's identity.
+Forgetting a contact preserves that device identity but removes its saved
+association and conversation. Creating a new identity produces a new fingerprint.
+
+## Preview status
+
+Signed installers and automatic updates are not available yet. Preview builds
+are unsigned and are not release-approved merely because they have a version
+number or installer metadata.

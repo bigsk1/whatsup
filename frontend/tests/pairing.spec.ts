@@ -2,12 +2,15 @@ import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
 import { unavailablePairing, type PairingStatus } from '../src/lib/pairing';
+import { unavailableConversation } from '../src/lib/messaging';
 
 type Operation =
   | 'GetStatus'
   | 'UnlockStorage'
   | 'LockStorage'
   | 'GetPairingStatus'
+  | 'GetConversation'
+  | 'GetProfile'
   | 'ApprovePairing'
   | 'DenyPairing';
 
@@ -23,6 +26,8 @@ for (const name of [
   'UnlockStorage',
   'LockStorage',
   'GetPairingStatus',
+  'GetConversation',
+  'GetProfile',
   'ApprovePairing',
   'DenyPairing',
 ] as const) {
@@ -105,6 +110,17 @@ async function syntheticPairing(
           identityFingerprint:
             state.storage === 'unlocked' ? localFingerprint : '',
         },
+      });
+      return;
+    }
+    if (operation === 'GetProfile') {
+      await route.fulfill({
+        json: { displayName: '', shareDisplayName: false },
+      });
+      return;
+    } else if (operation === 'GetConversation') {
+      await route.fulfill({
+        json: { ...unavailableConversation, state: 'none' },
       });
       return;
     }
@@ -323,11 +339,14 @@ test('locking storage ignores an in-flight request and stops polling', async ({
     });
   await expect.poll(() => held).toBe(true);
   await page.keyboard.press('Control+,');
-  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
   await expect(settings).toBeVisible();
-  await settings.getByRole('button', { name: 'Lock storage' }).click();
+  await settings
+    .getByRole('button', { name: 'Privacy & diagnostics', exact: true })
+    .click();
+  await settings.getByRole('button', { name: 'Disconnect and lock' }).click();
   await expect(
-    page.getByText('Local storage locked', { exact: true }),
+    settings.getByText('Locked on this device', { exact: true }),
   ).toBeVisible();
   release();
   await page.waitForTimeout(100);
@@ -341,9 +360,9 @@ test('locking storage ignores an in-flight request and stops polling', async ({
   expect(
     calls.filter((call) => call.operation === 'GetPairingStatus'),
   ).toHaveLength(count);
-  await settings.getByRole('button', { name: 'Unlock storage' }).click();
+  await settings.getByRole('button', { name: 'Unlock and connect' }).click();
   await expect(
-    page.getByText('Local storage unlocked', { exact: true }),
+    settings.getByText('Unlocked on this device', { exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole('dialog', { name: 'Pairing request' }),
@@ -407,7 +426,7 @@ test('completed pairing closes approval and reports approval without messaging r
   ).toBeVisible();
   state.pairing = { ...unavailablePairing, state: 'completed' };
   await expect(
-    page.getByText('Contact approved. Messaging is not ready yet.', {
+    page.getByText('Contact approved. Waiting for the saved conversation.', {
       exact: true,
     }),
   ).toBeVisible();
@@ -431,10 +450,7 @@ test('restored committed setup requires reconnection and offers inert discard on
   });
   await page.goto('/');
   await expect(
-    page.getByText(
-      'Contact approved. Reconnection and messaging are not ready in this build.',
-      { exact: false },
-    ),
+    page.getByText('This saved setup cannot reconnect yet.', { exact: false }),
   ).toBeVisible();
   await expect(
     page.getByRole('dialog', { name: 'Pairing request' }),

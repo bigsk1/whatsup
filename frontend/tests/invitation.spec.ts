@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
+import { unavailableConversation } from '../src/lib/messaging';
 import {
   unavailablePairing,
   type InvitationShare,
@@ -12,6 +13,8 @@ type Operation =
   | 'UnlockStorage'
   | 'LockStorage'
   | 'GetPairingStatus'
+  | 'GetConversation'
+  | 'GetProfile'
   | 'ApprovePairing'
   | 'DenyPairing'
   | 'CreateInvitation'
@@ -28,6 +31,8 @@ for (const name of [
   'UnlockStorage',
   'LockStorage',
   'GetPairingStatus',
+  'GetConversation',
+  'GetProfile',
   'ApprovePairing',
   'DenyPairing',
   'CreateInvitation',
@@ -42,6 +47,7 @@ for (const name of [
 }
 
 const relayURL = 'https://relay.example.invalid/map.json';
+const publicRelayMap = 'https://tailcat.dev/derpmap.json';
 // Deliberately synthetic bearer text. This exercises UI transport only and is
 // not a valid Go invitation or evidence of an actual public service connection.
 const privateLink =
@@ -116,6 +122,15 @@ async function syntheticInvitations(page: Page, storage = 'unlocked') {
             state.storage === 'unlocked' ? 'a'.repeat(64) : '',
           pairingAvailable: state.storage === 'unlocked',
         },
+      });
+    } else if (operation === 'GetProfile') {
+      await route.fulfill({
+        json: { displayName: '', shareDisplayName: false },
+      });
+      return;
+    } else if (operation === 'GetConversation') {
+      await route.fulfill({
+        json: { ...unavailableConversation, state: 'none' },
       });
     } else if (operation === 'GetPairingStatus') {
       await route.fulfill({ json: state.pairing });
@@ -238,6 +253,97 @@ test('private link is shared only on explicit creation and copied only on explic
   expect(errors).toEqual([]);
 });
 
+test('the public Tailcat relay URL is copied only explicitly without selecting it or connecting', async ({
+  page,
+}) => {
+  const { calls, errors, external } = await syntheticInvitations(page);
+  await page.goto('/');
+  const dialog = await openDialog(page);
+  await expect(dialog.getByText(publicRelayMap, { exact: true })).toBeVisible();
+  await expect(dialog).toContainText('Tailcat public relay map · best effort');
+  await expect(dialog).toContainText('Its operator sees your IP address');
+  expect(
+    await page.evaluate(
+      () => (window as Window & { testClipboard?: string[] }).testClipboard,
+    ),
+  ).toEqual([]);
+  for (const mode of ['create', 'join'] as const) {
+    if (mode === 'join') {
+      await dialog
+        .getByRole('radio', { name: 'Paste invitation', exact: true })
+        .check();
+      await dialog
+        .getByLabel('Private invitation', { exact: true })
+        .fill(privateLink);
+    }
+    await dialog
+      .getByRole('button', { name: 'Copy relay URL', exact: true })
+      .click();
+    await expect(dialog.getByRole('status')).toContainText(
+      'Public relay URL copied.',
+    );
+    await expect(dialog.getByLabel('Connection service HTTPS URL')).toHaveValue(
+      '',
+    );
+    await expect(dialog.getByRole('checkbox')).not.toBeChecked();
+    await expect(
+      dialog.getByRole('button', {
+        name:
+          mode === 'create'
+            ? 'Create private invitation'
+            : 'Open private invitation',
+        exact: true,
+      }),
+    ).toBeDisabled();
+  }
+  expect(
+    await page.evaluate(
+      () => (window as Window & { testClipboard?: string[] }).testClipboard,
+    ),
+  ).toEqual([publicRelayMap, publicRelayMap]);
+  expect(
+    calls.filter((call) =>
+      ['CreateInvitation', 'JoinInvitation'].includes(call.operation),
+    ),
+  ).toEqual([]);
+  expect(external).toEqual([]);
+  expect(await page.evaluate(() => ({ ...localStorage }))).toEqual({});
+  expect(errors).toEqual([]);
+});
+
+test('a failed public relay URL copy shows a fixed local notice and keeps consent unchanged', async ({
+  page,
+}) => {
+  const { calls, errors, external } = await syntheticInvitations(page);
+  await page.goto('/');
+  const dialog = await openDialog(page);
+  await page.evaluate(() => {
+    navigator.clipboard.writeText = async () => {
+      throw new Error('SYNTHETIC-PRIVATE-CLIPBOARD-DETAIL');
+    };
+  });
+  await dialog
+    .getByRole('button', { name: 'Copy relay URL', exact: true })
+    .click();
+  await expect(dialog.getByRole('status')).toHaveText(
+    'Copy is unavailable. Select the public relay URL and copy it.',
+  );
+  await expect(dialog.getByLabel('Connection service HTTPS URL')).toHaveValue(
+    '',
+  );
+  await expect(dialog.getByRole('checkbox')).not.toBeChecked();
+  await expect(
+    dialog.getByText('SYNTHETIC-PRIVATE-CLIPBOARD-DETAIL'),
+  ).toHaveCount(0);
+  expect(
+    calls.filter((call) =>
+      ['CreateInvitation', 'JoinInvitation'].includes(call.operation),
+    ),
+  ).toEqual([]);
+  expect(external).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
 test('joining requires consent, clears pasted bearer and hands reservation to the approval popup', async ({
   page,
 }) => {
@@ -320,18 +426,23 @@ test('locking storage clears a late-created bearer and prevents it reappearing a
     .poll(() => calls.some((call) => call.operation === 'CreateInvitation'))
     .toBe(true);
   await page.keyboard.press('Control+,');
-  const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
-  await settings.getByRole('button', { name: 'Lock storage' }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings
+    .getByRole('button', { name: 'Privacy & diagnostics', exact: true })
+    .click();
+  await settings.getByRole('button', { name: 'Disconnect and lock' }).click();
   await expect(
-    page.getByText('Local storage locked', { exact: true }),
+    settings.getByText('Locked on this device', { exact: true }),
   ).toBeVisible();
   release();
-  await settings.getByRole('button', { name: 'Unlock storage' }).click();
+  await settings.getByRole('button', { name: 'Unlock and connect' }).click();
   await expect(
     page.getByRole('dialog', { name: 'Share your invitation' }),
   ).toHaveCount(0);
   await expect(page.getByLabel('Private invitation link')).toHaveCount(0);
-  await settings.getByRole('button', { name: 'Done', exact: true }).click();
+  await settings
+    .getByRole('button', { name: 'Back to chats', exact: true })
+    .click();
   const again = await openDialog(page);
   await expect(again.getByLabel('Connection service HTTPS URL')).toHaveValue(
     '',

@@ -232,18 +232,21 @@ func (r *CommitReceipt) CancelAfterRevocation(revoke func()) error {
 		copy(next.CommittedContacts[index:], next.CommittedContacts[index+1:])
 		clear(next.CommittedContacts[len(next.CommittedContacts)-1:])
 		next.CommittedContacts = next.CommittedContacts[:len(next.CommittedContacts)-1]
+		a.removeConversationLocked(&next, record.ID)
 		if err := a.commitLocked(next); err != nil {
 			return err
 		}
 		delete(a.commitReceipts, record.ID)
+		delete(a.localReceipts, record.ID)
 		return nil
 	}
 	return ErrCommitted
 }
 
 // RemoveCommittedContact supports explicit discard of inert or canceled setup.
-// It does not remove history. A receipt already consumed for live activation
-// requires separate runtime revocation orchestration and cannot be discarded here.
+// It also deletes only this exact contact-ID conversation, if present; unrelated
+// and legacy history is preserved. The owner must stop runtime users first. A
+// consumed pairing receipt requires separate revocation orchestration here.
 func (a *ApplicationState) RemoveCommittedContact(id string) error {
 	if a == nil || a.vault == nil || !pendingIDValid(id) {
 		return ErrCommitted
@@ -264,10 +267,12 @@ func (a *ApplicationState) RemoveCommittedContact(id string) error {
 		copy(next.CommittedContacts[index:], next.CommittedContacts[index+1:])
 		clear(next.CommittedContacts[len(next.CommittedContacts)-1:])
 		next.CommittedContacts = next.CommittedContacts[:len(next.CommittedContacts)-1]
+		a.removeConversationLocked(&next, id)
 		if err := a.commitLocked(next); err != nil {
 			return err
 		}
 		delete(a.commitReceipts, id)
+		delete(a.localReceipts, id)
 		return nil
 	}
 	return nil

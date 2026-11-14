@@ -9,6 +9,7 @@
     error,
     onapprove,
     ondeny,
+    suspended = false,
   }: {
     status: PairingStatus;
     busy: boolean;
@@ -16,6 +17,7 @@
     error: string;
     onapprove: (requestID: string, fingerprint: string) => void;
     ondeny: (requestID: string) => void;
+    suspended?: boolean;
   } = $props();
   let dialog = $state<HTMLDialogElement>();
   let denyButton = $state<HTMLButtonElement>();
@@ -23,6 +25,10 @@
 
   $effect(() => {
     if (!dialog) return;
+    if (suspended) {
+      if (dialog.open) dialog.close();
+      return;
+    }
     const identityAvailable = hasPairingIdentity(status);
     if (status.state === 'awaiting-approval') {
       const firstPresentation = presentedRequest !== status.requestID;
@@ -83,9 +89,8 @@
       </p>
     {:else if status.state === 'reconnect-required'}
       <p id="pairing-description" role="status">
-        This contact was approved, but reconnection and messaging are not
-        available in this build. You can discard its saved setup to use a new
-        invitation.
+        This contact was approved, but its saved setup cannot reconnect yet. You
+        can discard this setup to use a new invitation.
       </p>
     {:else}
       <p id="pairing-description" role="status">

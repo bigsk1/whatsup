@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,10 +12,66 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tailscale/tailcat"
+
 	"whatsup/internal/identity"
 	"whatsup/internal/pairing/channel"
 	"whatsup/internal/storage"
 )
+
+func TestPendingRouteUsesExactApprovedServiceAndOfflineStableEndpoint(t *testing.T) {
+	sr, cr, sa, ca := pendingProofs(t)
+	profile := reviewedTestProfile(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	type result struct {
+		pending *PendingCredentials
+		err     error
+	}
+	done := make(chan result, 1)
+	var ownerSaved, joinerSaved storage.PendingRecord
+	go func() {
+		pending, err := ExchangePending(ctx, sr, sa, func(record storage.PendingRecord) error { ownerSaved = record; return nil }, profile)
+		done <- result{pending, err}
+	}()
+	joined, err := ExchangePending(ctx, cr, ca, func(record storage.PendingRecord) error { joinerSaved = record; return nil }, profile)
+	owner := <-done
+	if err != nil || owner.err != nil || joined == nil || owner.pending == nil {
+		t.Fatal("approved route did not exchange")
+	}
+	defer joined.Revoke()
+	defer owner.pending.Revoke()
+	for _, record := range []storage.PendingRecord{ownerSaved, joinerSaved} {
+		if record.Version != 2 || storage.ValidatePendingRecord(record) != nil || record.RelayServiceURL != profile.state.source || !record.RelayFallbackConsent || record.ServerEndpoint == "" || record.ServerEndpoint != ownerSaved.ServerEndpoint {
+			t.Fatal("pending records did not preserve the same approved operator and endpoint")
+		}
+	}
+	ci, err := tailcat.ParseAddr(tailcat.Addr(ownerSaved.ServerEndpoint))
+	if err != nil || len(ci.Region) != 0 || ci.RegionID != profile.state.defaultRegion || ci.ServerPublic.String() != ownerSaved.LocalNode || ci.ServerPublic.String() != joinerSaved.PeerNode || ci.ServerDiscoPublic.IsZero() || base64.RawURLEncoding.EncodeToString(ci.PresharedKey[:]) != ownerSaved.PresharedKey {
+		t.Fatal("offline endpoint replaced the single ongoing node/PSK bundle")
+	}
+}
+
+func TestPendingRouteRejectsDifferentLocallySelectedProviderBeforeSave(t *testing.T) {
+	sr, cr, sa, ca := pendingProofs(t)
+	ownerProfile := reviewedTestProfile(t)
+	joinerProfile, err := reviewedRelayProfile(context.Background(), "https://different.example/map", testRelayModel(), syntheticResolver)
+	if err != nil {
+		t.Fatal("could not create second disposable provider")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	var writes atomic.Int32
+	persist := func(storage.PendingRecord) error { writes.Add(1); return nil }
+	done := make(chan error, 1)
+	go func() { _, err := ExchangePending(ctx, sr, sa, persist, ownerProfile); done <- err }()
+	if pending, err := ExchangePending(ctx, cr, ca, persist, joinerProfile); pending != nil || err == nil {
+		t.Fatal("joiner accepted a different provider")
+	}
+	if <-done == nil || writes.Load() != 0 {
+		t.Fatal("provider mismatch reached encrypted persistence")
+	}
+}
 
 func pendingProofs(t *testing.T) (*channel.Reservation, *channel.Reservation, *channel.Approval, *channel.Approval) {
 	t.Helper()

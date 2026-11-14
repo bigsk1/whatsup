@@ -6,12 +6,15 @@ import (
 	"errors"
 	"sync"
 
+	"whatsup/internal/chat"
 	"whatsup/internal/diagnostics"
+	"whatsup/internal/identity"
+	"whatsup/internal/messaging"
 	"whatsup/internal/pairflow"
 	"whatsup/internal/storage"
 )
 
-const Version = "0.0.3"
+const Version = "0.0.6"
 
 type Status struct {
 	Version              string `json:"version"`
@@ -32,6 +35,7 @@ type Service struct {
 	application *storage.ApplicationState
 	pairing     *pairflow.Coordinator
 	invitations *invitationControl
+	messages    *messaging.Manager
 	fingerprint string
 	state       string
 	record      func(diagnostics.Event)
@@ -46,7 +50,15 @@ func New(directory string, keys storage.KeyStore, listeners ...func(diagnostics.
 }
 
 func (s *Service) status() Status {
-	return Status{Version: Version, IdentityFingerprint: s.fingerprint, StorageState: s.state, NetworkState: "unavailable", PairingAvailable: s.state == "unlocked" && s.invitations != nil}
+	status := Status{Version: Version, IdentityFingerprint: s.fingerprint, StorageState: s.state, NetworkState: "unavailable", PairingAvailable: s.state == "unlocked" && s.invitations != nil}
+	if s.state == "unlocked" && s.messages != nil {
+		conversation := s.messages.Snapshot()
+		status.MessagingAvailable = conversation.CanSend
+		if conversation.ContactID != "" {
+			status.NetworkState = conversation.State
+		}
+	}
+	return status
 }
 
 func (s *Service) GetStatus() Status {
@@ -55,8 +67,29 @@ func (s *Service) GetStatus() Status {
 	return s.status()
 }
 
-// UnlockStorage opens OS-protected local identity state. It starts no listener,
-// emits no invitation, and does not claim an available messaging capability.
+// makeControllers binds automatic post-pairing connection to one exact open
+// runtime generation. A late completion cannot select a replacement manager.
+// The callback never enters Service.mu: Lock/Forget hold that mutex while
+// joining the pairing run, and close messages before doing so.
+func makeControllers(local *identity.Identity, app *storage.ApplicationState) (*messaging.Manager, *pairflow.Coordinator, *invitationControl, error) {
+	messages, err := messaging.New(local, app)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	flow, err := pairflow.New(local, app, pairflow.Options{
+		CompleteActivation: true,
+		OnCompleted:        func(id string) { _, _ = messages.Connect(id) },
+	})
+	if err != nil {
+		messages.Close()
+		return nil, nil, nil, err
+	}
+	return messages, flow, newInvitationControl(local, flow), nil
+}
+
+// UnlockStorage opens OS-protected local identity and approved local chat state.
+// It starts no listener or connection and emits no invitation. Offline queueing
+// is independent of the fresh authentication required by each live session.
 func (s *Service) UnlockStorage() (Status, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -93,7 +126,7 @@ func (s *Service) UnlockStorage() (Status, error) {
 	if err != nil {
 		return fail()
 	}
-	pairing, err := pairflow.New(local, application, pairflow.Options{CompleteActivation: true})
+	messages, pairing, invitations, err := makeControllers(local, application)
 	if err != nil {
 		return fail()
 	}
@@ -101,7 +134,8 @@ func (s *Service) UnlockStorage() (Status, error) {
 	s.vault = vault
 	s.application = application
 	s.pairing = pairing
-	s.invitations = newInvitationControl(local, pairing)
+	s.invitations = invitations
+	s.messages = messages
 	s.state = "unlocked"
 	s.record(diagnostics.StorageUnlocked)
 	return s.status(), nil
@@ -110,6 +144,10 @@ func (s *Service) UnlockStorage() (Status, error) {
 func (s *Service) LockStorage() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.messages != nil {
+		s.messages.Close()
+		s.messages = nil
+	}
 	if s.invitations != nil {
 		s.invitations.close()
 		s.invitations = nil
@@ -138,6 +176,55 @@ func (s *Service) LockStorage() Status {
 	return s.status()
 }
 
+func unavailableConversation() messaging.Snapshot {
+	return messaging.Snapshot{State: "unavailable", Messages: []chat.Message{}}
+}
+
+// GetConversation returns only the selected contact's bounded local history.
+// Polling never starts transport or chooses a relay service.
+func (s *Service) GetConversation() messaging.Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != "unlocked" || s.messages == nil {
+		return unavailableConversation()
+	}
+	return s.messages.Snapshot()
+}
+
+// ConnectContact starts automatic authentication/retry for an already approved
+// identity. It never creates an invitation or requests fingerprint approval.
+func (s *Service) ConnectContact(contactID string) (messaging.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != "unlocked" || s.messages == nil {
+		return unavailableConversation(), errors.New("Unlock local storage before connecting")
+	}
+	if s.pairing != nil {
+		state := s.pairing.Snapshot().State
+		if state == "connecting" || state == "awaiting-approval" || state == "waiting-for-peer" || state == "saving" {
+			return s.messages.Snapshot(), errors.New("Finish the current pairing before connecting")
+		}
+	}
+	status, err := s.messages.Connect(contactID)
+	if err != nil {
+		return status, errors.New("This approved contact could not be connected. Disconnect and unlock before retrying.")
+	}
+	return status, nil
+}
+
+func (s *Service) SendMessage(contactID, text string) (messaging.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != "unlocked" || s.messages == nil {
+		return unavailableConversation(), errors.New("Unlock local storage before sending")
+	}
+	status, err := s.messages.Send(contactID, text)
+	if err != nil {
+		return status, errors.New("The message could not be saved. Check its size and text, or disconnect and unlock before retrying.")
+	}
+	return status, nil
+}
+
 func (s *Service) GetPairingStatus() pairflow.Snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -150,8 +237,9 @@ func (s *Service) GetPairingStatus() pairflow.Snapshot {
 	return s.pairing.Snapshot()
 }
 
-// ApprovePairing confirms only the current reserved identity. It neither opens
-// a listener nor returns credentials, contact authority or history access.
+// ApprovePairing confirms the current reserved identity. It returns public state
+// only; successful reciprocal durable completion later starts this generation's
+// saved connection through the coordinator callback.
 func (s *Service) ApprovePairing(requestID, peerFingerprint string) (pairflow.Snapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

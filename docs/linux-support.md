@@ -1,94 +1,86 @@
-# Linux runtime and installation support
+# Linux support
 
-The Linux app uses GTK4, WebKitGTK 6, GLib 2.72 or newer, the distribution's
-supported native libraries and a working desktop Secret Service. A desktop display
-session is needed for GUI operation. WSL builds and backend tests remain headless.
-An arbitrary Linux desktop or a successful `ldd` run is not a supported-runtime
-claim. Native startup also depends on sandbox policy, graphics and session services.
+The Linux preview currently targets Ubuntu 24.04 on x86-64. Other distributions,
+architectures, desktop sessions and graphics stacks are not yet validated.
 
-## Current evidence and support targets
+## Requirements
 
-| Environment | Evidence |
-| --- | --- |
-| Ubuntu 24.04 x86-64 WSL development | Builds, component/race tests, private WebKit profile tests and a local renderer/JavaScript smoke check. This is not VM desktop QA. |
-| Ubuntu 24.04 x86-64 VMware Desktop | Scoped root installation and real renderer/local-JavaScript preflight pass with global restrictions enabled. Secret Service and profile tests pass separately. The owner confirms 0.0.2 opens, unlocks and preserves identity across lock/quit/reopen/unlock in software-rendering mode. |
-| Other distributions, architectures and desktop sessions | Not yet verified. Add native dependency/policy integration and X11/Wayland/graphics/storage tests before claiming support. |
+WhatsUp needs:
 
-Broader distribution requires repeatable builds against a chosen compatibility
-baseline, declared runtime dependencies and distribution-appropriate installation.
-Flatpak is a possible future runtime strategy, with separate review of permissions,
-Secret Service and nested sandboxing. No universal package or Flatpak release is
-implemented here.
+- A graphical desktop session.
+- GTK4, WebKitGTK 6 and GLib 2.72 or newer.
+- A working, unlocked desktop Secret Service for the local encryption key.
+- Host policy that permits WebKit to create its sandboxed processes.
 
-## Restricted user namespaces
+On Ubuntu, the runtime library packages include libgtk-4-1 and
+libwebkitgtk-6.0-4. Installing WebKit libraries alone does not provide an unlocked
+Secret Service session.
 
-Ubuntu 24.04 restricts capabilities inside user namespaces created by otherwise
-unconfined programs. WebKit uses Bubblewrap and a D-Bus proxy to construct its
-sandbox. A raw user-directory executable without the appropriate profile can fail
-with `bwrap: setting up uid map: Permission denied`, followed by a native abort.
+Running a supplied preview executable does not require Go, Node.js, a development
+server or a separate browser.
 
-The supported compatibility approach is an application-specific AppArmor profile
-with `flags=(unconfined)` and the `userns,` permission. The development installer
-attaches it only to root-owned, stable executable paths:
+## Install a supplied preview bundle
 
-```text
-/opt/whatsup-development/whatsup
-/opt/whatsup-development/whatsup-webview-check
-```
+From the supplied preview bundle, run its setup command in your normal graphical
+desktop terminal. For a bundle containing the Linux integration directory:
 
-This grants the namespace permission needed by WebKit's own sandbox. It is not a
-complete AppArmor confinement policy for the Go application. Global namespace
-restrictions stay enabled. There is no profile for the general `/usr/bin/bwrap`
-tool, no user-writable wildcard, no setuid/capability grant and no dangerous
-WebKit sandbox-disable environment flag.
+    bash linux-integration/scripts/enable-linux-review.sh
 
-The installer requires administrator authentication, validates the selected
-development bundle and hashes, retains immutable version copies and loads the
-specific compatibility profile when required. It never launches an app as root or
-touches a user's vault, keyring, cache or history. User launchers are updated by
-the subsequent unprivileged handoff. This integration does not open release gates.
-Before sudo, the desktop-user wrapper stages the selected files in a private
-directory on local `/var/tmp` and validates them again. User-mounted VMware/FUSE
-shares can deny root access even when the desktop user can read them; staging
-avoids changing mount permissions. A retry can reuse an existing immutable
-archive only when all declared files and hashes match. Different bytes are refused.
+Setup asks for administrator authentication when installing the executable and
+its scoped sandbox compatibility policy. It runs the renderer check as the
+desktop user, then creates the application-menu entry. It does not launch WhatsUp
+as root or delete local identity, credentials or conversation data.
 
-The unprivileged launcher helper installs `whatsup.desktop` to match the existing
-GTK application name, while retaining the previous development ID as a hidden
-alias. Optional desktop and GNOME dock shortcuts are user preferences, not global
-system changes. The standard menu launcher uses the installed executable directly
-with `Terminal=false`; running a review build needs no development server. The
-setup helpers require Python 3, desktop-file-utils and xdg-utils; GNOME shortcut
-integration additionally uses the session's GIO/GSettings tools. Other desktops
-can use the standard menu entry without GNOME dock integration.
+The optional setup flags **--desktop-shortcut** and **--pin-to-dock** create a
+desktop shortcut and a GNOME dock entry. Other dock entries are preserved. Other
+desktop environments can use the standard application-menu entry.
 
-See [Ubuntu's release notes](https://discourse.ubuntu.com/t/ubuntu-24-04-lts-noble-numbat-release-notes/39890),
-[the namespace restriction explanation](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007)
-and [Chromium's developer guidance](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md).
+Launch **WhatsUp (Development)** from the menu or installed shortcut. This preview
+label identifies the unsigned preview build. Closing the last window exits the
+app; no terminal needs to remain open.
 
-## Native preflight and graphics
+No universal Linux package, signed DEB/RPM or Flatpak release is available yet.
 
-The original headless data-directory check never created a WebProcess or D-Bus
-proxy. It therefore missed the actual launch failure. The separate bounded
-`whatsup-webview-check` developer tool now creates an ephemeral WebKit session,
-loads only compiled-in local HTML and verifies a JavaScript result. It uses a
-hidden, unpresented window, has a timeout and contains native aborts in its own
-child. It rejects the dangerous sandbox-disable override and touches no app state.
+## WebKit sandbox compatibility
 
-Run the installed probe from the desktop user's graphical session, never as root.
-`npm run test:native` is the corresponding Linux developer command; headless
-development hosts can use Xvfb. Test results from the installed policy context
-must be distinguished from an unprofiled source-build path. A standalone Bubblewrap
-test launched from SSH has a different policy context and cannot prove app readiness.
+Ubuntu 24.04 restricts unprivileged user namespaces. WebKit uses Bubblewrap and
+a D-Bus proxy for its sandbox. Without the required application policy, startup
+can fail with:
 
-The probe's default mode uses WebKit's supported software policy; `--accelerated`
-checks the accelerated path. A successful local-page/JavaScript probe establishes
-renderer/process startup, not visible pixel quality, the real Wails bridge or
-native storage QA. The owner still tests the actual app and restart continuity.
+    bwrap: setting up uid map: Permission denied
 
-For VMs or drivers that cannot render reliably, the app accepts
-`--software-rendering`, using Wails' `WebviewGpuPolicyNever` and WebKit's documented
-hardware-acceleration API. This changes rendering only; sandbox and encryption
-behavior remain intact. CPU rendering can cost more CPU and is a separately
-identified launch mode. Graphics warnings do not explain or fix UID-map denial.
-See [WebKit's acceleration policy](https://webkitgtk.org/reference/webkitgtk/stable/property.Settings.hardware-acceleration-policy.html).
+The supplied setup installs an application-specific AppArmor compatibility
+profile attached to root-owned executables under /opt/whatsup-development.
+It keeps the global namespace restriction enabled and does not disable WebKit's
+sandbox.
+
+This compatibility profile permits the namespace setup WebKit needs. It is not
+a complete confinement policy for the Go application or a guarantee of isolation
+from the desktop account.
+
+If setup or its renderer check fails, keep the output for troubleshooting. Avoid
+changing global sandbox policy to make an individual preview executable start.
+
+## Graphics
+
+If accelerated rendering is unreliable, use the app's **--software-rendering**
+option. The setup command can select it explicitly:
+
+    bash linux-integration/scripts/enable-linux-review.sh --software-rendering
+
+This changes rendering only. WebKit's sandbox and WhatsUp's encryption remain
+enabled. Software rendering may use more CPU.
+
+The setup renderer check verifies that a sandboxed WebKit process can load a
+local page and run JavaScript. It does not certify graphics quality on every
+desktop or replace testing the actual app.
+
+## Local data
+
+Application data and cache use private directories under $XDG_DATA_HOME/whatsup
+and $XDG_CACHE_HOME/whatsup, normally ~/.local/share/whatsup and ~/.cache/whatsup.
+Startup rejects unexpected ownership, shared permissions or unsafe paths.
+
+An unavailable or locked Secret Service leaves storage unavailable; WhatsUp does
+not substitute a plaintext key file. See the [privacy guide](privacy.md) and
+[security information](../SECURITY.md).

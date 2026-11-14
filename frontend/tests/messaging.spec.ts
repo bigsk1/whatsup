@@ -1,0 +1,846 @@
+import { readFileSync } from 'node:fs';
+import { expect, test, type Page } from '@playwright/test';
+import { unavailableStatus } from '../src/lib/backend';
+import {
+  unavailableConversation,
+  type ConversationMessage,
+  type ConversationSnapshot,
+} from '../src/lib/messaging';
+import { unavailablePairing, type PairingStatus } from '../src/lib/pairing';
+
+const contactID = 'AQEBAQEBAQEBAQEBAQEBAQ';
+const firstID = 'AgICAgICAgICAgICAgICAg';
+const nextID = 'AwMDAwMDAwMDAwMDAwMDAw';
+const peerFingerprint = 'b'.repeat(64);
+const localFingerprint = 'a'.repeat(64);
+const createdAt = '2026-11-14T12:00:00Z';
+const incomingText = 'Synthetic saved conversation text';
+
+type Operation =
+  | 'GetStatus'
+  | 'UnlockStorage'
+  | 'LockStorage'
+  | 'GetPairingStatus'
+  | 'GetConversation'
+  | 'GetProfile'
+  | 'ConnectContact'
+  | 'ForgetContact'
+  | 'SendMessage';
+
+// These tests drive the actual app and generated Wails HTTP bindings using
+// synthetic status, identity and message fixtures. No OS credential or live
+// peer/relay operation is performed by this browser fixture.
+const generated = readFileSync(
+  new URL('../bindings/whatsup/internal/desktop/service.ts', import.meta.url),
+  'utf8',
+);
+const operations: Record<number, Operation> = {};
+for (const name of [
+  'GetStatus',
+  'UnlockStorage',
+  'LockStorage',
+  'GetPairingStatus',
+  'GetConversation',
+  'GetProfile',
+  'ConnectContact',
+  'ForgetContact',
+  'SendMessage',
+] as const) {
+  const match = generated.match(
+    new RegExp(`export function ${name}\\([\\s\\S]*?\\$Call\\.ByID\\((\\d+)`),
+  );
+  if (!match) throw new Error(`Missing generated ${name} binding`);
+  operations[Number(match[1])] = name;
+}
+
+function approved(
+  overrides: Partial<ConversationSnapshot> = {},
+): ConversationSnapshot {
+  return {
+    state: 'offline',
+    revision: 1,
+    contactID,
+    peerFingerprint,
+    peerDisplayName: '',
+    localName: '',
+    canConnect: true,
+    canSend: true,
+    messages: [],
+    ...overrides,
+  };
+}
+
+function message(
+  id = firstID,
+  text = incomingText,
+  direction: 'incoming' | 'outgoing' = 'incoming',
+  delivered = true,
+): ConversationMessage {
+  return { id, text, direction, createdAt, delivered };
+}
+
+function injectRuntime() {
+  const host = window as Window & {
+    _wails?: { flags?: object; environment?: object };
+  };
+  host._wails ??= {};
+  host._wails.flags = {};
+  host._wails.environment = { OS: 'linux', Arch: 'amd64', Debug: false };
+}
+
+async function syntheticMessaging(
+  page: Page,
+  initial: ConversationSnapshot = approved(),
+) {
+  const state = {
+    storage: 'unlocked',
+    conversation: initial as unknown,
+    pairing: { ...unavailablePairing, state: 'idle' } as PairingStatus,
+    connect: undefined as undefined | (() => Promise<ConversationSnapshot>),
+    send: undefined as
+      undefined | ((text: string) => Promise<ConversationSnapshot>),
+    sendFailure: false,
+    lock: undefined as undefined | (() => Promise<void>),
+    forget: undefined as undefined | (() => Promise<void>),
+    forgetFailure: false,
+    holdPoll: undefined as undefined | (() => Promise<void>),
+    pollHeld: false,
+  };
+  const calls: { operation: Operation; args: unknown[] }[] = [];
+  const errors: string[] = [];
+  const external: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('request', (request) => {
+    if (!request.url().startsWith('http://127.0.0.1:9245/'))
+      external.push(request.url());
+  });
+  await page.route('**/wails/runtime', async (route) => {
+    const body = route.request().postDataJSON();
+    const operation = operations[body.args?.methodID];
+    if (
+      route.request().method() !== 'POST' ||
+      body.object !== 0 ||
+      body.method !== 0 ||
+      !operation
+    )
+      throw new Error('Unexpected native runtime operation');
+    const args: unknown[] = body.args?.args ?? [];
+    calls.push({ operation, args });
+    if (['GetStatus', 'UnlockStorage', 'LockStorage'].includes(operation)) {
+      if (operation === 'UnlockStorage') state.storage = 'unlocked';
+      if (operation === 'LockStorage') {
+        state.storage = 'locked';
+        if (state.lock) await state.lock();
+      }
+      await route.fulfill({
+        json: {
+          ...unavailableStatus,
+          storageState: state.storage,
+          identityFingerprint:
+            state.storage === 'unlocked' ? localFingerprint : '',
+          pairingAvailable: state.storage === 'unlocked',
+          messagingAvailable: state.storage === 'unlocked',
+        },
+      });
+    } else if (operation === 'GetPairingStatus') {
+      await route.fulfill({ json: state.pairing });
+    } else if (operation === 'GetProfile') {
+      await route.fulfill({
+        json: { displayName: '', shareDisplayName: false },
+      });
+      return;
+    } else if (operation === 'GetConversation') {
+      const snapshot = structuredClone(state.conversation);
+      const hold = state.holdPoll;
+      state.holdPoll = undefined;
+      if (hold) {
+        state.pollHeld = true;
+        await hold();
+      }
+      await route.fulfill({ json: snapshot });
+    } else if (operation === 'ConnectContact') {
+      const current = state.conversation as ConversationSnapshot;
+      const result = state.connect
+        ? await state.connect()
+        : {
+            ...current,
+            state: 'connecting',
+            revision: current.revision + 1,
+            canConnect: false,
+          };
+      state.conversation = result;
+      await route.fulfill({ json: result });
+    } else if (operation === 'ForgetContact') {
+      if (state.forget) await state.forget();
+      if (state.forgetFailure) {
+        state.storage = 'locked';
+        await route.fulfill({
+          status: 503,
+          json: {
+            kind: 'RuntimeError',
+            message: 'SYNTHETIC-PRIVATE-REMOVAL-FAILURE',
+          },
+        });
+      } else {
+        state.conversation = {
+          ...unavailableConversation,
+          state: 'none',
+          revision: (state.conversation as ConversationSnapshot).revision + 1,
+        };
+        state.pairing = { ...unavailablePairing, state: 'idle' };
+        await route.fulfill({ json: state.conversation });
+      }
+    } else if (operation === 'SendMessage' && state.sendFailure) {
+      await route.fulfill({
+        status: 503,
+        json: {
+          kind: 'RuntimeError',
+          message: 'SYNTHETIC-PRIVATE-STORAGE-FAILURE',
+        },
+      });
+    } else if (operation === 'SendMessage') {
+      const current = state.conversation as ConversationSnapshot;
+      const result = state.send
+        ? await state.send(args[1] as string)
+        : {
+            ...current,
+            revision: current.revision + 1,
+            messages: [
+              ...current.messages,
+              message(nextID, args[1] as string, 'outgoing', false),
+            ],
+          };
+      state.conversation = result;
+      await route.fulfill({ json: result });
+    }
+  });
+  await page.addInitScript(injectRuntime);
+  return { state, calls, errors, external };
+}
+
+test('a cold-start approved contact can read history and queue while offline without connecting', async ({
+  page,
+}) => {
+  const { calls, errors, external } = await syntheticMessaging(
+    page,
+    approved({ messages: [message()] }),
+  );
+  await page.goto('/');
+  await expect(page.getByRole('log', { name: 'Messages' })).toContainText(
+    incomingText,
+  );
+  await expect(
+    page.getByRole('button', { name: 'Connect', exact: true }),
+  ).toBeEnabled();
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await expect(composer).toBeEnabled();
+  await composer.fill('Synthetic offline queued text');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(
+    page.getByText('Synthetic offline queued text', { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText('Queued', { exact: true })).toBeVisible();
+  await expect(composer).toHaveValue('');
+  expect(calls.find((call) => call.operation === 'SendMessage')?.args).toEqual([
+    contactID,
+    'Synthetic offline queued text',
+  ]);
+  expect(calls.filter((call) => call.operation === 'ConnectContact')).toEqual(
+    [],
+  );
+  expect(await page.evaluate(() => ({ ...localStorage }))).toEqual({});
+  expect(external).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('Connect keeps retrying until the saved contact arrives without another invitation or approval popup', async ({
+  page,
+}) => {
+  const { state, calls, errors } = await syntheticMessaging(page);
+  state.pairing = {
+    ...unavailablePairing,
+    state: 'reconnect-required',
+    requestID: 'A'.repeat(22),
+    localFingerprint,
+    peerFingerprint,
+  };
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(
+    page.getByText('Waiting for your contact.', { exact: false }),
+  ).toBeVisible();
+  expect(
+    calls.find((call) => call.operation === 'ConnectContact')?.args,
+  ).toEqual([contactID]);
+  await expect(page.getByRole('button', { name: 'Discard setup' })).toHaveCount(
+    0,
+  );
+  await expect(
+    page.getByRole('dialog', { name: 'Pairing request' }),
+  ).toHaveCount(0);
+  state.conversation = approved({
+    state: 'connected',
+    revision: 3,
+    canConnect: false,
+    messages: [message()],
+  });
+  await expect(page.getByRole('log', { name: 'Messages' })).toContainText(
+    incomingText,
+  );
+  await expect(page.locator('.conversation-header')).toContainText('Connected');
+  await expect(
+    page.getByRole('dialog', { name: 'Pairing request' }),
+  ).toHaveCount(0);
+  expect(
+    calls.filter((call) => call.operation === 'ConnectContact'),
+  ).toHaveLength(1);
+  expect(errors).toEqual([]);
+});
+
+test('an unfinished saved record cannot reveal history or send before fresh authentication', async ({
+  page,
+}) => {
+  const { state, errors } = await syntheticMessaging(
+    page,
+    approved({ canSend: false }),
+  );
+  await page.goto('/');
+  await expect(
+    page.getByRole('textbox', { name: 'Message', exact: true }),
+  ).toBeDisabled();
+  await expect(page.getByRole('log', { name: 'Messages' })).not.toContainText(
+    incomingText,
+  );
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(
+    page.getByText('Waiting for your contact.', { exact: false }),
+  ).toBeVisible();
+  state.conversation = approved({
+    state: 'connected',
+    revision: 3,
+    canConnect: false,
+    messages: [message()],
+  });
+  await expect(
+    page.getByRole('textbox', { name: 'Message', exact: true }),
+  ).toBeEnabled();
+  await expect(page.getByRole('log', { name: 'Messages' })).toContainText(
+    incomingText,
+  );
+  expect(errors).toEqual([]);
+});
+
+test('an authenticated acknowledgement updates one queued message and older polls cannot undo it', async ({
+  page,
+}) => {
+  const queued = message(firstID, 'Synthetic outbound text', 'outgoing', false);
+  const { state, errors } = await syntheticMessaging(
+    page,
+    approved({ messages: [queued] }),
+  );
+  await page.goto('/');
+  await expect(page.getByText('Queued', { exact: true })).toBeVisible();
+  let release!: () => void;
+  state.holdPoll = () => new Promise<void>((resolve) => (release = resolve));
+  await expect.poll(() => state.pollHeld).toBe(true);
+  state.connect = async () =>
+    approved({
+      state: 'connected',
+      revision: 3,
+      canConnect: false,
+      messages: [{ ...queued, delivered: true }],
+    });
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect(page.getByText('Delivered', { exact: true })).toBeVisible();
+  release();
+  await expect(page.getByText('Queued', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('article', { name: 'Your message' })).toHaveCount(
+    1,
+  );
+  await expect(page.getByText('Delivered', { exact: true })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('Disconnect and lock clears messages and draft and rejects a send result arriving afterward', async ({
+  page,
+}) => {
+  const { state, calls, errors } = await syntheticMessaging(
+    page,
+    approved({ messages: [message()] }),
+  );
+  let release!: () => void;
+  let releaseLock!: () => void;
+  state.lock = () => new Promise<void>((resolve) => (releaseLock = resolve));
+  state.send = async (text) => {
+    await new Promise<void>((resolve) => (release = resolve));
+    return approved({
+      revision: 2,
+      messages: [message(), message(nextID, text, 'outgoing', false)],
+    });
+  };
+  await page.goto('/');
+  await page
+    .getByRole('textbox', { name: 'Message', exact: true })
+    .fill('Synthetic in-flight draft');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect
+    .poll(() => calls.some((call) => call.operation === 'SendMessage'))
+    .toBe(true);
+  await page
+    .getByRole('button', { name: 'Disconnect and lock', exact: true })
+    .click();
+  await expect
+    .poll(() => calls.some((call) => call.operation === 'LockStorage'))
+    .toBe(true);
+  // Plaintext disappears before the backend finishes closing its connection
+  // and vault, not merely after the Lock RPC has returned.
+  await expect(page.getByText(incomingText, { exact: true })).toHaveCount(0);
+  releaseLock();
+  await expect(
+    page.getByRole('button', { name: 'Unlock and connect', exact: true }),
+  ).toBeVisible();
+  release();
+  await expect(page.getByText(incomingText, { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByText('Synthetic in-flight draft', { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('textbox', {
+      name: 'Message unavailable without an approved contact',
+    }),
+  ).toHaveValue('');
+  expect(await page.evaluate(() => ({ ...localStorage }))).toEqual({});
+  expect(errors).toEqual([]);
+});
+
+test('a failed queue save preserves the draft and displays only a fixed error', async ({
+  page,
+}) => {
+  const { state, errors } = await syntheticMessaging(page);
+  state.sendFailure = true;
+  await page.goto('/');
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await composer.fill('Synthetic retryable draft');
+  await composer.press('Enter');
+  await expect(page.getByRole('alert')).toContainText(
+    'The message could not be saved to the local queue.',
+  );
+  await expect(composer).toHaveValue('Synthetic retryable draft');
+  await expect(page.getByText('SYNTHETIC-PRIVATE-STORAGE-FAILURE')).toHaveCount(
+    0,
+  );
+  await expect(page.getByRole('article', { name: 'Your message' })).toHaveCount(
+    0,
+  );
+  expect(errors).toEqual([]);
+});
+
+for (const entry of ['header', 'settings'] as const) {
+  test(`explicit Unlock and connect from ${entry} resumes the saved contact once`, async ({
+    page,
+  }) => {
+    const { state, calls, errors } = await syntheticMessaging(page);
+    state.storage = 'locked';
+    await page.goto('/');
+    await expect(
+      page.getByText('Local storage locked', { exact: true }),
+    ).toBeVisible();
+    expect(calls.some((call) => call.operation === 'ConnectContact')).toBe(
+      false,
+    );
+    if (entry === 'settings')
+      await page
+        .getByRole('button', { name: 'Open settings', exact: true })
+        .click();
+    const surface =
+      entry === 'settings'
+        ? page.getByRole('region', { name: 'Settings', exact: true })
+        : page.locator('.conversation-header');
+    await surface
+      .getByRole('button', { name: 'Unlock and connect', exact: true })
+      .click();
+    await expect
+      .poll(
+        () =>
+          calls.filter((call) => call.operation === 'ConnectContact').length,
+      )
+      .toBe(1);
+    if (entry === 'settings')
+      await surface
+        .getByRole('button', { name: 'Back to chats', exact: true })
+        .click();
+    await expect(page.locator('.conversation-header')).toContainText(
+      'Connecting',
+    );
+    await expect
+      .poll(
+        () =>
+          calls.filter((call) => call.operation === 'GetConversation').length,
+      )
+      .toBeGreaterThan(1);
+    expect(
+      calls.filter((call) => call.operation === 'UnlockStorage'),
+    ).toHaveLength(1);
+    expect(calls.filter((call) => call.operation === 'ConnectContact')).toEqual(
+      [{ operation: 'ConnectContact', args: [contactID] }],
+    );
+    const firstUnlock = calls.findIndex(
+      (call) => call.operation === 'UnlockStorage',
+    );
+    const firstConversation = calls.findIndex(
+      (call) => call.operation === 'GetConversation',
+    );
+    const firstConnect = calls.findIndex(
+      (call) => call.operation === 'ConnectContact',
+    );
+    expect(firstConversation).toBeGreaterThan(firstUnlock);
+    expect(firstConnect).toBeGreaterThan(firstConversation);
+    expect(errors).toEqual([]);
+  });
+}
+
+test('a contact arriving through status polling never starts a new connection from the frontend', async ({
+  page,
+}) => {
+  const { state, calls, errors } = await syntheticMessaging(page, {
+    ...unavailableConversation,
+    state: 'none',
+  });
+  await page.goto('/');
+  await expect(
+    page.getByRole('button', { name: 'Start a conversation', exact: true }),
+  ).toBeEnabled();
+  state.conversation = approved({ revision: 2 });
+  await expect(page.locator('.approved-contact')).toBeVisible();
+  await expect
+    .poll(
+      () => calls.filter((call) => call.operation === 'GetConversation').length,
+    )
+    .toBeGreaterThan(2);
+  expect(calls.filter((call) => call.operation === 'ConnectContact')).toEqual(
+    [],
+  );
+  expect(errors).toEqual([]);
+});
+
+test('locking during Unlock and connect invalidates its delayed saved-contact response', async ({
+  page,
+}) => {
+  const { state, calls, errors } = await syntheticMessaging(page);
+  state.storage = 'locked';
+  let release!: () => void;
+  state.holdPoll = () => new Promise<void>((resolve) => (release = resolve));
+  await page.goto('/');
+  await page
+    .getByRole('button', { name: 'Unlock and connect', exact: true })
+    .click();
+  await expect.poll(() => state.pollHeld).toBe(true);
+  await page
+    .getByRole('button', { name: 'Disconnect and lock', exact: true })
+    .click();
+  await expect(
+    page.getByText('Local storage locked', { exact: true }),
+  ).toBeVisible();
+  release();
+  await expect(page.locator('.approved-contact')).toHaveCount(0);
+  await expect(
+    page.getByRole('textbox', {
+      name: 'Message unavailable without an approved contact',
+      exact: true,
+    }),
+  ).toBeDisabled();
+  expect(calls.filter((call) => call.operation === 'ConnectContact')).toEqual(
+    [],
+  );
+  expect(errors).toEqual([]);
+});
+
+test('forget contact defaults to Cancel and Escape and Cancel never call deletion', async ({
+  page,
+}) => {
+  const { calls, errors } = await syntheticMessaging(
+    page,
+    approved({ messages: [message()] }),
+  );
+  await page.goto('/');
+  await page
+    .getByRole('button', { name: 'Forget contact…', exact: true })
+    .click();
+  const dialog = page.getByRole('dialog', {
+    name: 'Forget contact and delete conversation',
+    exact: true,
+  });
+  await expect(
+    dialog.getByRole('button', { name: 'Cancel', exact: true }),
+  ).toBeFocused();
+  await expect(dialog).toContainText('Your device identity stays the same.');
+  await expect(dialog).toContainText(
+    "The other person's history is untouched.",
+  );
+  await page.keyboard.press('Escape');
+  await expect(dialog).not.toBeVisible();
+  await page
+    .getByRole('button', { name: 'Open settings', exact: true })
+    .click();
+  await page
+    .getByRole('region', { name: 'Settings', exact: true })
+    .getByRole('button', { name: 'Contact', exact: true })
+    .click();
+  await page
+    .getByRole('region', { name: 'Settings', exact: true })
+    .getByRole('button', { name: 'Forget contact…', exact: true })
+    .click();
+  await expect(
+    page.getByRole('region', { name: 'Settings', exact: true }),
+  ).not.toBeVisible();
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByText(incomingText, { exact: true })).toBeVisible();
+  expect(calls.filter((call) => call.operation === 'ForgetContact')).toEqual(
+    [],
+  );
+  expect(errors).toEqual([]);
+});
+
+test('a changed contact invalidates the open forget confirmation instead of deleting its replacement', async ({
+  page,
+}) => {
+  const { state, calls, errors } = await syntheticMessaging(page);
+  await page.goto('/');
+  await page
+    .getByRole('button', { name: 'Forget contact…', exact: true })
+    .click();
+  const dialog = page.getByRole('dialog', {
+    name: 'Forget contact and delete conversation',
+    exact: true,
+  });
+  await expect(dialog).toBeVisible();
+  state.conversation = approved({
+    contactID: nextID,
+    peerFingerprint: 'c'.repeat(64),
+    revision: 2,
+  });
+  await expect(dialog).not.toBeVisible();
+  await expect(page.locator('.approved-contact code')).toHaveText(
+    `${'c'.repeat(12)}…`,
+  );
+  expect(calls.filter((call) => call.operation === 'ForgetContact')).toEqual(
+    [],
+  );
+  expect(errors).toEqual([]);
+});
+
+test('confirmed forget uses the exact contact, clears memory before completion and rejects old history before a fresh invitation', async ({
+  page,
+}) => {
+  const { state, calls, errors } = await syntheticMessaging(
+    page,
+    approved({ messages: [message()] }),
+  );
+  let releasePoll!: () => void;
+  let releaseForget!: () => void;
+  await page.goto('/');
+  await page
+    .getByRole('textbox', { name: 'Message', exact: true })
+    .fill('Synthetic draft to forget');
+  state.holdPoll = () =>
+    new Promise<void>((resolve) => (releasePoll = resolve));
+  await expect.poll(() => state.pollHeld).toBe(true);
+  state.forget = () =>
+    new Promise<void>((resolve) => (releaseForget = resolve));
+  await page
+    .getByRole('button', { name: 'Forget contact…', exact: true })
+    .click();
+  const dialog = page.getByRole('dialog', {
+    name: 'Forget contact and delete conversation',
+    exact: true,
+  });
+  await dialog
+    .getByRole('button', {
+      name: 'Forget contact and delete conversation',
+      exact: true,
+    })
+    .click();
+  await expect
+    .poll(
+      () => calls.filter((call) => call.operation === 'ForgetContact').length,
+    )
+    .toBe(1);
+  await expect(page.getByText(incomingText, { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole('textbox', {
+      name: 'Message unavailable without an approved contact',
+      exact: true,
+    }),
+  ).toHaveValue('');
+  await expect(
+    dialog.getByRole('button', { name: 'Forgetting…', exact: true }),
+  ).toBeDisabled();
+  releaseForget();
+  await expect(dialog).not.toBeVisible();
+  releasePoll();
+  await expect(
+    page.getByRole('button', { name: 'Start a conversation', exact: true }),
+  ).toBeEnabled();
+  await expect
+    .poll(
+      () => calls.filter((call) => call.operation === 'GetConversation').length,
+    )
+    .toBeGreaterThan(2);
+  await expect(page.getByText(incomingText, { exact: true })).toHaveCount(0);
+  await expect(page.locator('.approved-contact')).toHaveCount(0);
+  await expect(
+    page.getByText('Local storage unlocked', { exact: true }),
+  ).toBeVisible();
+  expect(calls.filter((call) => call.operation === 'ForgetContact')).toEqual([
+    { operation: 'ForgetContact', args: [contactID] },
+  ]);
+  expect(calls.filter((call) => call.operation === 'ConnectContact')).toEqual(
+    [],
+  );
+  await page
+    .getByRole('button', { name: 'Start a conversation', exact: true })
+    .click();
+  await expect(
+    page.getByRole('dialog', { name: 'Start a conversation', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('textbox', {
+      name: 'Connection service HTTPS URL',
+      exact: true,
+    }),
+  ).toHaveValue('');
+  expect(await page.evaluate(() => ({ ...localStorage }))).toEqual({});
+  expect(errors).toEqual([]);
+});
+
+test('forget failure shows a fixed error, clears the draft and verifies locked storage without a false success', async ({
+  page,
+}) => {
+  const { state, calls, errors } = await syntheticMessaging(
+    page,
+    approved({ messages: [message()] }),
+  );
+  state.forgetFailure = true;
+  await page.goto('/');
+  await page
+    .getByRole('textbox', { name: 'Message', exact: true })
+    .fill('Synthetic uncertain deletion draft');
+  await page
+    .getByRole('button', { name: 'Forget contact…', exact: true })
+    .click();
+  const dialog = page.getByRole('dialog', {
+    name: 'Forget contact and delete conversation',
+    exact: true,
+  });
+  await dialog
+    .getByRole('button', {
+      name: 'Forget contact and delete conversation',
+      exact: true,
+    })
+    .click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByRole('alert')).toContainText(
+    'Contact removal could not be confirmed.',
+  );
+  await expect(
+    page.getByText('Local storage locked', { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText(incomingText, { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole('textbox', {
+      name: 'Message unavailable without an approved contact',
+      exact: true,
+    }),
+  ).toHaveValue('');
+  await expect(page.getByText('SYNTHETIC-PRIVATE-REMOVAL-FAILURE')).toHaveCount(
+    0,
+  );
+  expect(
+    calls.filter((call) => call.operation === 'ForgetContact'),
+  ).toHaveLength(1);
+  expect(calls.filter((call) => call.operation === 'ConnectContact')).toEqual(
+    [],
+  );
+  expect(errors).toEqual([]);
+});
+
+test('message HTML is inert text and never loads a remote asset', async ({
+  page,
+}) => {
+  const text =
+    '<img src="https://example.invalid/private.png" onerror="alert(1)">';
+  const { external, errors } = await syntheticMessaging(
+    page,
+    approved({ messages: [message(firstID, text)] }),
+  );
+  await page.goto('/');
+  await expect(page.getByRole('log', { name: 'Messages' })).toContainText(text);
+  await expect(page.locator('img')).toHaveCount(0);
+  expect(external).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('invalid conversation DTOs close the composer and remove previously displayed history', async ({
+  page,
+}) => {
+  const { state, errors } = await syntheticMessaging(
+    page,
+    approved({ messages: [message()] }),
+  );
+  await page.goto('/');
+  await expect(page.getByText(incomingText, { exact: true })).toBeVisible();
+  state.conversation = {
+    ...approved({ revision: 2 }),
+    messages: [message(firstID, 'x'.repeat(16 * 1024 + 1))],
+  };
+  await expect(page.getByRole('alert')).toContainText(
+    'Conversation status could not be verified.',
+  );
+  await expect(page.getByText(incomingText, { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Send message unavailable' }),
+  ).toBeDisabled();
+  expect(errors).toEqual([]);
+});
+
+test('an identity verification failure stops connecting without replacing or reapproving the saved contact', async ({
+  page,
+}) => {
+  const { state, calls, errors } = await syntheticMessaging(
+    page,
+    approved({ state: 'connecting', canConnect: false }),
+  );
+  await page.goto('/');
+  await expect(
+    page.getByText('Waiting for your contact.', { exact: false }),
+  ).toBeVisible();
+  state.conversation = approved({
+    state: 'identity-changed',
+    revision: 2,
+    canConnect: false,
+  });
+  await expect(page.getByRole('alert')).toHaveText(
+    "Your contact's identity could not be verified. The connection stopped; your saved contact was not changed.",
+  );
+  await expect(
+    page.getByRole('button', { name: 'Connect', exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('dialog', { name: 'Pairing request' }),
+  ).toHaveCount(0);
+  await expect(page.locator('.approved-contact code')).toHaveText(
+    `${peerFingerprint.slice(0, 12)}…`,
+  );
+  // A saved draft can still be durably queued locally, but it cannot cause a
+  // new connection attempt or implicitly approve the rejected peer.
+  await page
+    .getByRole('textbox', { name: 'Message', exact: true })
+    .fill('Synthetic private text kept offline');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.getByText('Queued', { exact: true })).toBeVisible();
+  expect(calls.filter((call) => call.operation === 'ConnectContact')).toEqual(
+    [],
+  );
+  expect(errors).toEqual([]);
+});

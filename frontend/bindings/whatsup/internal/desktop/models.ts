@@ -10,6 +10,15 @@ export interface InvitationShare {
     "expiresAt": string;
 }
 
+/**
+ * ProfileSnapshot contains only explicitly editable public profile metadata.
+ * Names remain in encrypted Go storage, never frontend preferences or logs.
+ */
+export interface ProfileSnapshot {
+    "displayName": string;
+    "shareDisplayName": boolean;
+}
+
 export interface Status {
     "version": string;
     "identityFingerprint": string;

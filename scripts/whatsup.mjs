@@ -283,7 +283,7 @@ async function implementedCheck() {
     scans, applicationReady: false, transportIntegrationVerified: false,
   });
   if (scans.some((scan) => !scan.passed)) throw new Error(`Security scans failed: ${scans.filter((scan) => !scan.passed).map((scan) => scan.name).join(', ')}. No advisory exception was applied. Local report: ${report}`);
-  console.log('Implemented-component checks completed. These do not establish working peer messaging, complete transport security verification, native GUI QA, or release readiness.');
+  console.log('Implemented-component checks completed. These do not establish native two-machine messaging, complete transport security verification, or release readiness.');
 }
 
 async function applicationCheck() {
@@ -554,7 +554,7 @@ async function nativePackage() {
   cleanGitCommit();
   requireNativePlatform();
   // Direct Wails tasks cannot bypass the application/packaging gate.
-  throw new Error('Native installer recipes require reviewed packaging tools, dependency notices/SBOM, and owner-selected signing configuration. See docs/status.md.');
+  throw new Error('Native installer recipes require reviewed packaging tools, dependency notices/SBOM, and publisher signing configuration. See README.md and SECURITY.md for the supported scope.');
 }
 
 async function packageApp() {

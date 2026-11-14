@@ -22,7 +22,7 @@ Unicode true
 ## !define INFO_PROJECTNAME    "my-project" # Default "WhatsUp"
 ## !define INFO_COMPANYNAME    "My Company" # Default ""
 ## !define INFO_PRODUCTNAME    "My Product Name" # Default "WhatsUp"
-## !define INFO_PRODUCTVERSION "1.0.0"     # Default "0.0.3"
+## !define INFO_PRODUCTVERSION "1.0.0"     # Default "0.0.6"
 ## !define INFO_COPYRIGHT      "(c) Now, My Company" # Default "© 2026, My Company"
 ###
 ## !define PRODUCT_EXECUTABLE  "Application.exe"      # Default "${INFO_PROJECTNAME}.exe"

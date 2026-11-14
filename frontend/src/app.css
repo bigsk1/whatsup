@@ -159,6 +159,9 @@ h3 {
   height: 100dvh;
   overflow: hidden;
 }
+.app-shell[hidden] {
+  display: none;
+}
 .navigation-rail {
   display: flex;
   flex-direction: column;
@@ -422,6 +425,17 @@ h3 {
   display: block;
   font-size: 11px;
   font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.device-footer > div:nth-child(2) {
+  min-width: 0;
+  flex: 1;
+}
+.mini-device,
+.device-footer .icon-button {
+  flex-shrink: 0;
 }
 .device-footer span:not(.mini-device span) {
   display: block;
@@ -452,8 +466,14 @@ h3 {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+.header-identity > div:last-child {
+  min-width: 0;
 }
 .header-icon {
+  flex-shrink: 0;
   height: 39px;
   width: 39px;
   border: 1px solid var(--border);
@@ -466,6 +486,9 @@ h3 {
 .header-identity h2 {
   font-size: 12px;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .header-identity p {
   font-size: 10px;
@@ -771,6 +794,9 @@ h3 {
   padding: 8px 13px;
 }
 .settings-dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
   border: 1px solid var(--border);
   border-radius: 17px;
   padding: 0;
@@ -778,6 +804,7 @@ h3 {
   color: var(--text);
   width: min(488px, calc(100vw - 36px));
   max-height: calc(100dvh - 36px);
+  overflow-y: auto;
   box-shadow: var(--shadow);
 }
 .settings-dialog::backdrop {
@@ -1115,6 +1142,13 @@ h3 {
   }
 }
 @media (max-width: 740px) {
+  .conversation-header {
+    height: auto;
+    min-height: 90px;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 15px 18px;
+  }
   .app-shell {
     grid-template-columns: 58px minmax(0, 1fr);
   }

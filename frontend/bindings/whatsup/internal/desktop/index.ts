@@ -8,5 +8,6 @@ export {
 
 export type {
     InvitationShare,
+    ProfileSnapshot,
     Status
 } from "./models.js";
