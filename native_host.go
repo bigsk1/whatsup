@@ -21,6 +21,13 @@ import (
 
 const nativeStorageChangedEvent = "whatsup:storage-changed"
 const nativeWindowVisibleEvent = "whatsup:window-visible"
+const nativeNotificationActivateEvent = "whatsup:notification-activate"
+
+// NativeNotificationHint is a selection request, never storage authority.
+// The renderer consumes the pending ID and verifies its unlocked contacts.
+type NativeNotificationHint struct {
+	ContactID string `json:"contactID"`
+}
 
 // NativeStorageHint carries no identity or permission. The frontend must fetch
 // authoritative status after retiring its previous decrypted generation.
@@ -69,6 +76,9 @@ type nativeHost struct {
 	lock              func() desktop.Status
 	emitStorage       func(string)
 	visibilitySink    func(bool)
+	activationMu      sync.Mutex
+	activation        string
+	activationSink    func(NativeNotificationHint)
 	deliver           func(context.Context, messaging.Incoming) error
 }
 
@@ -99,6 +109,7 @@ func newNativeHost(app *application.App, backend *desktop.Service, record func(d
 	h := newNativeTasks(record)
 	h.app, h.backend, h.entry = app, backend, entry
 	h.visibilitySink = func(eligible bool) { app.Event.Emit(nativeWindowVisibleEvent, eligible) }
+	h.activationSink = func(hint NativeNotificationHint) { app.Event.Emit(nativeNotificationActivateEvent, hint) }
 	h.unlock, h.lock = backend.UnlockStorage, backend.LockStorage
 	h.emitStorage = func(state string) {
 		if state != "locked" && state != "unlocked" {
@@ -108,7 +119,7 @@ func newNativeHost(app *application.App, backend *desktop.Service, record func(d
 			app.Event.Emit(nativeStorageChangedEvent, NativeStorageHint{State: state, RequiresPassphrase: backend.GetStatus().RequiresPassphrase})
 		}
 	}
-	h.notifier = notify.New(func(string) { go h.focus() })
+	h.notifier = notify.New(h.activateContact)
 	h.deliver = func(ctx context.Context, incoming messaging.Incoming) error {
 		return desktop.WithIncomingNotification(backend, incoming, func(value desktop.Notification) error {
 			if ctx.Err() != nil || h.foreground() {
@@ -118,7 +129,8 @@ func newNativeHost(app *application.App, backend *desktop.Service, record func(d
 		})
 	}
 	h.controller = lifecycle.New(lifecycle.Actions{
-		Show: h.show, Hide: h.hide,
+		StartHidden: opts.Autostart,
+		Show:        h.show, Hide: h.hide,
 		Quit:          func() { go func() { h.stopTasks(); app.Quit() }() },
 		Background:    h.closeToTray.Load,
 		TrayAvailable: func() bool { return h.tray != nil && nativeTrayAvailable() },
@@ -231,6 +243,39 @@ func (h *nativeHost) focus() {
 	if h != nil && h.life.Err() == nil && h.controller != nil {
 		h.controller.Focus()
 	}
+}
+
+func (h *nativeHost) activateContact(contactID string) {
+	if h == nil || !nativeIncomingID(contactID, true) {
+		return
+	}
+	h.activationMu.Lock()
+	if h.life.Err() != nil {
+		h.activationMu.Unlock()
+		return
+	}
+	// Only the latest request is needed. It remains available when the toast
+	// callback runs before the renderer has subscribed to native events.
+	h.activation = contactID
+	h.activationMu.Unlock()
+	if h.activationSink != nil {
+		h.activationSink(NativeNotificationHint{ContactID: contactID})
+	}
+	go h.focus()
+}
+
+func (h *nativeHost) takeNotificationActivation() string {
+	if h == nil {
+		return ""
+	}
+	h.activationMu.Lock()
+	defer h.activationMu.Unlock()
+	id := h.activation
+	h.activation = ""
+	if h.life.Err() != nil {
+		return ""
+	}
+	return id
 }
 
 func (h *nativeHost) notice(noTray bool) {
@@ -378,6 +423,9 @@ func (h *nativeHost) stopStartup() {
 }
 
 func (h *nativeHost) enqueueOffline() {
+	// Retire clicks queued before the explicit offline action. Later clicks may
+	// request a window/selection, but cannot open storage or start networking.
+	h.takeNotificationActivation()
 	h.actionMu.Lock()
 	if h.stopped {
 		h.actionMu.Unlock()
@@ -408,6 +456,7 @@ func (h *nativeHost) stopTasks() {
 		h.actionMu.Lock()
 		h.stopped = true
 		h.cancel()
+		h.takeNotificationActivation()
 		h.actionMu.Unlock()
 		h.stopStartup()
 		<-h.incomingDone
@@ -415,9 +464,18 @@ func (h *nativeHost) stopTasks() {
 	})
 }
 
-// nativeLifecycle exposes only Wails lifecycle hooks, never notification or
-// native-window operations to the renderer's application service bindings.
+// nativeLifecycle exposes lifecycle hooks and one opaque selection request.
+// It never exposes notification delivery or native-window operations.
 type nativeLifecycle struct{ host *nativeHost }
+
+// TakeNotificationActivation atomically consumes a pending notification click.
+// It grants no access to storage, contacts or message content.
+func (n *nativeLifecycle) TakeNotificationActivation() string {
+	if n == nil {
+		return ""
+	}
+	return n.host.takeNotificationActivation()
+}
 
 func (n *nativeLifecycle) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
 	h := n.host

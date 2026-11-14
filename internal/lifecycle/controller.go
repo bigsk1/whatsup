@@ -4,6 +4,7 @@ package lifecycle
 import "sync"
 
 type Actions struct {
+	StartHidden   bool
 	Show          func()
 	Hide          func()
 	Quit          func()
@@ -24,8 +25,14 @@ func New(actions Actions) *Controller { return &Controller{actions: actions} }
 
 func (c *Controller) Ready() {
 	c.mu.Lock()
+	if c.ready {
+		c.mu.Unlock()
+		return
+	}
 	c.ready = true
-	focus := c.pendingFocus && !c.quitting
+	// Autostart creates a hidden window before native tray availability can
+	// be known. Keep a window reachable if that desktop has no working tray.
+	focus := !c.quitting && (c.pendingFocus || c.actions.StartHidden && !c.actions.TrayAvailable())
 	c.pendingFocus = false
 	c.mu.Unlock()
 	if focus {

@@ -18,6 +18,7 @@ export interface ContactsState {
   pages: Record<string, MessagePage>;
   drafts: Record<string, string>;
   loading: boolean;
+  loaded: boolean;
   loadingPages: Record<string, boolean>;
   sending: Record<string, boolean>;
   connecting: Record<string, boolean>;
@@ -32,6 +33,7 @@ const empty = (): ContactsState => ({
   pages: {},
   drafts: {},
   loading: false,
+  loaded: false,
   loadingPages: {},
   sending: {},
   connecting: {},
@@ -278,6 +280,7 @@ export function createContacts(bridge: ContactsBridge = contactsBridge) {
             : (contacts[0]?.contactID ?? '');
           publish({
             contacts,
+            loaded: true,
             selectedID,
             pages: retain(current.pages),
             drafts: retain(current.drafts),
@@ -297,6 +300,7 @@ export function createContacts(bridge: ContactsBridge = contactsBridge) {
             // decrypted messages behind a composer with uncertain authority.
             publish({
               contacts: [],
+              loaded: false,
               selectedID: '',
               pages: {},
               notice:

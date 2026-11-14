@@ -23,6 +23,41 @@ func TestSecondLaunchBeforeReadyFocusesExistingWindowOnce(t *testing.T) {
 	}
 }
 
+func TestAutostartRemainsHiddenOnlyWithReachableTrayAndNoFocusRequest(t *testing.T) {
+	for _, hidden := range []bool{false, true} {
+		for _, tray := range []bool{false, true} {
+			for _, focus := range []bool{false, true} {
+				shown := 0
+				c := New(Actions{StartHidden: hidden, Show: func() { shown++ }, TrayAvailable: func() bool { return tray }})
+				if focus {
+					c.Focus()
+				}
+				c.Ready()
+				c.Ready()
+				want := 0
+				if focus || hidden && !tray {
+					want = 1
+				}
+				if shown != want {
+					t.Fatalf("hidden=%v tray=%v focus=%v: shown=%d want=%d", hidden, tray, focus, shown, want)
+				}
+				c.Focus()
+				if shown != want+1 {
+					t.Fatal("tray/second-launch focus did not restore the ready window")
+				}
+			}
+		}
+	}
+}
+
+func TestAutostartCannotShowAfterQuit(t *testing.T) {
+	c := New(Actions{StartHidden: true, Show: func() { t.Fatal("showed after quit") }, Quit: func() {}, TrayAvailable: func() bool { return false }})
+	c.Focus()
+	c.Quit()
+	c.Ready()
+	c.Focus()
+}
+
 func TestCloseKeepsRunningWithOneNoticeAndExplicitQuit(t *testing.T) {
 	seen := false
 	hidden, notices, quits := 0, 0, 0

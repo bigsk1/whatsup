@@ -730,21 +730,27 @@ func (s *Scope) Stage(ctx context.Context, offer transfer.Offer, source io.Reade
 	if actual != offer.SHA256 {
 		return ErrIntegrity
 	}
-	s.mu.Lock()
-	verifiedReader, err := s.readerLocked(work, e, true)
-	s.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	kind, verified, err := media.Sniff(verifiedReader)
-	if err == nil && kind == media.KindImage {
-		if _, imageErr := media.Validate(work, verifiedReader); imageErr != nil {
-			verified = "application/octet-stream"
+	// An explicit save-only offer never enters an image/video decoder. Its
+	// original bytes are still encrypted and authenticated by the whole-file hash.
+	verified := "application/octet-stream"
+	if offer.MediaType != verified {
+		s.mu.Lock()
+		verifiedReader, openErr := s.readerLocked(work, e, true)
+		s.mu.Unlock()
+		if openErr != nil {
+			return openErr
 		}
-	}
-	closeErr := verifiedReader.Close()
-	if err != nil || closeErr != nil {
-		return ErrIntegrity
+		var kind string
+		kind, verified, err = media.Sniff(verifiedReader)
+		if err == nil && kind == media.KindImage {
+			if _, imageErr := media.Validate(work, verifiedReader); imageErr != nil {
+				verified = "application/octet-stream"
+			}
+		}
+		closeErr := verifiedReader.Close()
+		if err != nil || closeErr != nil {
+			return ErrIntegrity
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -800,17 +806,20 @@ func (s *Scope) Finalize(ctx context.Context, id string) error {
 	if _, err := reader.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	kind, verified, err := media.Sniff(reader)
-	if err != nil {
-		return ErrIntegrity
-	}
-	if kind == media.KindImage {
-		if _, err = media.Validate(work, reader); err != nil {
-			if e.ImageOnly {
-				_ = s.Decline(id)
-				return ErrIntegrity
+	kind, verified := media.KindFile, "application/octet-stream"
+	if e.Record.Offer.MediaType != verified {
+		kind, verified, err = media.Sniff(reader)
+		if err != nil {
+			return ErrIntegrity
+		}
+		if kind == media.KindImage {
+			if _, err = media.Validate(work, reader); err != nil {
+				if e.ImageOnly {
+					_ = s.Decline(id)
+					return ErrIntegrity
+				}
+				verified = "application/octet-stream"
 			}
-			verified = "application/octet-stream"
 		}
 	}
 	if e.ImageOnly && (kind != media.KindImage || !media.AllowedImage(verified)) {

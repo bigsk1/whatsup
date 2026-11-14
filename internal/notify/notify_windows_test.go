@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,7 +15,41 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wailsapp/wails/v3/pkg/services/notifications"
 )
+
+func TestWindowsActivationAcceptsOnlyCanonicalContactForDefaultMessageAction(t *testing.T) {
+	contactID := syntheticNotice().ContactID
+	valid := notifications.NotificationResult{Response: notifications.NotificationResponse{
+		ID: syntheticNotice().ID, ActionIdentifier: notifications.DefaultActionIdentifier,
+		UserInfo: map[string]interface{}{"contactID": contactID},
+	}}
+	if windowsActivation(valid) != contactID {
+		t.Fatal("canonical default activation was lost")
+	}
+	for _, change := range []func(*notifications.NotificationResult){
+		func(value *notifications.NotificationResult) { value.Error = errors.New("synthetic error") },
+		func(value *notifications.NotificationResult) { value.Response.ActionIdentifier = "untrusted-action" },
+		func(value *notifications.NotificationResult) { value.Response.ID = "not a message ID" },
+		func(value *notifications.NotificationResult) { value.Response.UserInfo = nil },
+		func(value *notifications.NotificationResult) {
+			value.Response.UserInfo = map[string]interface{}{"contactID": 1}
+		},
+		func(value *notifications.NotificationResult) {
+			value.Response.UserInfo = map[string]interface{}{"contactID": "AAAAAAAAAAAAAAAAAAAAAA"}
+		},
+		func(value *notifications.NotificationResult) {
+			value.Response.UserInfo = map[string]interface{}{"contactID": contactID, "body": "synthetic content"}
+		},
+	} {
+		value := valid
+		change(&value)
+		if windowsActivation(value) != "" {
+			t.Fatal("malformed or non-default activation requested a conversation")
+		}
+	}
+}
 
 func TestPrivateToastABIRequiresExactReviewedModuleAndChecksum(t *testing.T) {
 	reviewed := debug.Module{Path: "git.sr.ht/~jackmordaunt/go-toast/v2", Version: "v2.0.3", Sum: "h1:N3IGoHHp9pb6mj1cbXbuaSXV/UMKwmbKLf53nQmtqMA="}

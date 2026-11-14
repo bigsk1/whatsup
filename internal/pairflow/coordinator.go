@@ -54,6 +54,9 @@ type completionStore interface {
 // Completed activation still requires both TLS and durable one-shot receipts.
 type Options struct {
 	CompleteActivation bool
+	// OnChanged is a public-state invalidation hint, invoked outside our mutex.
+	// A desktop owner must enqueue it rather than enter its own service guard.
+	OnChanged func()
 	// OnCompleted belongs to this exact runtime generation. It runs after
 	// invitation retirement and durable local approval, outside our guards,
 	// and is joined by Close. It must never acquire the owning Service mutex.
@@ -73,6 +76,7 @@ type coordinatorState struct {
 	closed      bool
 	complete    bool
 	onCompleted func(string)
+	onChanged   func()
 	runs        sync.WaitGroup
 	actions     sync.WaitGroup
 }
@@ -115,6 +119,7 @@ func New(local *identity.Identity, store Store, options ...Options) (*Coordinato
 	if len(options) != 0 {
 		c.complete = options[0].CompleteActivation
 		c.onCompleted = options[0].OnCompleted
+		c.onChanged = options[0].OnChanged
 	}
 	if c.complete {
 		if _, ok := store.(completionStore); !ok {
@@ -218,6 +223,18 @@ func (c *Coordinator) Snapshot() Snapshot {
 	return c.status
 }
 
+func (c *Coordinator) notifyChanged() {
+	if c == nil || c.coordinatorState == nil {
+		return
+	}
+	c.mu.Lock()
+	callback := c.onChanged
+	c.mu.Unlock()
+	if callback != nil {
+		callback()
+	}
+}
+
 // Accept takes ownership of raw and manager, including on failure. Only the
 // reservation callback can select a candidate, before either UI sees a key.
 // The retirement hook may close its underlying listener, never call back here.
@@ -232,6 +249,7 @@ func (c *Coordinator) Join(ctx context.Context, raw net.Conn, invite pairing.Inv
 }
 
 func (c *Coordinator) begin(ctx context.Context, raw net.Conn, invite pairing.Invite, manager *pairing.Manager, role channel.Role) (*attempt, error) {
+	defer c.notifyChanged()
 	reject := func() (*attempt, error) {
 		if raw != nil {
 			_ = raw.Close()
@@ -304,6 +322,7 @@ func (a *attempt) closeOwned() {
 }
 
 func (c *Coordinator) setState(a *attempt, state string) bool {
+	defer c.notifyChanged()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed || c.current != a || a.explicitDeny || a.ctx.Err() != nil || !time.Now().Before(a.deadline) {
@@ -455,6 +474,7 @@ func (a *attempt) revokeActive() {
 }
 
 func (c *Coordinator) finish(a *attempt, runErr error) string {
+	defer c.notifyChanged()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.current != a {
@@ -504,6 +524,7 @@ func (c *Coordinator) finish(a *attempt, runErr error) string {
 // Approve records one explicit decision and returns promptly. The bounded
 // background run waits for the peer; stale requests cannot approve another key.
 func (c *Coordinator) Approve(id, fingerprint string) (Snapshot, error) {
+	defer c.notifyChanged()
 	if c == nil || c.coordinatorState == nil {
 		return Snapshot{State: "unavailable"}, ErrUnavailable
 	}
@@ -522,6 +543,7 @@ func (c *Coordinator) Approve(id, fingerprint string) (Snapshot, error) {
 // abort fallback. It joins persistence before discard so a late save cannot
 // resurrect the canceled record. Cancellation during saving aborts immediately.
 func (c *Coordinator) Deny(id string) (Snapshot, error) {
+	defer c.notifyChanged()
 	if c == nil || c.coordinatorState == nil {
 		return Snapshot{State: "unavailable"}, ErrUnavailable
 	}
@@ -613,6 +635,7 @@ func (c *Coordinator) Deny(id string) (Snapshot, error) {
 // Close must finish before the owning vault is locked. Pending records survive
 // shutdown as inert data, without resuming an invite, approval or tunnel.
 func (c *Coordinator) Close() error {
+	defer c.notifyChanged()
 	if c == nil || c.coordinatorState == nil {
 		return nil
 	}

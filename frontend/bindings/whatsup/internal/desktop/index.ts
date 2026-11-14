@@ -13,6 +13,7 @@ export type {
     Attachments,
     InvitationInspection,
     InvitationShare,
+    PairingHint,
     ProfileSnapshot,
     RecoveryExportResult,
     RecoveryImportPreview,

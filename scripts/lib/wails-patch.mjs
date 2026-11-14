@@ -12,6 +12,9 @@ const upstreamGoModSum = 'h1:tzDY3W1jzN3ksSqfGalTt7K3PwnGfIqtl+IgIXlXz0I=';
 const verified = new WeakSet();
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const sha256 = /^[a-f0-9]{64}$/;
+const sameTree = (left, right) => left.sha256 === right.sha256 && left.count === right.count && left.size === right.size;
+const validTree = (tree) => sha256.test(tree?.sha256) && Number.isSafeInteger(tree.count) && tree.count > 0 && tree.count <= 10000
+  && Number.isSafeInteger(tree.size) && tree.size > 0 && tree.size <= (64 << 20);
 function fail() { throw new Error('Reviewed Wails native patch is missing, changed or unsafe; run npm run setup only after reviewing its patch and manifest.'); }
 function file(filename, maximum = 8 << 20) { const s = lstatSync(filename); if (!s.isFile() || s.isSymbolicLink() || s.size > maximum) fail(); return readFileSync(filename); }
 function directory(filename) { const s = lstatSync(filename); if (!s.isDirectory() || s.isSymbolicLink()) fail(); }
@@ -58,14 +61,17 @@ function sourceDefinition(root, checkSums) {
     root = path.resolve(root); directory(root); directory(path.join(root, 'config')); directory(path.join(root, 'third_party')); directory(path.join(root, 'third_party/patches'));
     const manifestBytes = file(path.join(root, 'config/wails-patch.json'), 128 << 10);
     const m = JSON.parse(manifestBytes.toString('utf8'));
-    if (m.schemaVersion !== 1 || m.module !== moduleName || m.version !== moduleVersion || m.patchVersion !== 1 || m.replacement !== replacementPath
+    if (m.schemaVersion !== 1 || m.module !== moduleName || m.version !== moduleVersion || m.patchVersion !== 2 || m.replacement !== replacementPath
       || m.upstreamSum !== upstreamSum || m.upstreamGoModSum !== upstreamGoModSum
-      || JSON.stringify(m.purpose) !== JSON.stringify(['native_only_file_drop', 'completed_reader_response'])
+      || JSON.stringify(m.purpose) !== JSON.stringify(['native_only_file_drop', 'completed_reader_response', 'minimal_notification_activation'])
       || !sha256.test(m.upstreamTree?.sha256) || !sha256.test(m.patchedTree?.sha256)
       || !Number.isSafeInteger(m.upstreamTree?.count) || !Number.isSafeInteger(m.patchedTree?.count)
       || m.upstreamTree.count < 1 || m.patchedTree.count < 1 || m.patchedTree.count > 10000
       || !Number.isSafeInteger(m.upstreamTree?.size) || !Number.isSafeInteger(m.patchedTree?.size)
       || m.upstreamTree.size < 1 || m.patchedTree.size < 1 || m.patchedTree.size > (64 << 20)
+      || !Array.isArray(m.previousPatchedTrees) || m.previousPatchedTrees.length > 8
+      || m.previousPatchedTrees.some((tree) => !validTree(tree) || !Number.isSafeInteger(tree.patchVersion) || tree.patchVersion < 1 || tree.patchVersion >= m.patchVersion || tree.sha256 === m.patchedTree.sha256)
+      || new Set(m.previousPatchedTrees.map((tree) => tree.sha256)).size !== m.previousPatchedTrees.length
       || m.patch?.path !== 'third_party/patches/wails-v3-native.patch' || !sha256.test(m.patch?.sha256)
       || !Number.isSafeInteger(m.patch?.size) || m.patch.size < 1 || m.patch.size > (1 << 20)) fail();
     const patch = file(path.join(root, m.patch.path), 1 << 20);
@@ -93,7 +99,7 @@ export function verifyWailsPatch(root) {
     if (inventory.sha256 !== expected.sha256 || inventory.count !== expected.count || inventory.size !== expected.size) fail();
     const mod = file(path.join(root, replacementPath, 'go.mod')).toString('utf8');
     if (!/^module github\.com\/wailsapp\/wails\/v3\r?$/m.test(mod) || /^\s*replace\b/m.test(mod)) fail();
-    const approval = Object.freeze({ module: moduleName, version: moduleVersion, path: replacementPath, root: path.resolve(root), patchVersion: 1, manifestSHA256: definition.manifestSHA256, treeSHA256: inventory.sha256 });
+    const approval = Object.freeze({ module: moduleName, version: moduleVersion, path: replacementPath, root: path.resolve(root), patchVersion: definition.manifest.patchVersion, manifestSHA256: definition.manifestSHA256, treeSHA256: inventory.sha256 });
     verified.add(approval); return approval;
   } catch { fail(); }
 }
@@ -136,34 +142,73 @@ export function applyWailsTextPatch(location, patch) {
   if (!seen.size) fail();
 }
 
-export function ensureWailsPatch(root, { executable = 'go', env = process.env } = {}) {
+export function ensureWailsPatch(root, { executable = 'go', env = process.env, spawn = spawnSync } = {}) {
+  root = path.resolve(root);
   const definition = verifyWailsDefinition(root);
   const destination = path.join(root, replacementPath);
-  if (existsSync(destination)) return verifyWailsPatch(root);
+  const wanted = definition.manifest.patchedTree;
+  let previous;
+  if (existsSync(destination)) {
+    const current = wailsTreeInventory(destination);
+    if (sameTree(current, wanted)) return verifyWailsPatch(root);
+    previous = definition.manifest.previousPatchedTrees.find((tree) => sameTree(current, tree));
+    // Setup upgrades only an explicitly reviewed old tree. Unknown changes,
+    // extra files and links never become permission to overwrite that tree.
+    if (!previous) fail();
+  }
   const local = privateDirectory(path.resolve(root), '.local');
   const modules = privateDirectory(path.resolve(root), '.local/modules');
   const lock = path.join(local, 'wails-materialization.lock');
   const descriptor = openSync(lock, 'wx', 0o600);
   const stage = path.join(modules, `wails-v3-stage-${process.pid}`);
+  const backup = path.join(modules, `wails-v3-previous-${process.pid}`);
+  let retired = false;
+  let promoted = false;
+  let stageOwned = false;
   try {
+    if (existsSync(stage) || existsSync(backup)) fail();
     const bootstrap = privateDirectory(path.resolve(root), '.local/wails-bootstrap');
     for (const name of readdirSync(bootstrap)) { if (!['go.mod', 'go.sum'].includes(name)) fail(); file(path.join(bootstrap, name), 1 << 20); }
     writeFileSync(path.join(bootstrap, 'go.mod'), 'module whatsup-wails-bootstrap\n\ngo 1.27.4\n', { mode: 0o600 });
-    const result = spawnSync(executable, ['mod', 'download', '-json', `${moduleName}@${moduleVersion}`], { cwd: bootstrap, env: { ...env, GOTOOLCHAIN: 'local', GOWORK: 'off', GOFLAGS: '', GOSUMDB: 'sum.golang.org', GONOSUMDB: 'none' }, shell: false, windowsHide: true, encoding: 'utf8', timeout: 300000, maxBuffer: 1 << 20 });
+    const result = spawn(executable, ['mod', 'download', '-json', `${moduleName}@${moduleVersion}`], { cwd: bootstrap, env: { ...env, GOTOOLCHAIN: 'local', GOWORK: 'off', GOFLAGS: '', GOSUMDB: 'sum.golang.org', GONOSUMDB: 'none' }, shell: false, windowsHide: true, encoding: 'utf8', timeout: 300000, maxBuffer: 1 << 20 });
     if (result.error || result.status !== 0) throw new Error('Exact checksum-verified Wails bootstrap failed');
     const downloaded = JSON.parse(result.stdout);
     if (downloaded.Path !== moduleName || downloaded.Version !== moduleVersion || downloaded.Sum !== upstreamSum || downloaded.GoModSum !== upstreamGoModSum || typeof downloaded.Dir !== 'string') fail();
     const pristine = wailsTreeInventory(downloaded.Dir); const expected = definition.manifest.upstreamTree;
     if (pristine.sha256 !== expected.sha256 || pristine.count !== expected.count || pristine.size !== expected.size) fail();
-    if (existsSync(stage)) fail(); mkdirSync(stage, { mode: 0o700 });
+    if (existsSync(stage)) fail(); mkdirSync(stage, { mode: 0o700 }); stageOwned = true;
     for (const name of pristine.files) { const relative = path.dirname(name).replaceAll('\\', '/'); if (relative !== '.') { let at = stage; for (const part of relative.split('/')) { at=path.join(at,part); if (!existsSync(at)) mkdirSync(at,{mode:0o700}); directory(at); } }; const target=path.join(stage,name); copyFileSync(path.join(downloaded.Dir,name),target); chmodSync(target,0o600); }
     applyWailsTextPatch(stage, definition.patch);
-    const patched = wailsTreeInventory(stage); const wanted = definition.manifest.patchedTree;
+    const patched = wailsTreeInventory(stage);
     if (patched.sha256 !== wanted.sha256 || patched.count !== wanted.count || patched.size !== wanted.size) fail();
+    // Recheck the complete old inventory after materializing the candidate.
+    // Preserve it until the promoted candidate passes the ordinary verifier.
+    if (previous) {
+      if (!sameTree(wailsTreeInventory(destination), previous)) fail();
+      renameSync(destination, backup); retired = true;
+    } else if (existsSync(destination)) fail();
     renameSync(stage, destination);
-    return verifyWailsPatch(root);
+    promoted = true;
+    const approval = verifyWailsPatch(root);
+    if (retired) {
+      if (path.dirname(backup) !== modules || path.basename(backup) !== `wails-v3-previous-${process.pid}` || !sameTree(wailsTreeInventory(backup), previous)) fail();
+      rmSync(backup, { recursive: true }); retired = false;
+    }
+    return approval;
+  } catch (error) {
+    if (retired) {
+      // A failed final verification restores the exact old source. If a file
+      // changed concurrently, preserve both trees for inspection and fail.
+      if (promoted && sameTree(wailsTreeInventory(destination), wanted) && !existsSync(stage)) {
+        renameSync(destination, stage); promoted = false;
+      }
+      if (!existsSync(destination) && sameTree(wailsTreeInventory(backup), previous)) {
+        renameSync(backup, destination); retired = false;
+      }
+    }
+    throw error;
   } finally {
-    if (path.dirname(stage) === modules && path.basename(stage) === `wails-v3-stage-${process.pid}` && existsSync(stage) && !lstatSync(stage).isSymbolicLink()) rmSync(stage, { recursive: true });
+    if (stageOwned && path.dirname(stage) === modules && path.basename(stage) === `wails-v3-stage-${process.pid}` && existsSync(stage) && !lstatSync(stage).isSymbolicLink()) rmSync(stage, { recursive: true });
     closeSync(descriptor); unlinkSync(lock);
   }
 }

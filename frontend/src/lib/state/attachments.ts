@@ -247,6 +247,7 @@ const empty = () => ({
   busy: false,
   notice: '',
   videos: {} as Record<string, string>,
+  image: null as { id: string; name: string; url: string } | null,
   saved: {} as Record<string, string>,
 });
 export function createAttachments(api: AttachmentBridge = bridge) {
@@ -262,6 +263,7 @@ export function createAttachments(api: AttachmentBridge = bridge) {
     revision = 0,
     stop: (() => void) | undefined,
     timer: ReturnType<typeof setTimeout> | undefined;
+  let imageGeneration = 0;
   let loading = false,
     again = false;
   let desiredTarget = '',
@@ -479,11 +481,24 @@ export function createAttachments(api: AttachmentBridge = bridge) {
     preview(item: AttachmentItem) {
       return action(async (id) => {
         const epoch = generation;
+        const imageEpoch = imageGeneration;
         const url = await api.preview(id, item.id);
-        if (!mediaURL(url)) throw new Error('Invalid video preview.');
-        if (epoch === generation && id === current.contactID)
-          publish({ videos: { ...current.videos, [item.id]: url } });
-      });
+        if (!mediaURL(url)) throw new Error('Invalid media preview.');
+        if (epoch === generation && id === current.contactID) {
+          if (
+            ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(
+              item.mediaType,
+            )
+          ) {
+            if (imageEpoch === imageGeneration)
+              publish({ image: { id: item.id, name: item.name, url } });
+          } else publish({ videos: { ...current.videos, [item.id]: url } });
+        }
+      }, false);
+    },
+    closeImage() {
+      imageGeneration++;
+      publish({ image: null });
     },
     save(item: AttachmentItem) {
       return action(async (id) => {

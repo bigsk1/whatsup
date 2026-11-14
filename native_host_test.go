@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"reflect"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"whatsup/internal/desktop"
+	"whatsup/internal/lifecycle"
 	"whatsup/internal/messaging"
 	"whatsup/internal/preferences"
 )
@@ -188,9 +190,77 @@ func TestNativeStartupReconcilesOwnedEntryWithoutEnablingDefaults(t *testing.T) 
 	}
 }
 
-func TestNativeLifecycleHasOnlyLifecycleMethods(t *testing.T) {
+func TestNativeLifecycleExposesOnlyLifecycleAndOpaqueActivation(t *testing.T) {
 	kind := reflect.TypeOf(&nativeLifecycle{})
-	if kind.NumMethod() != 2 || kind.Method(0).Name != "ServiceShutdown" || kind.Method(1).Name != "ServiceStartup" {
-		t.Fatal("native operations escaped the lifecycle-only boundary")
+	if kind.NumMethod() != 3 || kind.Method(0).Name != "ServiceShutdown" || kind.Method(1).Name != "ServiceStartup" || kind.Method(2).Name != "TakeNotificationActivation" {
+		t.Fatal("native operations escaped the narrow lifecycle boundary")
+	}
+}
+
+func TestNativeActivationRetainsLatestContactUntilTakenAndNeverUnlocks(t *testing.T) {
+	h := newNativeTasks(nil)
+	t.Cleanup(h.stopTasks)
+	h.unlock = func() (desktop.Status, error) { t.Error("notification unlocked storage"); return desktop.Status{}, nil }
+	h.lock = func() desktop.Status { t.Error("notification changed storage"); return desktop.Status{} }
+	shown := make(chan struct{}, 4)
+	h.controller = lifecycle.New(lifecycle.Actions{Show: func() { shown <- struct{}{} }})
+	h.controller.Ready()
+	var hints []NativeNotificationHint
+	h.activationSink = func(value NativeNotificationHint) { hints = append(hints, value) }
+	first, second := "AQEBAQEBAQEBAQEBAQEBAQ", "AgICAgICAgICAgICAgICAg"
+	for _, invalid := range []string{"", "AAAAAAAAAAAAAAAAAAAAAA", "not a contact", "AQEBAQEBAQEBAQEBAQEBAR"} {
+		h.activateContact(invalid)
+	}
+	bridge := &nativeLifecycle{host: h}
+	if bridge.TakeNotificationActivation() != "" || len(hints) != 0 {
+		t.Fatal("invalid contact became an activation")
+	}
+	h.activateContact(first)
+	h.activateContact(second)
+	if len(hints) != 2 || hints[0].ContactID != first || hints[1].ContactID != second {
+		t.Fatal("canonical activation did not emit its narrow hint")
+	}
+	for range 2 {
+		select {
+		case <-shown:
+		case <-time.After(3 * time.Second):
+			t.Fatal("notification did not request the existing window")
+		}
+	}
+	if bridge.TakeNotificationActivation() != second || bridge.TakeNotificationActivation() != "" {
+		t.Fatal("pending activation was lost, duplicated or did not keep the latest click")
+	}
+	h.activateContact(first)
+	var taken atomic.Int32
+	var workers sync.WaitGroup
+	for range 16 {
+		workers.Go(func() {
+			if bridge.TakeNotificationActivation() == first {
+				taken.Add(1)
+			}
+		})
+	}
+	workers.Wait()
+	if taken.Load() != 1 {
+		t.Fatal("activation consumption was not atomic")
+	}
+	h.activateContact(first)
+	h.stopTasks()
+	h.activateContact(second)
+	if bridge.TakeNotificationActivation() != "" {
+		t.Fatal("stopped host retained or accepted an activation")
+	}
+	if (*nativeLifecycle)(nil).TakeNotificationActivation() != "" || (&nativeLifecycle{}).TakeNotificationActivation() != "" {
+		t.Fatal("missing host returned an activation")
+	}
+}
+
+func TestNativeOfflineRetiresPendingNotificationActivation(t *testing.T) {
+	h := newNativeTasks(nil)
+	t.Cleanup(h.stopTasks)
+	h.activateContact("AQEBAQEBAQEBAQEBAQEBAQ")
+	h.enqueueOffline()
+	if h.takeNotificationActivation() != "" {
+		t.Fatal("explicit offline retained an earlier notification target")
 	}
 }

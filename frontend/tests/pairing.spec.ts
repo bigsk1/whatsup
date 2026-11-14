@@ -1,3 +1,4 @@
+import { nativeHint } from './contact-events';
 import { serveDefaultAppPreferences } from './contact-events';
 import { groupedFingerprint } from '../src/lib/state/fingerprint';
 import { readFileSync } from 'node:fs';
@@ -151,6 +152,7 @@ async function syntheticPairing(
       return;
     }
     state.pairing = { ...unavailablePairing, state: 'canceled' };
+    await nativeHint(page, 'whatsup:pairing-changed', { revision: Date.now() });
     await route.fulfill({ json: state.pairing });
   });
   await page.addInitScript(injectRuntime);
@@ -169,6 +171,7 @@ test('shows only a reserved request, defaults to Deny and waits after approval',
     page.getByRole('dialog', { name: 'Pairing request' }),
   ).toHaveCount(0);
   state.pairing = pending();
+  await nativeHint(page, 'whatsup:pairing-changed', { revision: Date.now() });
   const dialog = page.getByRole('dialog', { name: 'Pairing request' });
   await expect(dialog).toBeVisible();
   await expect(
@@ -214,6 +217,7 @@ test('Escape denies and a later reserved request can be denied with its button',
     page.getByText(groupedFingerprint(peerA), { exact: true }),
   ).toHaveCount(0);
   state.pairing = pending(requestB, peerB);
+  await nativeHint(page, 'whatsup:pairing-changed', { revision: Date.now() });
   const next = page.getByRole('dialog', { name: 'Pairing request' });
   await expect(
     next.getByText(groupedFingerprint(peerB), { exact: true }),
@@ -248,15 +252,43 @@ test('rejects invalid and unexpected pairing DTO fields without displaying ident
   ).toHaveCount(0);
   state.pairing = { ...pending(), bearer: 'synthetic-unexpected-field' };
   const previousCalls = calls.length;
+  await nativeHint(page, 'whatsup:pairing-changed', { revision: Date.now() });
   await expect.poll(() => calls.length).toBeGreaterThan(previousCalls);
   await expect(
     page.getByRole('dialog', { name: 'Pairing request' }),
   ).toHaveCount(0);
   state.pairing = pending();
+  await nativeHint(page, 'whatsup:pairing-changed', { revision: Date.now() });
   await expect(
     page.getByRole('dialog', { name: 'Pairing request' }),
   ).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test('pairing stays idle without polling and reloads immediately from a revision hint', async ({
+  page,
+}) => {
+  const { state, calls } = await syntheticPairing(page);
+  await page.goto('/');
+  await expect
+    .poll(
+      () =>
+        calls.filter((call) => call.operation === 'GetPairingStatus').length,
+    )
+    .toBeGreaterThan(0);
+  await page.waitForTimeout(100);
+  const count = calls.filter(
+    (call) => call.operation === 'GetPairingStatus',
+  ).length;
+  await page.waitForTimeout(2100);
+  expect(
+    calls.filter((call) => call.operation === 'GetPairingStatus').length,
+  ).toBe(count);
+  state.pairing = pending();
+  await nativeHint(page, 'whatsup:pairing-changed', { revision: 50 });
+  await expect(
+    page.getByRole('dialog', { name: 'Pairing request' }),
+  ).toBeVisible();
 });
 
 test('a delayed old approval response cannot replace a newer request', async ({
@@ -276,6 +308,7 @@ test('a delayed old approval response cannot replace a newer request', async ({
     .poll(() => calls.some((call) => call.operation === 'ApprovePairing'))
     .toBe(true);
   state.pairing = pending(requestB, peerB);
+  await nativeHint(page, 'whatsup:pairing-changed', { revision: Date.now() });
   await expect(
     dialog.getByText(groupedFingerprint(peerB), { exact: true }),
   ).toBeVisible();
@@ -355,6 +388,7 @@ test('locking storage ignores an in-flight request and stops polling', async ({
       held = true;
       release = resolve;
     });
+  await nativeHint(page, 'whatsup:pairing-changed', { revision: Date.now() });
   await expect.poll(() => held).toBe(true);
   await page.keyboard.press('Control+,');
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
@@ -426,6 +460,7 @@ test('expired requests remove the fingerprint and approval controls', async ({
     page.getByRole('dialog', { name: 'Pairing request' }),
   ).toBeVisible();
   state.pairing = { ...unavailablePairing, state: 'expired' };
+  await nativeHint(page, 'whatsup:pairing-changed', { revision: Date.now() });
   await expect(
     page.getByRole('dialog', { name: 'Pairing request' }),
   ).toHaveCount(0);
@@ -445,6 +480,7 @@ test('completed pairing closes approval and reports approval without messaging r
     page.getByRole('dialog', { name: 'Pairing request' }),
   ).toBeVisible();
   state.pairing = { ...unavailablePairing, state: 'completed' };
+  await nativeHint(page, 'whatsup:pairing-changed', { revision: Date.now() });
   await expect(
     page.getByText('Contact approved. Waiting for the saved conversation.', {
       exact: true,

@@ -62,6 +62,7 @@ type invitationControl struct {
 	closed          bool
 	wg              sync.WaitGroup
 	bootstrapFailed bool
+	onChanged       func()
 	legacyFixture   bool // trusted Go-only domain fixture; production is always v2
 	listen          func(context.Context, string, bool) (invitationListener, error)
 	dial            func(context.Context, address.Endpoint, string, bool) (net.Conn, error)
@@ -111,6 +112,7 @@ func newInvitationControl(local *identity.Identity, flow *pairflow.Coordinator) 
 }
 
 func (c *invitationControl) begin(consent bool, expires time.Time) (*invitationJob, error) {
+	defer c.changed()
 	if transport.ValidatePolicy(transport.RelayFallback, consent) != nil || !time.Now().Before(expires) {
 		return nil, errors.New("Encrypted relay consent is required; direct-only pairing is unavailable")
 	}
@@ -141,6 +143,7 @@ func (j *invitationJob) closeOwned() {
 }
 
 func (c *invitationControl) finish(job *invitationJob, failed bool) {
+	defer c.changed()
 	job.once.Do(func() {
 		job.closeOwned()
 		c.mu.Lock()
@@ -263,6 +266,7 @@ func (c *invitationControl) snapshot() pairflow.Snapshot {
 }
 
 func (c *invitationControl) cancelInvitation() (pairflow.Snapshot, error) {
+	defer c.changed()
 	c.mu.Lock()
 	job := c.job
 	c.mu.Unlock()

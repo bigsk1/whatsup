@@ -53,8 +53,10 @@ remain encrypted inside WhatsUp. Save writes a plaintext copy to a destination
 you choose through the Go dialog; Show in folder reveals it without opening it.
 Those copies are outside WhatsUp's encryption and deletion controls.
 
-Image sends re-encode and strip metadata by default. Send as file retains original
-bytes and metadata. Copy/paste uses the OS clipboard and its retention policy.
+Image sends apply EXIF orientation, re-encode and strip metadata by default. JPEG
+photos remain JPEG. Full-size previews are sanitized on demand and use a bounded
+session cache cleared on retirement. Send as file retains original bytes and
+metadata as a save-only object, without image preview or automatic image acceptance. Copy/paste uses the OS clipboard and its retention policy.
 Recovery exports contain identity, contacts, history and attachments, encrypted
 under a separate recovery passphrase. Keep exports and secrets private.
 
@@ -90,9 +92,10 @@ Notifications use the desktop notification service over the user's session bus.
 
 Notifications say only **New message** by default. Enabling names/previews sends
 that content to the OS notification system, including its notification history.
-It can appear on the desktop or lock screen according to OS settings. The current
-Windows runtime also includes notification content and the random contact ID in
-its activation payload. Turning previews off affects future notifications; it
+It can appear on the desktop or lock screen according to OS settings. Notification activation data contains only opaque routing identifiers, without
+duplicating names or message previews. Clicking a notification can select an
+existing saved conversation after unlock; it cannot unlock the app or add a
+contact. Turning previews off affects future notifications; it
 does not erase existing Action Center entries, OS history or prior copies.
 
 ## Local diagnostics and locations
@@ -108,7 +111,7 @@ The active and previous logs are limited to 256 KiB each, 512 KiB total.
 | Windows | `%LOCALAPPDATA%\WhatsUp` |
 | Linux | `$XDG_DATA_HOME/whatsup`, normally `~/.local/share/whatsup` |
 
-The profile includes state.vault, messages.sqlite and encrypted sidecars,
+The profile includes state.vault, messages.sqlite and sidecars containing encrypted records,
 encrypted attachment objects, app-preferences.vault, private WebView data and
 recognized migration/recovery copies. Logs are diagnostics.jsonl and
 diagnostics.previous.jsonl. Linux cache normally uses `~/.cache/whatsup`.

@@ -1,7 +1,7 @@
 # WhatsUp
 
 WhatsUp is a private desktop messenger for Windows and Linux. The current
-**0.0.11 preview** supports up to 32 saved contacts, with a separate one-to-one
+**0.0.12 preview** supports up to 32 saved contacts, with a separate one-to-one
 conversation and approved device identities for each contact.
 
 It includes encrypted local message history and offline queues, resumable file
@@ -29,7 +29,9 @@ Credential Manager or Linux Secret Service is required in both modes.
 stays on the device. **Keep running when the window closes** is enabled initially;
 closing the window keeps connections running in the tray. Choose **Quit** from
 the tray to exit. A second launch shows the existing window. Start at login is
-opt-in under **Settings → App behavior**.
+opt-in under **Settings → App behavior** and starts in the tray when one is
+available. Clicking a notification opens its saved conversation after local
+storage is available; it never bypasses the app passphrase.
 
 ## Pair with someone
 
@@ -77,8 +79,12 @@ inside WhatsUp until **Save…** writes a copy to a destination you choose.
 **Show in folder** reveals a saved copy; the app never opens arbitrary files.
 
 PNG, JPEG, WebP and static GIF previews use bounded Go decoding and sanitized
-thumbnails. Image sends re-encode by default and strip metadata. **Send as file**
-preserves supported originals. MP4/WebM playback starts only on click; Linux
+thumbnails. **View image** opens a full-size preview with fit and actual-size
+controls. Image sends apply EXIF orientation, re-encode and strip metadata. JPEG
+photos remain JPEG; other supported static images use PNG. If an image is
+unsupported, animated or too large to preview, explicitly choose **Send as file**
+to preserve its original bytes and metadata. File mode is save-only, without
+image auto-accept or previews. MP4/WebM playback starts only on click; Linux
 playback depends on installed GStreamer codecs. Other file types are save-only.
 No HTML, SVG or active Markdown preview is provided. The attachment panel can be
 collapsed without losing transfer state or saved items.

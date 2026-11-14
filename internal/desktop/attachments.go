@@ -26,6 +26,7 @@ import (
 )
 
 var errAttachment = errors.New("The attachment action could not be completed. Check the selected contact and local storage, then try again.")
+var errImageAsFile = errors.New("This image cannot be safely prepared for preview. Choose Send as file to send the original without an image preview.")
 
 func attachmentActionError(err error) error {
 	if errors.Is(err, transfer.ErrCapacity) {
@@ -64,6 +65,7 @@ type attachmentSession struct {
 	drafts      map[string]attachmentReference
 	assets      map[string]attachmentReference
 	saved       map[string]savedAttachment
+	images      *attachmentImageCache
 }
 
 type attachmentContact struct {
@@ -155,11 +157,12 @@ func (s *Service) startAttachmentsLocked() {
 		parent = context.Background()
 	}
 	life, cancel := context.WithCancel(parent)
-	s.attachments.session = &attachmentSession{application: s.application, messages: s.messages, life: life, cancel: cancel, contacts: map[string]*attachmentContact{}, drafts: map[string]attachmentReference{}, assets: map[string]attachmentReference{}, saved: map[string]savedAttachment{}}
+	s.attachments.session = &attachmentSession{application: s.application, messages: s.messages, life: life, cancel: cancel, contacts: map[string]*attachmentContact{}, drafts: map[string]attachmentReference{}, assets: map[string]attachmentReference{}, saved: map[string]savedAttachment{}, images: newAttachmentImageCache()}
 }
 func (s *Service) stopAttachmentsLocked() {
 	if s.attachments != nil && s.attachments.session != nil {
 		s.attachments.session.cancel()
+		s.attachments.session.images.invalidate("", "")
 		s.attachments.session = nil
 	}
 }
@@ -168,6 +171,7 @@ func (s *Service) retireAttachmentsLocked(id string) {
 		return
 	}
 	g := s.attachments.session
+	g.images.invalidate(id, "")
 	if contact := g.contacts[id]; contact != nil {
 		contact.cancel()
 		delete(g.contacts, id)
@@ -363,24 +367,28 @@ func (s *Service) stageReader(l attachmentLease, source io.ReadSeeker, name stri
 	if l.contact.life.Err() != nil {
 		return AttachmentDraft{}, errAttachment
 	}
-	kind, mime, err := media.Sniff(source)
-	if err != nil {
-		return AttachmentDraft{}, errAttachment
-	}
-	if requireImage && kind != "image" {
-		return AttachmentDraft{}, errAttachment
+	kind, mime := media.KindFile, "application/octet-stream"
+	var err error
+	if !asFile {
+		kind, mime, err = media.Sniff(source)
+		if err != nil {
+			return AttachmentDraft{}, errAttachment
+		}
+		if requireImage && kind != media.KindImage || kind != media.KindImage && media.LooksLikeImage(source, name) {
+			return AttachmentDraft{}, errImageAsFile
+		}
 	}
 	var prepared []byte
 	if !asFile && kind == "image" {
 		value, err := media.Prepare(l.contact.life, source)
 		if err != nil {
-			return AttachmentDraft{}, errAttachment
+			return AttachmentDraft{}, errImageAsFile
 		}
 		prepared = value.Data
 		defer clear(prepared)
 		source = bytes.NewReader(prepared)
 		mime = value.MediaType
-		name = strings.TrimSuffix(name, filepath.Ext(name)) + ".png"
+		name = strings.TrimSuffix(name, filepath.Ext(name)) + value.Extension()
 	}
 	if _, err = source.Seek(0, io.SeekStart); err != nil {
 		return AttachmentDraft{}, errAttachment
@@ -618,6 +626,7 @@ func (s *Service) discardAttachmentDraft(l attachmentLease, handle string) error
 		return errAttachment
 	}
 	delete(l.session.drafts, handle)
+	l.session.images.invalidate(l.id, ref.transferID)
 	for token, asset := range l.session.assets {
 		if asset.contactID == l.id && asset.transferID == ref.transferID {
 			delete(l.session.assets, token)
@@ -708,10 +717,14 @@ func (s *Service) PreviewAttachment(id, attachment string) (string, error) {
 		return "", errAttachment
 	}
 	mime, err := l.scope.VerifiedMediaType(attachment)
-	if err != nil || mime != "video/mp4" && mime != "video/webm" {
+	if err != nil || !media.AllowedImage(mime) && mime != "video/mp4" && mime != "video/webm" {
 		return "", errAttachment
 	}
-	url := s.assetURLLocked(l, attachment, "video")
+	kind := "video"
+	if media.AllowedImage(mime) {
+		kind = "image"
+	}
+	url := s.assetURLLocked(l, attachment, kind)
 	if url == "" {
 		return "", errAttachment
 	}
@@ -858,29 +871,52 @@ func ServeAttachment(s *Service, w http.ResponseWriter, r *http.Request) bool {
 	defer cancel()
 	stop := context.AfterFunc(l.contact.life, cancel)
 	defer stop()
+	item, err := l.scope.Get(ref.transferID)
+	mime, typeErr := l.scope.VerifiedMediaType(ref.transferID)
+	if err != nil || typeErr != nil || item.Hidden {
+		deny()
+		return true
+	}
 	input, err := l.scope.Open(ctx, ref.transferID)
 	if err != nil {
 		deny()
 		return true
 	}
-	if ref.kind == "thumbnail" {
+	if ref.kind == "thumbnail" || ref.kind == "image" {
 		defer input.Close()
-		if l.begin() != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
+		if !media.AllowedImage(mime) || ref.kind == "image" && item.State != transfer.Complete {
+			deny()
 			return true
 		}
-		defer l.end()
-		thumbnail, err := media.Thumbnail(ctx, input)
+		image, err := l.session.images.load(ctx, ref, func() (attachmentImage, error) {
+			if err := l.begin(); err != nil {
+				return attachmentImage{}, err
+			}
+			defer l.end()
+			if ref.kind == "thumbnail" {
+				data, err := media.Thumbnail(ctx, input)
+				return attachmentImage{data: data, mime: "image/png"}, err
+			}
+			prepared, err := media.Prepare(ctx, input)
+			clear(prepared.Thumbnail)
+			return attachmentImage{data: prepared.Data, mime: prepared.MediaType}, err
+		})
+		defer clear(image.data)
 		if err != nil || ctx.Err() != nil {
 			deny()
 			return true
 		}
-		w.Header().Set("Content-Type", "image/png")
-		http.ServeContent(w, r, "thumbnail.png", zeroAttachmentTime, bytes.NewReader(thumbnail))
+		s.mu.Lock()
+		current := s.attachmentCurrentLocked(l) && l.session.assets[token] == ref
+		s.mu.Unlock()
+		if !current || !media.AllowedImage(image.mime) {
+			deny()
+			return true
+		}
+		w.Header().Set("Content-Type", image.mime)
+		http.ServeContent(w, r, "image", zeroAttachmentTime, bytes.NewReader(image.data))
 		return true
 	}
-	item, err := l.scope.Get(ref.transferID)
-	mime, typeErr := l.scope.VerifiedMediaType(ref.transferID)
 	if err != nil || typeErr != nil || item.Hidden || item.State != transfer.Complete || ref.kind != "video" || mime != "video/mp4" && mime != "video/webm" {
 		input.Close()
 		deny()

@@ -1,6 +1,6 @@
 # Security information
 
-WhatsUp 0.0.11 is unsigned preview software, not a supported public release.
+WhatsUp 0.0.12 is unsigned preview software, not a supported public release.
 It has not undergone an independent security audit or certification. Do not
 rely on the preview for sensitive communication.
 
@@ -80,8 +80,11 @@ storage and whole-file SHA-256 verification before completion. A peer cannot
 choose a local save path. The Go save dialog chooses the export destination.
 Files are never auto-opened. Preview handlers serve opaque IDs with forced MIME,
 nosniff and restrictive CSP; HTML, SVG and active Markdown are not previewed.
-Images are decoded with dimension/pixel limits and re-encoded for thumbnails.
-Normal image sends strip metadata; send-as-file preserves original bytes.
+Images are decoded with dimension/pixel limits, oriented and re-encoded for
+full-size views and thumbnails. Normal image sends strip metadata; explicit
+send-as-file preserves original bytes as save-only data, skipping image decoding,
+preview and image auto-accept eligibility. Session caches are bounded and retired
+with their contact/storage authority.
 
 Clear history cancels unfinished attachments while keeping the contact; queued
 text retains its delivery obligation. Forget removes one contact's local state

@@ -13,6 +13,15 @@ const preferenceBinding = generated.match(
 if (!preferenceBinding)
   throw new Error('Missing generated app preferences binding');
 const preferencesID = Number(preferenceBinding[1]);
+const nativeGenerated = readFileSync(
+  new URL('../bindings/whatsup/nativelifecycle.ts', import.meta.url),
+  'utf8',
+);
+export const notificationActivationID = Number(
+  nativeGenerated.match(
+    /export function TakeNotificationActivation\([\s\S]*?\$Call\.ByID\((\d+)/,
+  )?.[1],
+);
 const securityID = Number(
   generated.match(
     /export function GetStorageSecurity\([\s\S]*?\$Call\.ByID\((\d+)/,
@@ -48,6 +57,12 @@ export async function serveDefaultRelayChange(route: Route): Promise<boolean> {
 export async function serveDefaultAppPreferences(
   route: Route,
 ): Promise<boolean> {
+  if (
+    route.request().postDataJSON().args?.methodID === notificationActivationID
+  ) {
+    await route.fulfill({ json: '' });
+    return true;
+  }
   if (await serveDefaultRelayChange(route)) return true;
   if (route.request().postDataJSON().args?.methodID === securityID) {
     await route.fulfill({

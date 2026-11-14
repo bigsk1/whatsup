@@ -57,9 +57,13 @@
     </h2>
   </div>
   <p>
-    This changes only the history shown on this device. Your contact stays
-    saved. Unfinished attachments are cancelled. Messages still queued for
-    delivery continue sending until acknowledged.
+    {#if selectedMessage}
+      This deletes the local message. Your contact stays saved.
+    {:else}
+      This clears local history and keeps the contact. Unfinished attachments
+      are cancelled.
+    {/if}
+    Messages still queued for delivery continue sending until acknowledged.
   </p>
   {#if notice}<p role="alert">{notice}</p>{/if}
   <div class="dialog-footer">

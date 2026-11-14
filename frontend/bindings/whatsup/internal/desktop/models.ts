@@ -56,6 +56,14 @@ export interface InvitationShare {
 }
 
 /**
+ * PairingHint contains no identity, invitation or approval authority. Consumers
+ * reload GetPairingStatus after a hint or a visibility/network recovery.
+ */
+export interface PairingHint {
+    "revision": number;
+}
+
+/**
  * ProfileSnapshot contains only explicitly editable public profile metadata.
  * Names remain in encrypted Go storage, never frontend preferences or logs.
  */

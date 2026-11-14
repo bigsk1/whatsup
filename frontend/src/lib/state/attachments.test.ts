@@ -54,6 +54,45 @@ function deferred<T>() {
   return { promise, resolve };
 }
 describe('attachment state boundary', () => {
+  it('keeps an older-page image open across current-page reloads until explicit invalidation', async () => {
+    const api = mock();
+    const older = { ...item, id: 'E'.repeat(21) + 'A', mediaType: 'image/png' };
+    api.list = vi.fn(async () => ({
+      ...snapshot(),
+      hasMore: true,
+      nextCursor: '2',
+    }));
+    api.history = vi.fn(async () => ({
+      ...snapshot(),
+      items: [older],
+      hasMore: false,
+      nextCursor: '',
+    }));
+    const store = createAttachments(api);
+    await store.select(id);
+    await vi.waitFor(() => expect(get(store.state).hasMore).toBe(true));
+    await store.older();
+    await store.preview(older);
+    expect(get(store.state).image?.id).toBe(older.id);
+    await store.reload();
+    expect(get(store.state).image?.id).toBe(older.id);
+    store.invalidate();
+    expect(get(store.state).image).toBeNull();
+    store.stop();
+  });
+  it('explicit image dismissal retires a pending full-image response', async () => {
+    const api = mock(),
+      pending = deferred<string>();
+    api.preview = vi.fn(() => pending.promise);
+    const store = createAttachments(api);
+    await store.select(id);
+    const viewing = store.preview({ ...item, mediaType: 'image/png' });
+    store.closeImage();
+    pending.resolve('/local-media/' + token);
+    await viewing;
+    expect(get(store.state).image).toBeNull();
+    store.stop();
+  });
   it('preserves drafts offline, blocks wire sends only on connected protocol3, and keeps saved-file actions after removal', async () => {
     const api = mock(),
       store = createAttachments(api);
@@ -184,6 +223,20 @@ describe('attachment state boundary', () => {
     pending.resolve('/local-media/' + token);
     await playing;
     expect(get(store.state).videos).toEqual({});
+    store.stop();
+  });
+  it('does not restore a delayed full image after the contact generation is retired', async () => {
+    const api = mock(),
+      pending = deferred<string>();
+    api.preview = vi.fn(() => pending.promise);
+    const store = createAttachments(api);
+    await store.select(id);
+    const viewing = store.preview({ ...item, mediaType: 'image/png' });
+    store.stop();
+    await store.select(id);
+    pending.resolve('/local-media/' + token);
+    await viewing;
+    expect(get(store.state).image).toBeNull();
     store.stop();
   });
   it('does not retain a delayed saved-file capability after going offline', async () => {

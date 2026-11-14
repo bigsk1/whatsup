@@ -1,4 +1,5 @@
 import { writable } from 'svelte/store';
+import { Events } from '@wailsio/runtime';
 import {
   approvePairing,
   denyPairing,
@@ -26,7 +27,8 @@ export function createPairing(options: {
   let acceptedSequence = 0;
   let activePoll: number | undefined;
   let activeAction = 0;
-  let pairingTimer: number | undefined;
+  let stopEvents: (() => void) | undefined;
+  let refreshAgain = false;
   let invitationBusy = false;
   let invitationSequence = 0;
   const state = writable<{
@@ -62,8 +64,12 @@ export function createPairing(options: {
     );
   }
   function clearPairing() {
-    if (pairingTimer !== undefined) window.clearInterval(pairingTimer);
-    pairingTimer = undefined;
+    stopEvents?.();
+    stopEvents = undefined;
+    window.removeEventListener('focus', recoverPairing);
+    window.removeEventListener('online', recoverPairing);
+    document.removeEventListener('visibilitychange', recoverPairing);
+    refreshAgain = false;
     pairingEpoch += 1;
     activePoll = undefined;
     pairing = { ...unavailablePairing };
@@ -144,21 +150,43 @@ export function createPairing(options: {
     } finally {
       if (operation === invitationSequence) {
         invitationBusy = false;
-        startPairingPolling();
+        startPairingEvents();
       }
       emit();
     }
   }
 
-  function startPairingPolling() {
+  function recoverPairing() {
+    if (!document.hidden && options.enabled()) void refreshPairing();
+  }
+  function startPairingEvents() {
     if (!options.enabled()) return;
+    if (!stopEvents) {
+      stopEvents = Events.On('whatsup:pairing-changed', (event) => {
+        const hint = event.data;
+        if (
+          hint &&
+          typeof hint === 'object' &&
+          !Array.isArray(hint) &&
+          Object.keys(hint).length === 1 &&
+          Number.isSafeInteger(hint.revision) &&
+          hint.revision > 0
+        )
+          void refreshPairing();
+      });
+      window.addEventListener('focus', recoverPairing);
+      window.addEventListener('online', recoverPairing);
+      document.addEventListener('visibilitychange', recoverPairing);
+    }
     void refreshPairing();
-    if (pairingTimer === undefined)
-      pairingTimer = window.setInterval(() => void refreshPairing(), 1000);
   }
 
   async function refreshPairing() {
-    if (!options.enabled() || activePoll !== undefined) return;
+    if (!options.enabled()) return;
+    if (activePoll !== undefined) {
+      refreshAgain = true;
+      return;
+    }
     const epoch = pairingEpoch;
     const sequence = ++requestSequence;
     activePoll = sequence;
@@ -193,6 +221,10 @@ export function createPairing(options: {
     } finally {
       if (activePoll === sequence) activePoll = undefined;
       emit();
+      if (refreshAgain && epoch === pairingEpoch && options.enabled()) {
+        refreshAgain = false;
+        queueMicrotask(() => void refreshPairing());
+      }
     }
   }
 
@@ -252,7 +284,7 @@ export function createPairing(options: {
 
   return {
     state,
-    start: startPairingPolling,
+    start: startPairingEvents,
     stop: clearPairing,
     create: beginInvitation,
     join: openInvitation,

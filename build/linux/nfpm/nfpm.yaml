@@ -3,7 +3,7 @@
 name: whatsup
 arch: ${GOARCH}
 platform: linux
-version: 0.0.11
+version: 0.0.12
 section: net
 priority: optional
 description: Private one-to-one desktop messenger

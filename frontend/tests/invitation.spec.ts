@@ -1,3 +1,4 @@
+import { nativeHint } from './contact-events';
 import { serveDefaultAppPreferences } from './contact-events';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
@@ -383,6 +384,7 @@ test('joining requires consent, clears pasted bearer and hands reservation to th
     }))
     .toEqual({ args: [privateLink, relayURL, true], state: 'connecting' });
   state.pairing = { ...reserved, expiresAt: state.expiry() };
+  await nativeHint(page, 'whatsup:pairing-changed', { revision: Date.now() });
   await expect(
     page.getByRole('dialog', { name: 'Pairing request' }),
   ).toBeVisible();
@@ -405,6 +407,7 @@ test('reservation hides the shared bearer without canceling its pairing channel'
     page.getByRole('dialog', { name: 'Share your invitation' }),
   ).toBeVisible();
   state.pairing = { ...reserved, expiresAt: state.expiry() };
+  await nativeHint(page, 'whatsup:pairing-changed', { revision: Date.now() });
   await expect(
     page.getByRole('dialog', { name: 'Pairing request' }),
   ).toBeVisible();
@@ -566,6 +569,7 @@ for (const terminal of ['failed', 'expired'] as const) {
     ).toBeVisible();
     await expect.poll(() => state.pairing.state).toBe('connecting');
     state.pairing = { ...unavailablePairing, state: terminal };
+    await nativeHint(page, 'whatsup:pairing-changed', { revision: Date.now() });
     await expect(dialog.getByRole('alert')).toContainText(
       terminal === 'expired'
         ? 'This invitation expired.'
@@ -597,6 +601,7 @@ test('an asynchronously failed share clears its bearer immediately', async ({
     privateLink,
   );
   state.pairing = { ...unavailablePairing, state: 'failed' };
+  await nativeHint(page, 'whatsup:pairing-changed', { revision: Date.now() });
   const dialog = page.locator('.invitation-dialog');
   await expect(dialog.getByRole('alert')).toContainText(
     'The invitation connection failed.',

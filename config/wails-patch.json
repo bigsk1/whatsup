@@ -2,13 +2,14 @@
   "schemaVersion": 1,
   "module": "github.com/wailsapp/wails/v3",
   "version": "v3.1.0",
-  "patchVersion": 1,
+  "patchVersion": 2,
   "replacement": "./.local/modules/wails-v3",
   "upstreamSum": "h1:ld0AXSicXiTTsIvmTq3qNn9FzCP8vIHRSJdkRLgaAo8=",
   "upstreamGoModSum": "h1:tzDY3W1jzN3ksSqfGalTt7K3PwnGfIqtl+IgIXlXz0I=",
   "purpose": [
     "native_only_file_drop",
-    "completed_reader_response"
+    "completed_reader_response",
+    "minimal_notification_activation"
   ],
   "upstreamTree": {
     "sha256": "031658ed3d2445aea47806f219cb50187eb495404a7cee9d9d06a01a1b1ba420",
@@ -16,14 +17,14 @@
     "size": 41908357
   },
   "patchedTree": {
-    "sha256": "394d415ebc545e5c08c6819a0d97e3d8da369de8d70e70c38834f82c82606f17",
-    "count": 4556,
-    "size": 41962495
+    "sha256": "3468f55865c8f58cd2a760d1154a545886504c8b3afef8f73975727b9af4f91f",
+    "count": 4557,
+    "size": 41965568
   },
   "patch": {
     "path": "third_party/patches/wails-v3-native.patch",
-    "sha256": "3b0b2742b09678d4bc6d4fc75b858be43634a77a07d58e53f59cd1b0d8a37f9c",
-    "size": 63304
+    "sha256": "2ce324d81e1f54af8183730df85cb0ea82b009700b8cc34fd19d37b5d203ae5c",
+    "size": 67252
   },
   "files": [
     {
@@ -169,6 +170,26 @@
       "upstreamSHA256": null,
       "sha256": "b77922d330cc802a5516e7b159b355e68452eb1a05d5680c5badcac02ee98ead",
       "size": 1687
+    },
+    {
+      "path": "pkg/services/notifications/notifications_windows.go",
+      "upstreamSHA256": "e0530a13810bacdcb63c7bafc721dfde19b4bcca9bfca337c38e0195ac39a70a",
+      "sha256": "a9b16c533ed9d3c0a92e2f47a9268f1061959c5c014afb67cc0a48b81dc64bba",
+      "size": 22730
+    },
+    {
+      "path": "pkg/services/notifications/whatsup_activation_windows_test.go",
+      "upstreamSHA256": null,
+      "sha256": "2c3c50677ac172417f6a7c4c55de23b8b4f27dcb732e2c7f5a52773f0b8da2c8",
+      "size": 2542
+    }
+  ],
+  "previousPatchedTrees": [
+    {
+      "patchVersion": 1,
+      "sha256": "394d415ebc545e5c08c6819a0d97e3d8da369de8d70e70c38834f82c82606f17",
+      "count": 4556,
+      "size": 41962495
     }
   ]
 }

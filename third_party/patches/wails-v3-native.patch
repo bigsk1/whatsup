@@ -1927,3 +1927,101 @@
 +	}
 +	t.Log(strings.TrimSpace(string(output)))
 +}
+--- a/pkg/services/notifications/notifications_windows.go
++++ b/pkg/services/notifications/notifications_windows.go
+@@ -46,6 +46,11 @@
+ 	Options NotificationOptions `json:"payload,omitempty"`
+ }
+ 
++type notificationActivationOptions struct {
++	ID   string                 `json:"id"`
++	Data map[string]interface{} `json:"data,omitempty"`
++}
++
+ // Creates a new Notifications Service.
+ func New() *NotificationService {
+ 	notificationServiceOnce.Do(func() {
+@@ -568,9 +573,15 @@
+ 
+ // encodePayload combines an action ID and user data into a single encoded string
+ func (wn *windowsNotifier) encodePayload(actionID string, options NotificationOptions) (string, error) {
+-	payload := NotificationPayload{
++	// Activation needs only the opaque notification ID and caller-provided
++	// routing data. Do not duplicate visual text or local file/sound/schedule
++	// metadata in launch arguments retained by the Windows notification system.
++	payload := struct {
++		Action  string                        `json:"action"`
++		Options notificationActivationOptions `json:"payload"`
++	}{
+ 		Action:  actionID,
+-		Options: options,
++		Options: notificationActivationOptions{ID: options.ID, Data: options.Data},
+ 	}
+ 
+ 	jsonData, err := json.Marshal(payload)
+--- /dev/null
++++ b/pkg/services/notifications/whatsup_activation_windows_test.go
+@@ -0,0 +1,63 @@
++//go:build windows
++
++package notifications
++
++import (
++	"encoding/base64"
++	"encoding/json"
++	"encoding/xml"
++	"strings"
++	"testing"
++)
++
++func TestWhatsUpToastActivationCarriesOnlyOpaqueRoutingData(t *testing.T) {
++	wn := &windowsNotifier{}
++	options := NotificationOptions{
++		ID: "AAAAAAAAAAAAAAAAAAAAAA", Title: "Synthetic private contact", Body: "Synthetic private message",
++		Subtitle: "Synthetic private subtitle", CategoryID: "private category", ThreadID: "private thread",
++		Data: map[string]interface{}{"contactID": "AQEBAQEBAQEBAQEBAQEBAQ"},
++	}
++	for _, action := range []string{DefaultActionIdentifier, "SYNTHETIC_ACTION"} {
++		encoded, err := wn.encodePayload(action, options)
++		if err != nil {
++			t.Fatal(err)
++		}
++		decoded, err := base64.StdEncoding.DecodeString(encoded)
++		if err != nil {
++			t.Fatal(err)
++		}
++		var payload map[string]json.RawMessage
++		if err := json.Unmarshal(decoded, &payload); err != nil || len(payload) != 2 {
++			t.Fatalf("invalid activation envelope: %v", err)
++		}
++		var fields map[string]json.RawMessage
++		if err := json.Unmarshal(payload["payload"], &fields); err != nil || len(fields) != 2 || fields["id"] == nil || fields["data"] == nil {
++			t.Fatalf("activation retained non-routing fields: %s", decoded)
++		}
++		gotAction, got, err := parseNotificationResponse(encoded)
++		if err != nil || gotAction != action || got.ID != options.ID || got.Data["contactID"] != options.Data["contactID"] || got.Title != "" || got.Body != "" || got.Subtitle != "" {
++			t.Fatal("activation routing failed or retained visual content")
++		}
++		for _, private := range []string{options.Title, options.Body, options.Subtitle, options.CategoryID, options.ThreadID} {
++			if strings.Contains(string(decoded), private) {
++				t.Fatal("activation included private visual metadata")
++			}
++		}
++		document, err := wn.buildToastXML(options, nil, encoded)
++		if err != nil {
++			t.Fatal(err)
++		}
++		var toast toastDoc
++		if err := xml.Unmarshal([]byte(document), &toast); err != nil || toast.Launch != encoded || len(toast.Visual.Binding.Texts) != 2 || toast.Visual.Binding.Texts[0].Value != options.Title || toast.Visual.Binding.Texts[1].Value != options.Body {
++			t.Fatal("minimizing activation changed the visible notification")
++		}
++	}
++}
++
++func TestWhatsUpToastRejectsMalformedActivationEncoding(t *testing.T) {
++	for _, input := range []string{"!invalid-base64", base64.StdEncoding.EncodeToString([]byte("not JSON"))} {
++		if _, _, err := parseNotificationResponse(input); err == nil {
++			t.Fatal("malformed activation decoded without an error")
++		}
++	}
++}

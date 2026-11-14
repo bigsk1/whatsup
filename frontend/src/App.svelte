@@ -26,6 +26,8 @@
   import InvitationDialog from './lib/components/InvitationDialog.svelte';
   import ForgetContactDialog from './lib/components/ForgetContactDialog.svelte';
   import HistoryDialog from './lib/components/HistoryDialog.svelte';
+  import ImageViewer from './lib/components/ImageViewer.svelte';
+  import { createNotificationActivation } from './lib/state/notification-activation';
   import { createHistoryActions } from './lib/state/history';
   import { createAppPreferences } from './lib/state/preferences';
   import { createSession } from './lib/state/session';
@@ -134,6 +136,20 @@
   const attachmentsSelected = $derived(
     $attachmentsState.contactID === conversation.contactID,
   );
+  const activation = createNotificationActivation((id) => {
+    settings.close();
+    search = '';
+    selectConversation(id);
+  });
+  const activationState = activation.state;
+  $effect(() => {
+    $activationState;
+    activation.resolve(
+      conversationEnabled(),
+      $contactsState.loaded,
+      $contactsState.contacts.map((contact) => contact.contactID),
+    );
+  });
   const conversationNotice = $derived(
     $contactsState.notices[conversation.contactID] || $contactsState.notice,
   );
@@ -216,6 +232,7 @@
   }
 
   function openSettings() {
+    attachments.closeImage();
     if (forgetDialog?.isOpen() || historyDialog?.isOpen()) return;
     if (aboutDialog?.open) aboutDialog.close();
     settings.show();
@@ -351,7 +368,7 @@
   const openInvitation = (link: string, url: string, consent: boolean) =>
     pairings.join(link, url, consent);
   const stopInvitation = () => pairings.cancel();
-  const startPairingPolling = () => pairings.start();
+  const startPairingEvents = () => pairings.start();
   const clearPairing = () => pairings.stop();
   const decidePairing = (
     requestID: string,
@@ -362,6 +379,7 @@
   async function refresh(method: StatusMethod = 'GetStatus') {
     if (busy) return;
     if (method === 'LockStorage' || method === 'UnlockStorage') {
+      if (method === 'LockStorage') activation.clear();
       security.reset();
       clearPairing();
       clearConversation();
@@ -380,7 +398,7 @@
       return;
     }
     void refreshLocalProfile();
-    startPairingPolling();
+    startPairingEvents();
     startConversationEvents();
   }
 
@@ -402,13 +420,14 @@
     clearProfile();
     if (result.storageState === 'unlocked') {
       void refreshLocalProfile();
-      startPairingPolling();
+      startPairingEvents();
       startConversationEvents();
     }
     void appPreferences.load();
   }
   function securityAction(operation: SecurityOperation) {
     if (!native || busy) return;
+    if (operation === 'import') activation.clear();
     security.begin(operation);
   }
 
@@ -423,20 +442,27 @@
   onMount(() => {
     mounted = true;
     contacts.setVisible(!document.hidden);
-    const stopSession = session.mount(() => void refresh(), {
-      storage: () => {
-        security.reset();
-        clearPairing();
-        clearConversation();
-        clearProfile();
+    const stopActivation = activation.mount();
+    const stopSession = session.mount(
+      () => {
+        void activation.ready();
+        void refresh();
       },
-      visibility: (visible) => {
-        contacts.setVisible(visible && !document.hidden && !settingsOpen);
-        if (visible && conversationEnabled()) void contacts.reload();
-        if (visible && conversationEnabled()) void attachments.reload();
-        if (visible && conversationEnabled()) void relayChange.reload();
+      {
+        storage: () => {
+          security.reset();
+          clearPairing();
+          clearConversation();
+          clearProfile();
+        },
+        visibility: (visible) => {
+          contacts.setVisible(visible && !document.hidden && !settingsOpen);
+          if (visible && conversationEnabled()) void contacts.reload();
+          if (visible && conversationEnabled()) void attachments.reload();
+          if (visible && conversationEnabled()) void relayChange.reload();
+        },
       },
-    });
+    );
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const updateSystemTheme = () => applyPreferences(preferences);
     media.addEventListener('change', updateSystemTheme);
@@ -466,6 +492,7 @@
       clearConversation();
       clearProfile();
       stopSession();
+      stopActivation();
       appPreferences.stop();
       security.reset();
       media.removeEventListener('change', updateSystemTheme);
@@ -486,6 +513,10 @@
 </script>
 
 <svelte:head><title>WhatsUp — Your conversations, closer</title></svelte:head>
+<ImageViewer
+  image={attachmentsSelected ? $attachmentsState.image : null}
+  onclose={() => attachments.closeImage()}
+/>
 
 <a href="#conversation" class="skip-link" hidden={settingsOpen}
   >Skip to conversation</a

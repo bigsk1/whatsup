@@ -199,6 +199,14 @@
                 onclick={() => ondecision(item, 'resume')}>Resume</button
               >
             {:else if item.state === 'complete'}
+              {#if ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(item.mediaType)}
+                <button
+                  type="button"
+                  class="secondary-button compact"
+                  disabled={busy}
+                  onclick={() => onpreview(item)}>View image</button
+                >
+              {/if}
               {#if item.mediaType === 'video/mp4' || item.mediaType === 'video/webm'}
                 {#if videos[item.id]}<video
                     src={videos[item.id]}

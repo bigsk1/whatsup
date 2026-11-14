@@ -156,7 +156,7 @@ func TestImagePickerDefaultStripsMetadataAndSendAsFilePreservesOriginal(t *testi
 				o.Pick = func(context.Context) (string, error) { return selected, nil }
 			})
 			draft, err := s.ChooseAttachment(contact.ID, asFile)
-			if err != nil || len(draft.Handle) != 32 || !strings.HasPrefix(draft.PreviewURL, "/local-media/") {
+			if err != nil || len(draft.Handle) != 32 || !asFile && !strings.HasPrefix(draft.PreviewURL, "/local-media/") || asFile && draft.PreviewURL != "" {
 				t.Fatalf("stage native selection: %v", err)
 			}
 			encoded, err := json.Marshal(draft)
@@ -188,7 +188,7 @@ func TestImagePickerDefaultStripsMetadataAndSendAsFilePreservesOriginal(t *testi
 				t.Fatal("draft metadata or hash did not describe its actual staged bytes")
 			}
 			if asFile {
-				if !bytes.Equal(body, original) || offer.Size != uint64(len(original)) || offer.SHA256 != sha256.Sum256(original) || offer.MediaType != "image/webp" || draft.Name != "synthetic-metadata.webp" {
+				if !bytes.Equal(body, original) || offer.Size != uint64(len(original)) || offer.SHA256 != sha256.Sum256(original) || offer.MediaType != "application/octet-stream" || draft.Name != "synthetic-metadata.webp" {
 					t.Fatal("Send as file changed the original image bytes or metadata")
 				}
 			} else {
@@ -205,15 +205,17 @@ func TestImagePickerDefaultStripsMetadataAndSendAsFilePreservesOriginal(t *testi
 					t.Fatal("staged metadata did not follow the explicit Send as file choice")
 				}
 			}
-			// Even an original-byte draft gets only a sanitized PNG thumbnail
-			// through its opaque app handler, never the original metadata.
-			preview := httptest.NewRecorder()
-			if !ServeAttachment(s, preview, httptest.NewRequest("GET", draft.PreviewURL, nil)) || preview.Code != http.StatusOK || preview.Header().Get("Content-Type") != "image/png" || preview.Header().Get("X-Content-Type-Options") != "nosniff" {
-				t.Fatal("draft preview did not use the safe image handler")
-			}
-			for _, marker := range markers {
-				if bytes.Contains(preview.Body.Bytes(), marker) {
-					t.Fatal("draft thumbnail exposed original image metadata")
+			// Explicit original-byte files remain save-only and never enter a
+			// thumbnail decoder; ordinary image drafts get sanitized previews.
+			if !asFile {
+				preview := httptest.NewRecorder()
+				if !ServeAttachment(s, preview, httptest.NewRequest("GET", draft.PreviewURL, nil)) || preview.Code != http.StatusOK || preview.Header().Get("Content-Type") != "image/png" || preview.Header().Get("X-Content-Type-Options") != "nosniff" {
+					t.Fatal("draft preview did not use the safe image handler")
+				}
+				for _, marker := range markers {
+					if bytes.Contains(preview.Body.Bytes(), marker) {
+						t.Fatal("draft thumbnail exposed original image metadata")
+					}
 				}
 			}
 			list, err := s.GetAttachments(contact.ID)

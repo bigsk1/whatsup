@@ -6,6 +6,7 @@ import { unavailableConversation } from '../src/lib/messaging';
 import {
   contactSummary,
   contactHint,
+  nativeHint,
   messagePage,
   serveDefaultAppPreferences,
 } from './contact-events';
@@ -305,6 +306,64 @@ test('pause is resumable while cancel permanently withdraws the exact transfer',
   ).toEqual([
     { name: 'CancelAttachment', args: [contactID, fileID] },
     { name: 'WithdrawAttachment', args: [contactID, fileID] },
+  ]);
+  expect(errors).toEqual([]);
+});
+
+test('full image loads only after View image, supports fit and size controls, and retires on offline', async ({
+  page,
+}) => {
+  let fullLoads = 0;
+
+  const { state, calls, errors } = await desktop(page, [
+    {
+      ...item,
+      state: 'complete',
+      mediaType: 'image/png',
+      name: 'Synthetic screenshot.png',
+      transferredBytes: item.size,
+    },
+  ]);
+  await page.route('**/local-media/*', async (route) => {
+    fullLoads++;
+    await route.fulfill({
+      contentType: 'image/png',
+      body: Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1sAAAAASUVORK5CYII=',
+        'base64',
+      ),
+    });
+  });
+  await expandAttachments(page);
+  expect(fullLoads).toBe(0);
+  await page.getByRole('button', { name: 'View image', exact: true }).click();
+  const viewer = page.getByRole('dialog', { name: 'Image preview' });
+  await expect(viewer).toBeVisible();
+  await expect.poll(() => fullLoads).toBe(1);
+  await expect(viewer.getByRole('img')).toHaveAttribute(
+    'src',
+    '/local-media/' + token,
+  );
+  await viewer
+    .getByRole('button', { name: 'Actual size', exact: true })
+    .click();
+  await expect(
+    viewer.getByRole('button', { name: 'Fit image', exact: true }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Escape');
+  await expect(viewer).not.toBeVisible();
+  await page.getByRole('button', { name: 'View image', exact: true }).click();
+  await expect(viewer).toBeVisible();
+  state.storage = 'locked';
+  await nativeHint(page, 'whatsup:storage-changed', { state: 'locked' });
+  await expect(viewer).not.toBeVisible();
+  expect(
+    calls
+      .filter((call) => call.name === 'PreviewAttachment')
+      .map((call) => call.args),
+  ).toEqual([
+    [contactID, fileID],
+    [contactID, fileID],
   ]);
   expect(errors).toEqual([]);
 });

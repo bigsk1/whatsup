@@ -132,11 +132,7 @@ func (w *windowsBackend) start(ctx context.Context) error {
 	}
 	w.service = notifications.New()
 	w.service.OnNotificationResponse(func(result notifications.NotificationResult) {
-		if result.Error != nil || result.Response.ActionIdentifier != notifications.DefaultActionIdentifier {
-			return
-		}
-		id, ok := result.Response.UserInfo["contactID"].(string)
-		if ok && canonicalID(id, true) && w.activate != nil {
+		if id := windowsActivation(result); id != "" && w.activate != nil {
 			w.activate(id)
 		}
 	})
@@ -144,6 +140,17 @@ func (w *windowsBackend) start(ctx context.Context) error {
 		return ErrUnavailable
 	}
 	return nil
+}
+
+func windowsActivation(result notifications.NotificationResult) string {
+	if result.Error != nil || result.Response.ActionIdentifier != notifications.DefaultActionIdentifier || !canonicalID(result.Response.ID, false) || len(result.Response.UserInfo) != 1 {
+		return ""
+	}
+	id, ok := result.Response.UserInfo["contactID"].(string)
+	if !ok || !canonicalID(id, true) {
+		return ""
+	}
+	return id
 }
 func (w *windowsBackend) send(ctx context.Context, notice Notice) error {
 	if ctx.Err() != nil || w.service == nil {

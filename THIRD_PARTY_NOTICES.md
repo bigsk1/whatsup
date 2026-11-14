@@ -20,7 +20,8 @@ Source: [Wails v3.1.0](https://github.com/wailsapp/wails/tree/v3.1.0),
 The current icons are scaffold placeholders, not WhatsUp branding.
 
 The application applies a private, reviewed native integration patch to Wails
-3.1.0 for Go-only file drops and bounded completed-reader media responses. The
+3.1.0 for Go-only file drops, bounded completed-reader media responses and
+minimal Windows notification activation metadata. The
 patch and immutable upstream basis are recorded in `config/wails-patch.json`.
 The exact upstream module and its MIT notice are preserved during the build.
 

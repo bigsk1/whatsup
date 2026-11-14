@@ -14,7 +14,7 @@ import (
 	"whatsup/internal/storage"
 )
 
-const Version = "0.0.11"
+const Version = "0.0.12"
 
 type Status struct {
 	Version              string `json:"version"`
@@ -39,6 +39,7 @@ type Service struct {
 	messages          *messaging.Registry
 	revisions         *messaging.Revisions
 	events            *contactEvents
+	pairingEvents     *pairingEvents
 	preferenceState   *appPreferenceState
 	preferenceOptions AppPreferenceRuntimeOptions
 	runtimeOptions    RuntimeOptions
@@ -107,12 +108,23 @@ func makeControllers(local *identity.Identity, app *storage.ApplicationState, re
 	flow, err := pairflow.New(local, app, pairflow.Options{
 		CompleteActivation: true,
 		OnCompleted:        func(id string) { _, _ = messages.Connect(id) },
+		OnChanged: func() {
+			if options.OnPairingChanged != nil {
+				options.OnPairingChanged(PairingHint{})
+			}
+		},
 	})
 	if err != nil {
 		messages.Close()
 		return nil, nil, nil, err
 	}
-	return messages, flow, newInvitationControl(local, flow), nil
+	control := newInvitationControl(local, flow)
+	control.onChanged = func() {
+		if options.OnPairingChanged != nil {
+			options.OnPairingChanged(PairingHint{})
+		}
+	}
+	return messages, flow, control, nil
 }
 
 // UnlockStorage opens OS-protected identity and approved local chat state. The
@@ -360,6 +372,7 @@ func (s *Service) ServiceShutdown() error {
 	// Event hooks can call back into the service. Join them only after LockStorage
 	// has released Service.mu, including on a failed shutdown.
 	s.events.close()
+	s.pairingEvents.close()
 	prefsErr := CloseAppPreferences(s)
 	if !locked {
 		return errors.New("Local storage lock could not be released")

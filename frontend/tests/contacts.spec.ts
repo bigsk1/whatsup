@@ -5,7 +5,11 @@ import { unavailableStatus } from '../src/lib/backend';
 import { unavailablePairing } from '../src/lib/pairing';
 import type { ContactSummary } from '../src/lib/state/bridge';
 import type { ConversationMessage } from '../src/lib/messaging';
-import { contactHint } from './contact-events';
+import {
+  contactHint,
+  nativeHint,
+  notificationActivationID,
+} from './contact-events';
 
 const first = 'AQEBAQEBAQEBAQEBAQEBAQ';
 const second = 'AgICAgICAgICAgICAgICAg';
@@ -65,13 +69,18 @@ function message(id: string, text: string): ConversationMessage {
     delivered: true,
   };
 }
-async function fixture(page: Page) {
+async function fixture(
+  page: Page,
+  activation = '',
+  holdContacts?: () => Promise<void>,
+) {
   const state = {
     contacts: [
       contact(first, 'Synthetic first'),
       contact(second, 'Synthetic second', 3),
     ],
     older: false,
+    activation,
   };
   const calls: { method: Method; args: unknown[] }[] = [];
   const errors: string[] = [];
@@ -85,6 +94,14 @@ async function fixture(page: Page) {
     host._wails.environment = { OS: 'windows', Arch: 'amd64', Debug: false };
   });
   await page.route('**/wails/runtime', async (route) => {
+    if (
+      route.request().postDataJSON().args?.methodID === notificationActivationID
+    ) {
+      const target = state.activation;
+      state.activation = '';
+      await route.fulfill({ json: target });
+      return;
+    }
     if (await serveDefaultAppPreferences(route)) return;
     const body = route.request().postDataJSON();
     const method = operations.get(body.args?.methodID);
@@ -107,6 +124,7 @@ async function fixture(page: Page) {
         json: { displayName: '', shareDisplayName: false },
       });
     } else if (method === 'GetContacts') {
+      await holdContacts?.();
       await route.fulfill({ json: state.contacts });
     } else if (method === 'GetMessages') {
       const contact = state.contacts.find(
@@ -154,6 +172,57 @@ async function fixture(page: Page) {
   });
   return { state, calls, errors };
 }
+
+test('early notification waits for saved contacts and selects only its approved conversation', async ({
+  page,
+}) => {
+  let release!: () => void;
+  const held = new Promise<void>((done) => (release = done));
+  const { calls, errors } = await fixture(page, second, () => held);
+  await page.goto('/');
+  await expect
+    .poll(() => calls.some((call) => call.method === 'GetContacts'))
+    .toBe(true);
+  expect(calls.some((call) => call.method === 'MarkRead')).toBe(false);
+  release();
+  await expect(page.getByRole('log', { name: 'Messages' })).toContainText(
+    'Synthetic second history',
+  );
+  expect(calls.some((call) => call.method === 'LockStorage')).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test('notification activation leaves Settings for the saved conversation and ignores unknown contacts', async ({
+  page,
+}) => {
+  const { state, errors } = await fixture(page);
+  await page.goto('/');
+  await expect(page.getByRole('log', { name: 'Messages' })).toContainText(
+    'Synthetic first history',
+  );
+  await page.keyboard.press('Control+,');
+  await expect(
+    page.getByRole('region', { name: 'Settings', exact: true }),
+  ).toBeVisible();
+  state.activation = second;
+  await nativeHint(page, 'whatsup:notification-activate', {
+    contactID: second,
+  });
+  await expect(
+    page.getByRole('region', { name: 'Settings', exact: true }),
+  ).not.toBeVisible();
+  await expect(page.getByRole('log', { name: 'Messages' })).toContainText(
+    'Synthetic second history',
+  );
+  state.activation = 'AwMDAwMDAwMDAwMDAwMDAw';
+  await nativeHint(page, 'whatsup:notification-activate', {
+    contactID: state.activation,
+  });
+  await expect(page.getByRole('log', { name: 'Messages' })).toContainText(
+    'Synthetic second history',
+  );
+  expect(errors).toEqual([]);
+});
 
 test('separate contacts keep drafts and unread counts independent, and Forget preserves the other conversation', async ({
   page,

@@ -1,3 +1,4 @@
+import { nativeHint } from './contact-events';
 import { serveDefaultAppPreferences } from './contact-events';
 import {
   contactSummary,
@@ -522,6 +523,7 @@ test('Connect keeps retrying until the saved contact arrives without another inv
     localFingerprint,
     peerFingerprint,
   };
+  await nativeHint(page, 'whatsup:pairing-changed', { revision: Date.now() });
   await page.goto('/');
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(

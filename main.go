@@ -52,7 +52,9 @@ func main() {
 		windows.DisabledFeatures = []string{"msSmartScreenProtection"}
 	}
 	application.RegisterEvent[messaging.Hint](desktop.ContactChangedEvent)
+	application.RegisterEvent[desktop.PairingHint](desktop.PairingChangedEvent)
 	application.RegisterEvent[NativeStorageHint](nativeStorageChangedEvent)
+	application.RegisterEvent[NativeNotificationHint](nativeNotificationActivateEvent)
 	application.RegisterEvent[bool](nativeWindowVisibleEvent)
 	var native atomic.Pointer[nativeHost]
 	var backend atomic.Pointer[desktop.Service]
@@ -124,7 +126,10 @@ func main() {
 		record(diagnostics.RuntimeError)
 		log.Fatal("WhatsUp could not initialize its desktop controls")
 	}
-	if err := desktop.ConfigureRuntime(service, desktop.RuntimeOptions{AutoConnect: true, OnIncoming: host.enqueueIncoming}); err != nil {
+	if err := desktop.ConfigureRuntime(service, desktop.RuntimeOptions{
+		AutoConnect: true, OnIncoming: host.enqueueIncoming,
+		OnPairingChanged: func(hint desktop.PairingHint) { app.Event.Emit(desktop.PairingChangedEvent, hint) },
+	}); err != nil {
 		log.Fatal("WhatsUp could not configure its desktop runtime")
 	}
 	if err := desktop.ConfigureAppPreferences(service, desktop.AppPreferenceRuntimeOptions{SetStartAtLogin: host.setStartAtLogin, OnChanged: host.preferencesChanged}); err != nil {
@@ -149,6 +154,7 @@ func main() {
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title: "WhatsUp", Width: 1180, Height: 780, MinWidth: 760, MinHeight: 560,
 		BackgroundColour: application.NewRGB(12, 20, 23), URL: "/",
+		Hidden:          options.Autostart,
 		DevToolsEnabled: false, DefaultContextMenuDisabled: true,
 		NativeFileDropHandler: host.nativeFileDrop,
 		Linux:                 linuxWindow,

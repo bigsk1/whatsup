@@ -14,6 +14,16 @@ import "../github.com/wailsapp/wails/v3/internal/eventcreate.js";
 export const WhatsupContactChanged = "whatsup:contact-changed";
 
 /**
+ * Name of the custom event "whatsup:notification-activate".
+ */
+export const WhatsupNotificationActivate = "whatsup:notification-activate";
+
+/**
+ * Name of the custom event "whatsup:pairing-changed".
+ */
+export const WhatsupPairingChanged = "whatsup:pairing-changed";
+
+/**
  * Name of the custom event "whatsup:storage-changed".
  */
 export const WhatsupStorageChanged = "whatsup:storage-changed";

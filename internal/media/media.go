@@ -5,11 +5,10 @@ package media
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"image"
 	_ "image/gif"
-	_ "image/jpeg"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"mime"
@@ -46,6 +45,13 @@ type Prepared struct {
 func (Prepared) String() string               { return "[private validated WhatsUp image]" }
 func (Prepared) GoString() string             { return "[private validated WhatsUp image]" }
 func (Prepared) MarshalJSON() ([]byte, error) { return nil, ErrImage }
+
+func (p Prepared) Extension() string {
+	if p.MediaType == "image/jpeg" {
+		return ".jpg"
+	}
+	return ".png"
+}
 
 func AllowedImage(mime string) bool {
 	return mime == "image/png" || mime == "image/jpeg" || mime == "image/gif" || mime == "image/webp"
@@ -153,13 +159,14 @@ func decode(ctx context.Context, src io.ReadSeeker) (image.Image, Info, error) {
 			return ErrImage
 		}
 		info.Width, info.Height = config.Width, config.Height
+		orientation, err := imageOrientation(ctx, src, format, length)
+		if err != nil {
+			return err
+		}
 		if _, err := src.Seek(0, io.SeekStart); err != nil {
 			return ErrImage
 		}
 		if format == "gif" && staticGIF(contextReader{ctx, io.LimitReader(src, MaxInputBytes+1)}) != nil {
-			return ErrImage
-		}
-		if format == "webp" && staticWebP(contextReader{ctx, io.LimitReader(src, MaxInputBytes+1)}, uint64(length)) != nil {
 			return ErrImage
 		}
 		if _, err := src.Seek(0, io.SeekStart); err != nil {
@@ -169,6 +176,8 @@ func decode(ctx context.Context, src io.ReadSeeker) (image.Image, Info, error) {
 		if err != nil || decoded.Bounds().Dx() != config.Width || decoded.Bounds().Dy() != config.Height {
 			return ErrImage
 		}
+		decoded = orient(decoded, orientation)
+		info.Width, info.Height = decoded.Bounds().Dx(), decoded.Bounds().Dy()
 		return ctx.Err()
 	})
 	if err != nil {
@@ -231,14 +240,21 @@ func Prepare(ctx context.Context, src io.ReadSeeker) (Prepared, error) {
 		return Prepared{}, err
 	}
 	output := boundedBuffer{maximum: MaxEncodedBytes}
-	if png.Encode(contextWriter{ctx, &output}, decoded) != nil {
+	outputType := "image/png"
+	if info.MediaType == "image/jpeg" {
+		outputType = "image/jpeg"
+		err = jpeg.Encode(contextWriter{ctx, &output}, decoded, &jpeg.Options{Quality: 90})
+	} else {
+		err = png.Encode(contextWriter{ctx, &output}, decoded)
+	}
+	if err != nil {
 		return Prepared{}, ErrImage
 	}
 	preview, err := thumbnail(ctx, decoded)
 	if err != nil {
 		return Prepared{}, err
 	}
-	return Prepared{Data: output.Bytes(), Thumbnail: preview, MediaType: "image/png", Width: info.Width, Height: info.Height}, nil
+	return Prepared{Data: output.Bytes(), Thumbnail: preview, MediaType: outputType, Width: info.Width, Height: info.Height}, nil
 }
 
 func Thumbnail(ctx context.Context, src io.ReadSeeker) ([]byte, error) {
@@ -321,42 +337,10 @@ func staticGIF(r io.Reader) error {
 	}
 }
 
-func staticWebP(r io.Reader, length uint64) error {
-	var header [12]byte
-	if _, err := io.ReadFull(r, header[:]); err != nil || string(header[:4]) != "RIFF" || string(header[8:]) != "WEBP" {
+func staticWebP(r io.ReadSeeker, length uint64) error {
+	if length > uint64(MaxInputBytes) {
 		return ErrImage
 	}
-	declared := uint64(binary.LittleEndian.Uint32(header[4:8])) + 8
-	if declared != length {
-		return ErrImage
-	}
-	position := uint64(12)
-	for position < length {
-		var chunk [8]byte
-		if _, err := io.ReadFull(r, chunk[:]); err != nil {
-			return ErrImage
-		}
-		n := uint64(binary.LittleEndian.Uint32(chunk[4:]))
-		position += 8
-		padded := n + (n & 1)
-		if padded > length-position {
-			return ErrImage
-		}
-		if string(chunk[:4]) == "ANIM" || string(chunk[:4]) == "ANMF" {
-			return ErrImage
-		}
-		if string(chunk[:4]) == "VP8X" {
-			var extended [10]byte
-			if n != 10 {
-				return ErrImage
-			}
-			if _, err := io.ReadFull(r, extended[:]); err != nil || extended[0]&2 != 0 {
-				return ErrImage
-			}
-		} else if skip(r, int64(padded)) != nil {
-			return ErrImage
-		}
-		position += padded
-	}
-	return nil
+	_, err := webPOrientation(context.Background(), r, int64(length))
+	return err
 }
