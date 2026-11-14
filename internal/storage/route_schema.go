@@ -28,7 +28,37 @@ type applicationEnvelopeV7 struct {
 func upgradeEnvelopeV7(old applicationEnvelopeV7) applicationEnvelope {
 	return applicationEnvelope{Version: ApplicationSchemaVersion, Identity: old.Identity, Profile: old.Profile, Contacts: old.Contacts, PendingContacts: old.PendingContacts, CommittedContacts: old.CommittedContacts, MessageStoreState: old.MessageStoreState, MigrationBackup: old.MigrationBackup, MigrationBackupHash: old.MigrationBackupHash, DeleteScopes: old.DeleteScopes, Routes: []routeStateDisk{}}
 }
+
+// rootBackupIO is a per-call fault boundary for synthetic storage tests. Normal
+// callers always pass nil; it is not stored in application state or exported.
+type rootBackupIO struct {
+	write         func(*os.File, []byte) (int, error)
+	sync          func(*os.File) error
+	publish       func(string, string) error
+	syncDirectory func(string) error
+}
+
 func (a *ApplicationState) backupRootMetadataLocked() error {
+	return a.backupRootMetadataWithIOLocked(nil)
+}
+
+func (a *ApplicationState) backupRootMetadataWithIOLocked(testIO *rootBackupIO) error {
+	write, syncFile := (*os.File).Write, (*os.File).Sync
+	publish, syncParent := os.Link, syncDirectory
+	if testIO != nil {
+		if testIO.write != nil {
+			write = testIO.write
+		}
+		if testIO.sync != nil {
+			syncFile = testIO.sync
+		}
+		if testIO.publish != nil {
+			publish = testIO.publish
+		}
+		if testIO.syncDirectory != nil {
+			syncParent = testIO.syncDirectory
+		}
+	}
 	var random [16]byte
 	if _, err := rand.Read(random[:]); err != nil {
 		return err
@@ -48,11 +78,11 @@ func (a *ApplicationState) backupRootMetadataLocked() error {
 		destination.Close()
 		return ErrUnsafePath
 	}
-	if n, err := destination.Write(data); err != nil || n != len(data) {
+	if n, err := write(destination, data); err != nil || n != len(data) {
 		destination.Close()
 		return ErrState
 	}
-	if destination.Sync() != nil {
+	if syncFile(destination) != nil {
 		destination.Close()
 		return ErrState
 	}
@@ -62,10 +92,10 @@ func (a *ApplicationState) backupRootMetadataLocked() error {
 	// A same-directory hard link publishes only the already-synced complete
 	// ciphertext and never replaces an existing backup name. A crash can leave
 	// an owned temp link, which normal protection cleanup safely retires.
-	if err := os.Link(temp, filepath.Join(a.vault.directory, name)); err != nil {
+	if err := publish(temp, filepath.Join(a.vault.directory, name)); err != nil {
 		return err
 	}
-	if err := syncDirectory(a.vault.directory); err != nil {
+	if err := syncParent(a.vault.directory); err != nil {
 		return err
 	}
 	a.state.MigrationBackup = name

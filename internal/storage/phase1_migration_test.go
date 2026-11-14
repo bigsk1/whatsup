@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
@@ -9,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -19,6 +21,232 @@ import (
 )
 
 const migrationTextSentinel = "SCHEMA6_MIGRATION_PRIVATE_TEXT_SENTINEL/"
+
+func TestPhase1InterruptedBackupRetryDoesNotBlockLaterProtection(t *testing.T) {
+	for _, aesLegacy := range []bool{false, true} {
+		for _, point := range []string{"write", "sync", "publish", "directory-sync"} {
+			t.Run(map[bool]string{false: "wrapped", true: "AES-v1"}[aesLegacy]+"/"+point, func(t *testing.T) {
+				f := newPhase1Fixture(t, aesLegacy)
+				failure := errors.New("synthetic pre-migration backup interruption")
+				operations := &rootBackupIO{}
+				switch point {
+				case "write":
+					operations.write = func(file *os.File, data []byte) (int, error) {
+						n, err := file.Write(data[:32])
+						return n, errors.Join(err, failure)
+					}
+				case "sync":
+					operations.sync = func(file *os.File) error {
+						return errors.Join(file.Sync(), failure)
+					}
+				case "publish":
+					operations.publish = func(string, string) error { return failure }
+				case "directory-sync":
+					operations.syncDirectory = func(string) error { return failure }
+				}
+				candidate := &ApplicationState{vault: f.vault}
+				f.vault.mu.Lock()
+				err := candidate.prepareMessageMigrationWithBackupIOLocked(operations)
+				f.vault.mu.Unlock()
+				if err == nil || candidate.state.MigrationBackup != "" || candidate.state.MigrationBackupHash != "" {
+					t.Fatal("failed backup published migration authority")
+				}
+				before, err := os.ReadFile(filepath.Join(f.directory, "state.vault"))
+				if err != nil || !bytes.Equal(before, f.original) {
+					t.Fatal("backup fault changed original ciphertext")
+				}
+				entries, err := os.ReadDir(f.directory)
+				if err != nil {
+					t.Fatal("backup directory")
+				}
+				published := 0
+				for _, entry := range entries {
+					if ownedRootTemporaryName.MatchString(entry.Name()) {
+						t.Fatal("returned backup failure retained a temporary")
+					}
+					if migrationBackupName.MatchString(entry.Name()) {
+						published++
+						backup, err := os.ReadFile(filepath.Join(f.directory, entry.Name()))
+						if err != nil || !bytes.Equal(backup, f.original) {
+							t.Fatal("fault published an incomplete recognized backup")
+						}
+					}
+				}
+				wantPublished := 0
+				if point == "directory-sync" {
+					wantPublished = 1 // Already published complete ciphertext is kept.
+				}
+				if published != wantPublished {
+					t.Fatal("unexpected backup publication boundary")
+				}
+				app, err := OpenApplication(f.vault)
+				if err != nil {
+					t.Fatal("migration retry failed")
+				}
+				assertPhase1Migration(t, f, app)
+				assertPhase1ProtectedReopen(t, f, app)
+			})
+		}
+	}
+}
+
+func assertPhase1ProtectedReopen(t *testing.T, f *phase1Fixture, app *ApplicationState) {
+	t.Helper()
+	if err := app.SetPassphrase(context.Background(), nil, testPassphrase); err != nil {
+		t.Fatal("migration retry blocked later protection")
+	}
+	entries, err := os.ReadDir(f.directory)
+	if err != nil {
+		t.Fatal("protected directory")
+	}
+	for _, entry := range entries {
+		if ownedRootTemporaryName.MatchString(entry.Name()) {
+			t.Fatal("old uncommitted root retained an OS-only protection path")
+		}
+		if !migrationBackupName.MatchString(entry.Name()) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(f.directory, entry.Name()))
+		if err != nil {
+			t.Fatal("protected backup")
+		}
+		locked := scratchVault(app.vault)
+		plain, err := decodeRootWithSecret(locked, data, nil)
+		clear(plain)
+		clearScratch(locked)
+		if err == nil {
+			t.Fatal("backup remained readable with only the OS credential")
+		}
+		unlocked := scratchVault(app.vault)
+		plain, err = decodeRootWithSecret(unlocked, data, testPassphrase)
+		valid := err == nil && bytes.Equal(plain, f.legacy)
+		clear(plain)
+		clearScratch(unlocked)
+		if !valid {
+			t.Fatal("protection changed the original legacy backup payload")
+		}
+	}
+	if app.Close() != nil {
+		t.Fatal("close protected migrated store")
+	}
+	if v, err := OpenWithPassphrase(f.directory, f.keys, nil); err == nil {
+		v.Close()
+		t.Fatal("migrated live root did not require the new secret")
+	}
+	v, err := OpenWithPassphrase(f.directory, f.keys, testPassphrase)
+	if err != nil {
+		t.Fatal("protected migrated root did not reopen")
+	}
+	reopened, err := OpenApplication(v)
+	if err != nil {
+		v.Close()
+		t.Fatal("protected migrated application did not reopen")
+	}
+	t.Cleanup(func() { reopened.Close() })
+	local, err := reopened.Identity()
+	if err != nil || local.Seed() != f.seed || f.keys.value != f.credential || f.keys.writes != 1 {
+		t.Fatal("backup retry or protection changed identity/wrapping credential")
+	}
+	contacts, err := reopened.CommittedContacts()
+	if err != nil || len(contacts) != 1 || contacts[0] != f.contact {
+		t.Fatal("backup retry changed committed transport credentials")
+	}
+	pending, pendingErr := reopened.PendingContacts()
+	localProfile, profileErr := reopened.Profile()
+	names, namesErr := reopened.ContactNames(f.contact.ID)
+	if pendingErr != nil || len(pending) != 1 || pending[0] != f.pending || profileErr != nil || localProfile != f.profile || namesErr != nil || names != f.names {
+		t.Fatal("backup retry or protection changed pending credentials or names")
+	}
+	pin := &identifiedPin{approvedPin: &approvedPin{local: f.contact.Local, peer: f.contact.Peer}, id: f.contact.ID}
+	scope, err := reopened.ChatStore(pin)
+	if err != nil {
+		t.Fatal("protected migrated message scope")
+	}
+	for _, old := range f.chat.Messages {
+		got, err := scope.Get(old.ID)
+		if err != nil || got.ID != old.ID || got.Text != old.Text || got.Delivered != old.Delivered || got.Direction != old.Direction || !got.CreatedAt.Equal(old.CreatedAt) {
+			t.Fatal("backup retry changed migrated history or delivery")
+		}
+	}
+	ids, err := scope.PendingIDs()
+	if err != nil || len(ids) != len(f.chat.Outbox) {
+		t.Fatal("backup retry changed encrypted outbox")
+	}
+	gotIDs := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		gotIDs[id] = true
+	}
+	for _, old := range f.chat.Outbox {
+		if !gotIDs[old.ID] {
+			t.Fatal("backup retry replaced a pending message identifier")
+		}
+	}
+}
+
+func TestPhase1BackupCrashHelper(t *testing.T) {
+	directory := os.Getenv("WHATSUP_SCHEMA6_BACKUP_CRASH_DIRECTORY")
+	if directory == "" {
+		t.Skip("isolated synthetic backup crash helper")
+	}
+	full := os.Getenv("WHATSUP_SCHEMA6_BACKUP_CRASH_FULL") == "1"
+	app := &ApplicationState{vault: &Vault{&vaultState{directory: directory}}}
+	_ = app.prepareMessageMigrationWithBackupIOLocked(&rootBackupIO{write: func(file *os.File, data []byte) (int, error) {
+		if !full {
+			data = data[:32]
+		}
+		if n, err := file.Write(data); err != nil || n != len(data) || file.Sync() != nil {
+			os.Exit(4)
+		}
+		// Model a real process death: file-close/remove defers must not run.
+		os.Exit(0)
+		return 0, ErrState
+	}})
+	t.Fatal("backup crash boundary was not reached")
+}
+
+func TestPhase1ProcessCrashBackupRetryProtectsOrphanedTemps(t *testing.T) {
+	for _, aesLegacy := range []bool{false, true} {
+		for _, full := range []bool{false, true} {
+			t.Run(map[bool]string{false: "wrapped", true: "AES-v1"}[aesLegacy]+"/"+map[bool]string{false: "partial", true: "complete-temp"}[full], func(t *testing.T) {
+				f := newPhase1Fixture(t, aesLegacy)
+				if f.vault.Close() != nil {
+					t.Fatal("release synthetic store before child")
+				}
+				cmd := exec.Command(os.Args[0], "-test.run=^TestPhase1BackupCrashHelper$")
+				cmd.Env = append(os.Environ(), "WHATSUP_SCHEMA6_BACKUP_CRASH_DIRECTORY="+f.directory)
+				if full {
+					cmd.Env = append(cmd.Env, "WHATSUP_SCHEMA6_BACKUP_CRASH_FULL=1")
+				}
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("synthetic backup crash helper failed: %v %s", err, output)
+				}
+				entries, err := os.ReadDir(f.directory)
+				if err != nil {
+					t.Fatal("crash directory")
+				}
+				temps := 0
+				for _, entry := range entries {
+					if migrationBackupName.MatchString(entry.Name()) {
+						t.Fatal("process crash published a recognized backup")
+					}
+					if ownedRootTemporaryName.MatchString(entry.Name()) {
+						temps++
+					}
+				}
+				if temps != 1 {
+					t.Fatal("crash did not retain the expected managed temporary")
+				}
+				before, err := os.ReadFile(filepath.Join(f.directory, "state.vault"))
+				if err != nil || !bytes.Equal(before, f.original) {
+					t.Fatal("process crash changed original ciphertext")
+				}
+				_, app := openApplicationTest(t, f.directory, f.keys)
+				assertPhase1Migration(t, f, app)
+				assertPhase1ProtectedReopen(t, f, app)
+			})
+		}
+	}
+}
 
 type phase1Fixture struct {
 	directory        string

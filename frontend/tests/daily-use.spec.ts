@@ -152,6 +152,118 @@ async function fixture(page: Page) {
   return { state, calls, errors };
 }
 
+for (const viewport of [
+  { width: 1166, height: 1032 },
+  { width: 1105, height: 654 },
+  { width: 520, height: 500 },
+]) {
+  test(`App behavior has separate accessible preference rows at ${viewport.width}×${viewport.height}`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize(viewport);
+    const { state, calls, errors } = await fixture(page);
+    await page.goto('/');
+    await page
+      .getByRole('button', { name: 'Open settings', exact: true })
+      .click();
+    const settings = page.getByRole('region', {
+      name: 'Settings',
+      exact: true,
+    });
+    await settings
+      .getByRole('button', { name: 'App behavior', exact: true })
+      .click();
+    const card = settings.getByRole('region', {
+      name: 'App behavior',
+      exact: true,
+    });
+    const rows = card.locator('label');
+    await expect(rows).toHaveCount(5);
+    await expect(
+      card.getByRole('checkbox', {
+        name: 'Show new-message notifications',
+        exact: true,
+      }),
+    ).toBeChecked();
+    let previousBottom = -Infinity;
+    let controlRight = 0;
+    for (const row of await rows.all()) {
+      await row.scrollIntoViewIfNeeded();
+      const title = row.locator('strong');
+      const help = row.locator('small');
+      const control = row.getByRole('checkbox');
+      const rowBox = (await row.boundingBox())!;
+      const titleBox = (await title.boundingBox())!;
+      const helpBox = (await help.boundingBox())!;
+      const controlBox = (await control.boundingBox())!;
+      const contentTop = await settings
+        .locator('.settings-scroll')
+        .evaluate((element) => element.scrollTop);
+      expect(rowBox.y + contentTop).toBeGreaterThanOrEqual(previousBottom - 1);
+      previousBottom = rowBox.y + rowBox.height + contentTop;
+      expect(helpBox.y).toBeGreaterThanOrEqual(
+        titleBox.y + titleBox.height + 3,
+      );
+      expect(helpBox.y + helpBox.height).toBeLessThanOrEqual(
+        rowBox.y + rowBox.height,
+      );
+      expect(controlBox.x).toBeGreaterThan(titleBox.x + titleBox.width + 8);
+      expect(controlBox.x + controlBox.width).toBeLessThanOrEqual(
+        rowBox.x + rowBox.width + 1,
+      );
+      expect(controlBox.y).toBeGreaterThanOrEqual(rowBox.y);
+      expect(controlBox.y + controlBox.height).toBeLessThanOrEqual(
+        rowBox.y + rowBox.height,
+      );
+      if (controlRight)
+        expect(controlBox.x + controlBox.width).toBeCloseTo(controlRight, 1);
+      controlRight = controlBox.x + controlBox.width;
+      await expect(control).toHaveAccessibleName((await title.textContent())!);
+      await expect(control).toHaveAccessibleDescription(
+        (await help.textContent())!,
+      );
+      await expect(title).toBeInViewport({ ratio: 1 });
+      await expect(help).toBeInViewport({ ratio: 1 });
+      await expect(control).toBeInViewport({ ratio: 1 });
+    }
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    expect(calls.some((call) => call.operation === 'SetAppPreferences')).toBe(
+      false,
+    );
+    await page.screenshot({ path: testInfo.outputPath('app-behavior.png') });
+    const notifications = card.getByRole('checkbox', {
+      name: 'Show new-message notifications',
+      exact: true,
+    });
+    await notifications.focus();
+    await page.keyboard.press('Space');
+    await expect.poll(() => state.preferences.notifications).toBe(false);
+    await expect(
+      card.getByRole('checkbox', {
+        name: 'Include contact names in notifications',
+        exact: true,
+      }),
+    ).toBeDisabled();
+    await expect(
+      card.getByRole('checkbox', {
+        name: 'Include message previews in notifications',
+        exact: true,
+      }),
+    ).toBeDisabled();
+    await expect(notifications).toBeEnabled();
+    await notifications.focus();
+    await page.keyboard.press('Space');
+    await expect.poll(() => state.preferences.notifications).toBe(true);
+    expect(state.preferences.notificationName).toBe(false);
+    expect(state.preferences.notificationPreview).toBe(false);
+    expect(errors).toEqual([]);
+  });
+}
+
 test('daily-use defaults keep notifications generic and login opt-in; explicit changes stay in Go preferences', async ({
   page,
 }) => {

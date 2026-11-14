@@ -586,8 +586,18 @@
               </p>
               {#key appPreferences.loaded}
                 {#each [{ key: 'closeToTray', label: 'Keep running when the window closes', help: 'Close to the tray. Choose Quit from the tray to exit.' }, { key: 'startAtLogin', label: 'Start WhatsUp when I sign in', help: 'Starts on this OS account only. This is off unless you enable it.' }, { key: 'notifications', label: 'Show new-message notifications', help: 'Notifications say only “New message” by default.' }, { key: 'notificationName', label: 'Include contact names in notifications', help: 'Allows names on the desktop and its notification history.' }, { key: 'notificationPreview', label: 'Include message previews in notifications', help: 'Allows message text on the desktop and its notification history.' }] as option}
-                  <label class="sharing-control">
+                  <label class="settings-toggle-row app-preference-row">
+                    <span class="app-preference-copy">
+                      <strong id={`app-preference-${option.key}-label`}
+                        >{option.label}</strong
+                      >
+                      <small id={`app-preference-${option.key}-help`}
+                        >{option.help}</small
+                      >
+                    </span>
                     <input
+                      aria-labelledby={`app-preference-${option.key}-label`}
+                      aria-describedby={`app-preference-${option.key}-help`}
                       type="checkbox"
                       checked={appPreferences.value[
                         option.key as keyof AppPreferences
@@ -604,11 +614,7 @@
                           [option.key]: event.currentTarget.checked,
                         })}
                     />
-                    <span
-                      ><strong>{option.label}</strong><span class="muted small"
-                        >{option.help}</span
-                      ></span
-                    >
+                    <span class="toggle-track" aria-hidden="true"></span>
                   </label>
                 {/each}
               {/key}
@@ -1060,6 +1066,19 @@
   }
   .settings-toggle-row input:disabled + .toggle-track {
     opacity: 0.4;
+  }
+  .app-preference-row {
+    margin-top: 0;
+    padding: 18px 0;
+    border-bottom: 0;
+  }
+  .app-preference-row:first-of-type {
+    margin-top: 12px;
+    border-top: 0;
+  }
+  .app-preference-copy {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .settings-save-row {
     margin-top: 23px;

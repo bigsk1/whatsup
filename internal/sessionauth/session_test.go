@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -289,6 +290,254 @@ func TestPreviousProtocolGrantsOnlyNegotiatedCapabilitiesAfterPinnedTLSCompletes
 				var application [1]byte
 				if n, err := legacy.Read(application[:]); n != 0 || err == nil {
 					t.Fatal("diagnostic/rejected peer received application bytes")
+				}
+			})
+		}
+	}
+}
+
+// rawProtocolPeer runs an independent TLS peer, rather than a second copy of
+// Authenticate, so its advertised historical ALPN and malformed proofs exercise
+// the production verifier and diagnostic classification.
+func rawProtocolPeer(t *testing.T, current Options, associations [][32]byte, config *tls.Config) (result, *tls.Conn, error) {
+	t.Helper()
+	left, right := net.Pipe()
+	t.Cleanup(func() { _ = left.Close(); _ = right.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	t.Cleanup(cancel)
+	_ = right.SetDeadline(time.Now().Add(2 * time.Second))
+	done := make(chan result, 1)
+	go func() {
+		var session *Session
+		var err error
+		if associations == nil {
+			session, err = Authenticate(ctx, left, current)
+		} else {
+			session, err = AuthenticateCandidates(ctx, left, current, associations)
+		}
+		done <- result{session, err}
+	}()
+	var peer *tls.Conn
+	if current.Server {
+		peer = tls.Client(right, config)
+	} else {
+		peer = tls.Server(right, config)
+	}
+	err := peer.HandshakeContext(ctx)
+	got := <-done
+	if got.session != nil {
+		t.Cleanup(func() { _ = got.session.Close() })
+	}
+	return got, peer, err
+}
+
+func protocolPeerConfig(t *testing.T, peer Options, protos []string) *tls.Config {
+	t.Helper()
+	certificate, err := newCertificate(peer.Local, time.Now(), time.Now().Add(MaxLifetime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &tls.Config{
+		MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
+		InsecureSkipVerify: true, Certificates: []tls.Certificate{certificate},
+		ClientAuth: tls.RequireAnyClientCert, SessionTicketsDisabled: true, NextProtos: protos,
+		VerifyConnection: func(state tls.ConnectionState) error {
+			return verifyPeer(state, peer.Peer, state.NegotiatedProtocol, time.Now())
+		},
+	}
+}
+
+func assertProtocolPeerClosed(t *testing.T, peer *tls.Conn) {
+	t.Helper()
+	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+	n, err := peer.Read(make([]byte, 1))
+	var timeout net.Error
+	if n != 0 || err == nil || errors.As(err, &timeout) && timeout.Timeout() {
+		t.Fatal("diagnostic/rejected peer received application data or retained an open stream")
+	}
+}
+
+func TestProtocol2DiagnosticRequiresCompletePinnedTLS(t *testing.T) {
+	for _, server := range []bool{true, false} {
+		for _, kind := range []string{"valid", "wrong-key", "wrong-association", "wrong-contact", "future-certificate", "expired-certificate", "invalid-profile", "invalid-self-signature", "bad-handshake-signature", "missing-certificate", "unsupported", "bare-protocol", "no-alpn", "tls12"} {
+			t.Run(fmt.Sprintf("server=%v/%s", server, kind), func(t *testing.T) {
+				current, old := optionsPair(t)
+				current.Server = server
+				if kind == "wrong-key" {
+					old.Local, _ = identity.Generate()
+				}
+				if kind == "wrong-association" {
+					old.Association[0] ^= 1
+				}
+				if kind == "wrong-contact" {
+					old.ContactID = base64.RawURLEncoding.EncodeToString([]byte("synthetic-id-002"))
+				}
+				suffix := "." + old.ContactID + "." + base64.RawURLEncoding.EncodeToString(old.Association[:])
+				alpn := diagnosticProtocol + suffix
+				if kind == "unsupported" {
+					alpn = "whatsup-contact/99" + suffix
+				}
+				if kind == "bare-protocol" {
+					alpn = diagnosticProtocol
+				}
+				config := protocolPeerConfig(t, old, []string{alpn})
+				switch kind {
+				case "future-certificate", "expired-certificate":
+					now := time.Now().Add(MaxClockSkew + 2*time.Minute)
+					if kind == "expired-certificate" {
+						now = time.Now().Add(-MaxLifetime - MaxClockSkew - 2*time.Minute)
+					}
+					certificate, err := newCertificate(old.Local, now, now.Add(MaxLifetime))
+					if err != nil {
+						t.Fatal(err)
+					}
+					config.Certificates = []tls.Certificate{certificate}
+				case "invalid-profile":
+					template, err := x509.ParseCertificate(config.Certificates[0].Certificate[0])
+					if err != nil {
+						t.Fatal(err)
+					}
+					template.RawSubject = nil
+					template.Subject.CommonName = "unsupported certificate profile"
+					signer := identitySigner{old.Local}
+					der, err := x509.CreateCertificate(rand.Reader, template, template, signer.Public(), signer)
+					if err != nil {
+						t.Fatal(err)
+					}
+					config.Certificates[0].Certificate[0] = der
+				case "bad-handshake-signature":
+					config.Certificates[0].PrivateKey = corruptHandshakeSigner{config.Certificates[0].PrivateKey.(crypto.Signer)}
+				case "invalid-self-signature":
+					der := config.Certificates[0].Certificate[0]
+					der[len(der)-1] ^= 1
+				case "missing-certificate":
+					config.Certificates = nil
+				case "no-alpn":
+					config.NextProtos = nil
+				case "tls12":
+					config.MinVersion, config.MaxVersion = tls.VersionTLS12, tls.VersionTLS12
+				}
+				got, peer, handshakeErr := rawProtocolPeer(t, current, nil, config)
+				want := ErrAuthentication
+				if kind == "valid" {
+					want = ErrIncompatible
+					if handshakeErr != nil || !peer.ConnectionState().HandshakeComplete || peer.ConnectionState().NegotiatedProtocol != alpn {
+						t.Fatalf("diagnostic did not complete exact pinned TLS: %v", handshakeErr)
+					}
+				} else if kind == "wrong-key" {
+					want = ErrIdentityChanged
+				}
+				if got.session != nil || !errors.Is(got.err, want) {
+					t.Fatalf("protocol-2 peer got authority or wrong result: %v, want %v", got.err, want)
+				}
+				assertProtocolPeerClosed(t, peer)
+			})
+		}
+	}
+}
+
+type clientHelloOnlyConn struct{ net.Conn }
+
+func (clientHelloOnlyConn) Read([]byte) (int, error) { return 0, io.EOF }
+
+func TestProtocol2ClientHelloAloneCannotSignalUpdateRequired(t *testing.T) {
+	current, old := optionsPair(t)
+	alpn := diagnosticProtocol + "." + old.ContactID + "." + base64.RawURLEncoding.EncodeToString(old.Association[:])
+	config := protocolPeerConfig(t, old, []string{alpn})
+	left, right := net.Pipe()
+	defer left.Close()
+	defer right.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	done := make(chan result, 1)
+	go func() { session, err := Authenticate(ctx, left, current); done <- result{session, err} }()
+	// Deliver a valid diagnostic ClientHello, but no certificate or Finished.
+	peer := tls.Client(clientHelloOnlyConn{right}, config)
+	if err := peer.HandshakeContext(ctx); err == nil {
+		t.Fatal("ClientHello-only fixture unexpectedly completed TLS")
+	}
+	_ = right.Close()
+	if got := <-done; got.session != nil || !errors.Is(got.err, ErrAuthentication) {
+		t.Fatalf("unauthenticated ClientHello claimed a verified version: %v", got.err)
+	}
+}
+
+func TestProtocol2UnauthenticatedAlertCannotSignalUpdateRequired(t *testing.T) {
+	for _, server := range []bool{true, false} {
+		t.Run(fmt.Sprintf("server=%v", server), func(t *testing.T) {
+			current, _ := optionsPair(t)
+			current.Server = server
+			left, right := net.Pipe()
+			defer left.Close()
+			defer right.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = right.SetDeadline(time.Now().Add(time.Second))
+			peerDone := make(chan error, 1)
+			go func() {
+				defer right.Close()
+				if !server {
+					// A raw server consumes the ClientHello, then sends an
+					// unauthenticated no_application_protocol TLS alert.
+					var header [5]byte
+					if _, err := io.ReadFull(right, header[:]); err != nil {
+						peerDone <- err
+						return
+					}
+					if _, err := io.CopyN(io.Discard, right, int64(binary.BigEndian.Uint16(header[3:]))); err != nil {
+						peerDone <- err
+						return
+					}
+				}
+				_, err := right.Write([]byte{21, 3, 3, 0, 2, 2, 120})
+				peerDone <- err
+			}()
+			session, err := Authenticate(ctx, left, current)
+			if session != nil || !errors.Is(err, ErrAuthentication) {
+				t.Fatalf("unauthenticated alert claimed a verified version: %v", err)
+			}
+			if err := <-peerDone; err != nil {
+				t.Fatal("alert fixture did not reach the TLS parser", err)
+			}
+		})
+	}
+}
+
+func TestProtocol2OfferDoesNotDowngradeSupportedMessaging(t *testing.T) {
+	for _, server := range []bool{true, false} {
+		for _, usable := range []struct {
+			name string
+			caps Capabilities
+		}{
+			{previousProtocol, Capabilities{WireVersion: 3}},
+			{protocol, Capabilities{WireVersion: 4, Attachments: true}},
+			{controlProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true}},
+		} {
+			t.Run(fmt.Sprintf("server=%v/%s", server, usable.name), func(t *testing.T) {
+				current, old := optionsPair(t)
+				current.Server = server
+				suffix := "." + old.ContactID + "." + base64.RawURLEncoding.EncodeToString(old.Association[:])
+				protos := []string{usable.name + suffix, diagnosticProtocol + suffix}
+				if server {
+					// A client preference for diagnostic framing cannot displace
+					// the server's preference for a usable messaging version.
+					protos[0], protos[1] = protos[1], protos[0]
+				}
+				config := protocolPeerConfig(t, old, protos)
+				if !server {
+					config.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+						if len(hello.SupportedProtos) != 4 || hello.SupportedProtos[3] != diagnosticProtocol+suffix {
+							t.Error("diagnostic ALPN was not offered last with exact context")
+						}
+						return nil, nil
+					}
+				}
+				got, peer, err := rawProtocolPeer(t, current, nil, config)
+				if err != nil || got.err != nil || got.session == nil || got.session.Capabilities() != usable.caps || peer.ConnectionState().NegotiatedProtocol != usable.name+suffix {
+					t.Fatalf("diagnostic offer displaced usable framing: %v / %v", got.err, err)
+				}
+				if !got.session.Matches(current.Local.PublicKey(), current.Peer, current.ContactID, current.Association) {
+					t.Fatal("usable session lost exact context after diagnostic offer")
 				}
 			})
 		}

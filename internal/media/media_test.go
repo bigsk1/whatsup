@@ -11,6 +11,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"os"
 	"testing"
 )
 
@@ -64,6 +65,84 @@ func TestPrepareReencodesAndStripsMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStaticWebPReencodesPixelsAndRemovesMetadata(t *testing.T) {
+	// Our 258-byte fixture contains only synthetic pixels and metadata. It was
+	// generated offline with Pillow 10.4.0/libwebp 1.4.0. Reproduction in Python:
+	// from PIL import Image
+	// im = Image.new('RGB', (384, 192))
+	// colors = [(255,0,0), (0,255,0), (0,0,255), (255,255,255)]
+	// for y in range(192):
+	//     for x in range(384):
+	//         im.putpixel((x,y), colors[(x >= 192) + 2 * (y >= 96)])
+	// exif = Image.Exif(); exif[270] = 'WhatsUp synthetic EXIF location sentinel'
+	// xmp = b'<x:xmpmeta xmlns:x="adobe:ns:meta/">WhatsUp synthetic XMP sentinel</x:xmpmeta>'
+	// im.save('testdata/static-metadata.webp', 'WEBP', lossless=True, method=6, exif=exif, xmp=xmp)
+	// The committed bytes make the test independent of any installed encoder.
+	source, err := os.ReadFile("testdata/static-metadata.webp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	markers := [][]byte{[]byte("WhatsUp synthetic EXIF location sentinel"), []byte("WhatsUp synthetic XMP sentinel")}
+	for _, marker := range markers {
+		if !bytes.Contains(source, marker) {
+			t.Fatal("WebP fixture lost its metadata sentinel")
+		}
+	}
+	kind, mime, err := Sniff(bytes.NewReader(source))
+	if err != nil || kind != KindImage || mime != "image/webp" {
+		t.Fatalf("static WebP sniff: kind=%q MIME=%q error=%v", kind, mime, err)
+	}
+	info, err := Validate(context.Background(), bytes.NewReader(source))
+	if err != nil || info.MediaType != "image/webp" || info.Width != 384 || info.Height != 192 {
+		t.Fatalf("static WebP validation: info=%+v error=%v", info, err)
+	}
+	prepared, err := Prepare(context.Background(), bytes.NewReader(source))
+	if err != nil || prepared.MediaType != "image/png" || prepared.Width != 384 || prepared.Height != 192 {
+		t.Fatalf("static WebP preparation: MIME=%q dimensions=%dx%d error=%v", prepared.MediaType, prepared.Width, prepared.Height, err)
+	}
+	for _, output := range []struct {
+		name          string
+		data          []byte
+		width, height int
+	}{
+		{"full image", prepared.Data, 384, 192},
+		{"thumbnail", prepared.Thumbnail, 256, 128},
+	} {
+		t.Run(output.name, func(t *testing.T) {
+			for _, marker := range markers {
+				if bytes.Contains(output.data, marker) {
+					t.Fatal("WebP metadata survived image reencoding")
+				}
+			}
+			kind, mime, err := Sniff(bytes.NewReader(output.data))
+			if err != nil || kind != KindImage || mime != "image/png" {
+				t.Fatalf("reencoded output sniff: kind=%q MIME=%q error=%v", kind, mime, err)
+			}
+			decoded, format, err := image.Decode(bytes.NewReader(output.data))
+			if err != nil || format != "png" {
+				t.Fatalf("reencoded output format=%q error=%v", format, err)
+			}
+			if decoded.Bounds() != image.Rect(0, 0, output.width, output.height) {
+				t.Fatal("reencoded image dimensions changed")
+			}
+			for _, sample := range []struct {
+				x, y int
+				want color.RGBA
+			}{
+				{0, 0, color.RGBA{R: 255, A: 255}},
+				{output.width - 1, 0, color.RGBA{G: 255, A: 255}},
+				{0, output.height - 1, color.RGBA{B: 255, A: 255}},
+				{output.width - 1, output.height - 1, color.RGBA{R: 255, G: 255, B: 255, A: 255}},
+			} {
+				if got := color.RGBAModel.Convert(decoded.At(sample.x, sample.y)).(color.RGBA); got != sample.want {
+					t.Fatalf("synthetic pixel (%d,%d): got=%v want=%v", sample.x, sample.y, got, sample.want)
+				}
+			}
+		})
+	}
+}
+
 func TestSupportedStaticImagesAndSniff(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 4, 3))
 	var jpg bytes.Buffer

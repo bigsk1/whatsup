@@ -29,6 +29,10 @@ func randomStoreID() (string, error) {
 // imported record has been reopened and verified. No application authority is
 // returned while this migration is pending.
 func (a *ApplicationState) prepareMessageMigrationLocked() error {
+	return a.prepareMessageMigrationWithBackupIOLocked(nil)
+}
+
+func (a *ApplicationState) prepareMessageMigrationWithBackupIOLocked(testIO *rootBackupIO) error {
 	for _, name := range []string{"messages.sqlite", "messages.sqlite-wal", "messages.sqlite-shm", "messages.sqlite-journal"} {
 		if _, err := os.Lstat(filepath.Join(a.vault.directory, name)); !os.IsNotExist(err) {
 			return ErrState
@@ -47,40 +51,10 @@ func (a *ApplicationState) prepareMessageMigrationLocked() error {
 			contact.StoreID = id
 		}
 	}
-	var random [16]byte
-	if _, err := rand.Read(random[:]); err != nil {
-		return err
-	}
-	name := "pre-migration-" + hex.EncodeToString(random[:]) + ".vault"
-	source, err := os.Open(filepath.Join(a.vault.directory, "state.vault"))
-	if err != nil {
-		return err
-	}
-	defer source.Close()
-	destination, err := os.OpenFile(filepath.Join(a.vault.directory, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return err
-	}
-	// Only authenticated ciphertext is copied. An incomplete backup is retained
-	// for inspection and never selected as a completed migration backup.
-	digest := sha256.New()
-	written, copyErr := io.Copy(io.MultiWriter(destination, digest), io.LimitReader(source, 2*MaxStateBytes+8193))
-	if copyErr == nil && (written == 0 || written > 2*MaxStateBytes+8192) {
-		copyErr = ErrState
-	}
-	if copyErr == nil {
-		copyErr = destination.Sync()
-	}
-	closeErr := destination.Close()
-	if err := errors.Join(copyErr, closeErr); err != nil {
-		return err
-	}
-	if err := syncDirectory(a.vault.directory); err != nil {
-		return err
-	}
-	a.state.MigrationBackup = name
-	a.state.MigrationBackupHash = hex.EncodeToString(digest.Sum(nil))
-	return nil
+	// Publish a recognized backup only after its complete ciphertext is synced.
+	// Crash leftovers use the existing owned root-temp class so later protection
+	// transitions cannot retain an OS-only path through an uncommitted copy.
+	return a.backupRootMetadataWithIOLocked(testIO)
 }
 
 func (a *ApplicationState) openMessageStoreLocked() error {

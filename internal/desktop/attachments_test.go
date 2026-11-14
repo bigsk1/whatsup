@@ -133,6 +133,101 @@ func TestAttachmentDraftsAreEncryptedLocalAndAssetAuthorityDiesOnLock(t *testing
 	}
 }
 
+func TestImagePickerDefaultStripsMetadataAndSendAsFilePreservesOriginal(t *testing.T) {
+	// The shared fixture is our synthetic four-quadrant WebP with EXIF/XMP
+	// sentinels; its offline generation recipe lives in media/media_test.go.
+	original, err := os.ReadFile(filepath.Join("..", "media", "testdata", "static-metadata.webp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	markers := [][]byte{[]byte("WhatsUp synthetic EXIF location sentinel"), []byte("WhatsUp synthetic XMP sentinel")}
+	for _, marker := range markers {
+		if !bytes.Contains(original, marker) {
+			t.Fatal("original WebP fixture lacks its metadata sentinel")
+		}
+	}
+	for _, asFile := range []bool{false, true} {
+		t.Run(map[bool]string{false: "default-image", true: "send-as-file"}[asFile], func(t *testing.T) {
+			selected := filepath.Join(t.TempDir(), "synthetic-metadata.webp")
+			if err := os.WriteFile(selected, original, 0600); err != nil {
+				t.Fatal(err)
+			}
+			s, contact := attachmentService(t, func(o *AttachmentRuntimeOptions) {
+				o.Pick = func(context.Context) (string, error) { return selected, nil }
+			})
+			draft, err := s.ChooseAttachment(contact.ID, asFile)
+			if err != nil || len(draft.Handle) != 32 || !strings.HasPrefix(draft.PreviewURL, "/local-media/") {
+				t.Fatalf("stage native selection: %v", err)
+			}
+			encoded, err := json.Marshal(draft)
+			if err != nil || bytes.Contains(encoded, []byte(selected)) || bytes.Contains(encoded, []byte(s.directory)) {
+				t.Fatal("file selection exposed a private path")
+			}
+			scope, err := s.application.AttachmentStore(contact.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			records, err := scope.List()
+			if err != nil || len(records) != 1 || records[0].State != transfer.Draft || records[0].Direction != transfer.Outgoing {
+				t.Fatal("file selection did not remain a single local draft")
+			}
+			offer := records[0].Offer
+			if draft.Handle == offer.ID {
+				t.Fatal("renderer handle exposed the underlying transfer identifier")
+			}
+			reader, err := scope.Open(context.Background(), offer.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, readErr := io.ReadAll(reader)
+			closeErr := reader.Close()
+			if readErr != nil || closeErr != nil {
+				t.Fatalf("read staged draft: %v %v", readErr, closeErr)
+			}
+			if offer.Size != uint64(len(body)) || draft.Size != offer.Size || offer.SHA256 != sha256.Sum256(body) || draft.MediaType != offer.MediaType {
+				t.Fatal("draft metadata or hash did not describe its actual staged bytes")
+			}
+			if asFile {
+				if !bytes.Equal(body, original) || offer.Size != uint64(len(original)) || offer.SHA256 != sha256.Sum256(original) || offer.MediaType != "image/webp" || draft.Name != "synthetic-metadata.webp" {
+					t.Fatal("Send as file changed the original image bytes or metadata")
+				}
+			} else {
+				if bytes.Equal(body, original) || offer.MediaType != "image/png" || http.DetectContentType(body) != "image/png" || draft.Name != "synthetic-metadata.png" {
+					t.Fatal("default image selection did not reencode to PNG")
+				}
+				config, err := png.DecodeConfig(bytes.NewReader(body))
+				if err != nil || config.Width != 384 || config.Height != 192 {
+					t.Fatal("default image selection changed decoded dimensions")
+				}
+			}
+			for _, marker := range markers {
+				if bytes.Contains(body, marker) != asFile {
+					t.Fatal("staged metadata did not follow the explicit Send as file choice")
+				}
+			}
+			// Even an original-byte draft gets only a sanitized PNG thumbnail
+			// through its opaque app handler, never the original metadata.
+			preview := httptest.NewRecorder()
+			if !ServeAttachment(s, preview, httptest.NewRequest("GET", draft.PreviewURL, nil)) || preview.Code != http.StatusOK || preview.Header().Get("Content-Type") != "image/png" || preview.Header().Get("X-Content-Type-Options") != "nosniff" {
+				t.Fatal("draft preview did not use the safe image handler")
+			}
+			for _, marker := range markers {
+				if bytes.Contains(preview.Body.Bytes(), marker) {
+					t.Fatal("draft thumbnail exposed original image metadata")
+				}
+			}
+			list, err := s.GetAttachments(contact.ID)
+			if err != nil || len(list.Drafts) != 1 || list.Drafts[0].Handle != draft.Handle || len(list.Items) != 0 {
+				t.Fatal("selection or preview implicitly queued an attachment")
+			}
+			retained, err := scope.Get(offer.ID)
+			if err != nil || retained.State != transfer.Draft {
+				t.Fatal("preview changed the draft's local-only state")
+			}
+		})
+	}
+}
+
 func TestReceivedFileIsSaveOnlyAndExistingDestinationsArePreserved(t *testing.T) {
 	directory := t.TempDir()
 	destination := filepath.Join(directory, "received.pdf")

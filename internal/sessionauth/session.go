@@ -40,6 +40,9 @@ const (
 	controlProtocol = "whatsup-contact/4-control1"
 	// Previous protocol framing is selected only after exact-contact mutual TLS.
 	previousProtocol = "whatsup-contact/3"
+	// Wire 2 is diagnostic-only: authenticate its exact pin and context before
+	// reporting incompatibility, then close without creating a Session.
+	diagnosticProtocol = "whatsup-contact/2"
 )
 
 var (
@@ -138,25 +141,31 @@ func authenticate(ctx context.Context, raw net.Conn, options Options, associatio
 	type negotiatedRoute struct {
 		association  [32]byte
 		capabilities Capabilities
+		diagnostic   bool
 	}
-	routes := make(map[string]negotiatedRoute, 3*len(associations))
-	nextProtos := make([]string, 0, 3*len(associations))
+	routes := make(map[string]negotiatedRoute, 4*len(associations))
+	nextProtos := make([]string, 0, 4*len(associations))
 	for i, association := range associations {
 		if association == [32]byte{} || i > 0 && association == associations[0] {
 			return nil, ErrAuthentication
 		}
-		suffix := "." + options.ContactID + "." + base64.RawURLEncoding.EncodeToString(association[:])
-		for _, choice := range []struct {
-			name string
-			caps Capabilities
-		}{
-			{controlProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true}},
-			{protocol, Capabilities{WireVersion: 4, Attachments: true}},
-			{previousProtocol, Capabilities{WireVersion: 3}},
-		} {
+	}
+	// Prefer usable framing across both exact candidates before offering any
+	// diagnostic-only ALPN. No bare protocol or wildcard context is advertised.
+	for _, choice := range []struct {
+		name string
+		caps Capabilities
+	}{
+		{controlProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true}},
+		{protocol, Capabilities{WireVersion: 4, Attachments: true}},
+		{previousProtocol, Capabilities{WireVersion: 3}},
+		{diagnosticProtocol, Capabilities{}},
+	} {
+		for _, association := range associations {
+			suffix := "." + options.ContactID + "." + base64.RawURLEncoding.EncodeToString(association[:])
 			alpn := choice.name + suffix
 			nextProtos = append(nextProtos, alpn)
-			routes[alpn] = negotiatedRoute{association: association, capabilities: choice.caps}
+			routes[alpn] = negotiatedRoute{association: association, capabilities: choice.caps, diagnostic: choice.name == diagnosticProtocol}
 		}
 	}
 	now := time.Now()
@@ -212,6 +221,9 @@ func authenticate(ctx context.Context, raw net.Conn, options Options, associatio
 		return nil, ErrAuthentication
 	}
 	selected := routes[state.NegotiatedProtocol]
+	if selected.diagnostic {
+		return nil, ErrIncompatible
+	}
 	s := &Session{state: &sessionState{raw: raw, tls: connection, local: options.Local.PublicKey(), peer: options.Peer, contactID: options.ContactID, association: selected.association, capabilities: selected.capabilities, expires: expires}}
 	s.state.mu.Lock()
 	s.state.stop = context.AfterFunc(ctx, func() { _ = s.Close() })

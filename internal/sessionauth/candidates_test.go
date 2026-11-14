@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"testing"
@@ -169,6 +170,60 @@ func TestCandidateListenerRejectsInvalidSetsAndClientUseBeforeHandshake(t *testi
 			}
 			if _, err := right.Write([]byte{1}); err == nil {
 				t.Fatal("rejected candidate helper retained raw connection")
+			}
+		})
+	}
+}
+
+func TestCandidateProtocol2DiagnosticRequiresExactPinnedAssociation(t *testing.T) {
+	for _, index := range []int{0, 1} {
+		for _, kind := range []string{"valid", "wrong-association", "wrong-contact", "wrong-key"} {
+			t.Run(fmt.Sprintf("association=%d/%s", index, kind), func(t *testing.T) {
+				current, old := optionsPair(t)
+				associations := [][32]byte{current.Association, {2}}
+				old.Association = associations[index]
+				switch kind {
+				case "wrong-association":
+					old.Association = [32]byte{3}
+				case "wrong-contact":
+					old.ContactID = "c3ludGhldGljLWlkLTAwMg"
+				case "wrong-key":
+					old.Local, _ = identity.Generate()
+				}
+				alpn := diagnosticProtocol + "." + old.ContactID + "." + base64.RawURLEncoding.EncodeToString(old.Association[:])
+				got, peer, handshakeErr := rawProtocolPeer(t, current, associations, protocolPeerConfig(t, old, []string{alpn}))
+				want := ErrAuthentication
+				if kind == "valid" {
+					want = ErrIncompatible
+					if handshakeErr != nil || !peer.ConnectionState().HandshakeComplete || peer.ConnectionState().NegotiatedProtocol != alpn {
+						t.Fatalf("candidate diagnostic did not finish exact pinned TLS: %v", handshakeErr)
+					}
+				} else if kind == "wrong-key" {
+					want = ErrIdentityChanged
+				}
+				if got.session != nil || !errors.Is(got.err, want) {
+					t.Fatalf("candidate diagnostic gained authority or wrong result: %v, want %v", got.err, want)
+				}
+				assertProtocolPeerClosed(t, peer)
+			})
+		}
+	}
+}
+
+func TestCandidateProtocol2DoesNotDisplaceUsableSecondAssociation(t *testing.T) {
+	for _, usable := range []string{previousProtocol, protocol, controlProtocol} {
+		t.Run(usable, func(t *testing.T) {
+			current, peer := optionsPair(t)
+			associations := [][32]byte{current.Association, {2}}
+			first := "." + peer.ContactID + "." + base64.RawURLEncoding.EncodeToString(associations[0][:])
+			second := "." + peer.ContactID + "." + base64.RawURLEncoding.EncodeToString(associations[1][:])
+			config := protocolPeerConfig(t, peer, []string{diagnosticProtocol + first, usable + second})
+			got, raw, err := rawProtocolPeer(t, current, associations, config)
+			if err != nil || got.err != nil || got.session == nil || raw.ConnectionState().NegotiatedProtocol != usable+second {
+				t.Fatalf("first candidate's diagnostic displaced usable second candidate: %v / %v", got.err, err)
+			}
+			if !got.session.Matches(current.Local.PublicKey(), current.Peer, current.ContactID, associations[1]) || got.session.Matches(current.Local.PublicKey(), current.Peer, current.ContactID, associations[0]) {
+				t.Fatal("usable second association proved the wrong route")
 			}
 		})
 	}
