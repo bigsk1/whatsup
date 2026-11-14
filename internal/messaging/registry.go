@@ -48,16 +48,19 @@ func (m *Manager) bumpLocked() {
 }
 
 type ContactSummary struct {
-	State           string `json:"state"`
-	Path            string `json:"path"`
-	Revision        uint64 `json:"revision"`
-	ContactID       string `json:"contactID"`
-	PeerFingerprint string `json:"peerFingerprint"`
-	PeerDisplayName string `json:"peerDisplayName"`
-	LocalName       string `json:"localName"`
-	CanConnect      bool   `json:"canConnect"`
-	CanSend         bool   `json:"canSend"`
-	Unread          uint64 `json:"unread"`
+	State                    string `json:"state"`
+	Path                     string `json:"path"`
+	Revision                 uint64 `json:"revision"`
+	ContactID                string `json:"contactID"`
+	PeerFingerprint          string `json:"peerFingerprint"`
+	PeerDisplayName          string `json:"peerDisplayName"`
+	LocalName                string `json:"localName"`
+	CanConnect               bool   `json:"canConnect"`
+	CanSend                  bool   `json:"canSend"`
+	PeerProtocol             uint8  `json:"peerProtocol"`
+	AttachmentsSupported     bool   `json:"attachmentsSupported"`
+	ContactControlsSupported bool   `json:"contactControlsSupported"`
+	Unread                   uint64 `json:"unread"`
 }
 
 type MessagePage struct {
@@ -80,7 +83,7 @@ func (m *Manager) Summary() ContactSummary {
 
 func (m *Manager) summaryLocked() ContactSummary {
 	s := m.snapshotLocked(false)
-	summary := ContactSummary{State: s.State, Path: s.Path, Revision: s.Revision, ContactID: s.ContactID, PeerFingerprint: s.PeerFingerprint, PeerDisplayName: s.PeerDisplayName, LocalName: s.LocalName, CanConnect: s.CanConnect, CanSend: s.CanSend}
+	summary := ContactSummary{State: s.State, Path: s.Path, Revision: s.Revision, ContactID: s.ContactID, PeerFingerprint: s.PeerFingerprint, PeerDisplayName: s.PeerDisplayName, LocalName: s.LocalName, CanConnect: s.CanConnect, CanSend: s.CanSend, PeerProtocol: s.PeerProtocol, AttachmentsSupported: s.AttachmentsSupported, ContactControlsSupported: s.ContactControlsSupported}
 	if !m.closed && m.conversation != nil && m.state != "failed" {
 		unread, err := m.conversation.UnreadCount()
 		if err != nil {

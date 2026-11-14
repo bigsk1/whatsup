@@ -54,6 +54,35 @@ function deferred<T>() {
   return { promise, resolve };
 }
 describe('attachment state boundary', () => {
+  it('preserves drafts offline, blocks wire sends only on connected protocol3, and keeps saved-file actions after removal', async () => {
+    const api = mock(),
+      store = createAttachments(api);
+    await store.select(id);
+    const draft = {
+      handle: token,
+      name: 'synthetic.pdf',
+      mediaType: 'application/pdf',
+      size: 17,
+      previewURL: '',
+      requiresRelayWarning: false,
+    };
+    store.setConnection('connected', 3);
+    await store.pick(false);
+    expect(api.pick).toHaveBeenCalledWith(id, false);
+    await store.send(draft, false);
+    expect(api.send).not.toHaveBeenCalled();
+    await store.decision(item, 'resume');
+    expect(api.decision).not.toHaveBeenCalled();
+    store.setConnection('offline', 0);
+    await store.send(draft, false);
+    expect(api.send).toHaveBeenCalledWith(id, token, false);
+    store.setConnection('peer-removed', 0);
+    await store.send(draft, false);
+    expect(api.send).toHaveBeenCalledTimes(1);
+    await store.save(item);
+    expect(api.save).toHaveBeenCalledWith(id, file);
+    store.stop();
+  });
   it('serializes and coalesces native drop targets through contact changes and offline', async () => {
     const api = mock(),
       pending = deferred<void>(),

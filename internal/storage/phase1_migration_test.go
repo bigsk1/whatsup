@@ -120,7 +120,7 @@ func assertPhase1Migration(t *testing.T, f *phase1Fixture, app *ApplicationState
 	if profileErr != nil || namesErr != nil || gotProfile != f.profile || gotNames != f.names || committedErr != nil || len(committed) != 1 || committed[0] != f.contact || pendingErr != nil || len(pending) != 1 || pending[0] != f.pending {
 		t.Fatal("migration changed names, profile or contact credentials")
 	}
-	if app.state.Version != 7 || app.state.MessageStoreState != "ready" || len(app.state.Contacts) != 1 || len(app.state.Contacts[0].Chat) != 0 || !migrationBackupName.MatchString(app.state.MigrationBackup) {
+	if app.state.Version != ApplicationSchemaVersion || app.state.MessageStoreState != "ready" || len(app.state.Contacts) != 1 || len(app.state.Contacts[0].Chat) != 0 || !migrationBackupName.MatchString(app.state.MigrationBackup) {
 		t.Fatal("migration did not finish with a small envelope and verified message store")
 	}
 	backupPath := filepath.Join(f.directory, app.state.MigrationBackup)
@@ -236,7 +236,7 @@ func pendingPhase1Migration(t *testing.T, f *phase1Fixture) *ApplicationState {
 		t.Fatal("invalid synthetic schema-6 fixture")
 	}
 	a := &ApplicationState{vault: v, save: v.saveLocked, commitReceipts: make(map[string]*commitReceiptState)}
-	a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: old.Identity, Profile: old.Profile, PendingContacts: old.PendingContacts, CommittedContacts: old.CommittedContacts}
+	a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: old.Identity, Profile: old.Profile, PendingContacts: old.PendingContacts, CommittedContacts: old.CommittedContacts, Routes: []routeStateDisk{}}
 	for _, c := range old.Contacts {
 		a.state.Contacts = append(a.state.Contacts, contactSection{Version: c.Version, Local: c.Local, Peer: c.Peer, ContactID: c.ContactID, Chat: c.Chat, LocalName: c.LocalName, PeerName: c.PeerName})
 	}

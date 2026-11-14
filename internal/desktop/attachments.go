@@ -591,6 +591,9 @@ func (s *Service) SendAttachment(id, handle string, allowRelayedLarge bool) erro
 	if err != nil {
 		return err
 	}
+	if contact := s.messages.Snapshot(id); contact.PeerProtocol == 3 {
+		return errors.New("This contact can exchange text, but needs an app update before receiving attachments. The local draft is kept.")
+	}
 	ref, ok := l.session.drafts[handle]
 	if !ok || ref.contactID != id {
 		return errAttachment

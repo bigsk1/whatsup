@@ -16,6 +16,7 @@
   } = $props();
   let dialog: HTMLDialogElement;
   let cancelButton: HTMLButtonElement;
+  let shownHandle: string | undefined;
   let required = $state(false),
     replace = $state(false),
     secret = $state(''),
@@ -43,7 +44,8 @@
   $effect(() => {
     const handle = preview?.handle;
     untrack(() => {
-      if (!dialog) return;
+      if (!dialog || shownHandle === handle) return;
+      shownHandle = handle;
       clear();
       if (handle && !dialog.open) {
         dialog.showModal();

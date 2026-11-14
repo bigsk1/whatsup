@@ -89,6 +89,7 @@ type metadata struct {
 	AttachmentRows       uint64 `json:"attachmentRows,omitempty"`
 	AttachmentUsed       uint64 `json:"attachmentUsed,omitempty"`
 	AutoImages           bool   `json:"autoImages,omitempty"`
+	PeerRemovalID        string `json:"peerRemovalID,omitempty"`
 }
 
 // Keep the exact Phase 1 canonical shape for authenticated on-open migration.
@@ -462,7 +463,7 @@ func (d *DB) loadMeta(ctx context.Context, q queryer, id string) (metadata, stri
 	} else if m.Version != 2 {
 		return metadata{}, "", ErrCorrupt
 	}
-	if m.Version != 1 && m.Version != 2 || !validID(m.Epoch) || m.NextSequence == 0 || m.NextSequence > math.MaxInt64 || m.Rows != m.NextSequence-1 || m.Pending > m.Rows || m.Unread > m.Rows || m.ClearThroughSequence > m.ReadThroughSequence || m.ReadThroughSequence >= m.NextSequence || !validAttachmentMetadata(m) {
+	if m.Version != 1 && m.Version != 2 || !validID(m.Epoch) || m.NextSequence == 0 || m.NextSequence > math.MaxInt64 || m.Rows != m.NextSequence-1 || m.Pending > m.Rows || m.Unread > m.Rows || m.ClearThroughSequence > m.ReadThroughSequence || m.ReadThroughSequence >= m.NextSequence || !validAttachmentMetadata(m) || m.PeerRemovalID != "" && !validContactID(m.PeerRemovalID) {
 		return metadata{}, "", ErrCorrupt
 	}
 	return m, key, nil

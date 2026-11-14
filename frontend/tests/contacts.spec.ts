@@ -41,6 +41,9 @@ function contact(
   unread = 0,
 ): ContactSummary {
   return {
+    peerProtocol: 0,
+    attachmentsSupported: false,
+    contactControlsSupported: false,
     contactID,
     localName,
     unread,

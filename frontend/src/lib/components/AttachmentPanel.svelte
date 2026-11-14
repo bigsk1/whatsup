@@ -19,6 +19,9 @@
     onpreview,
     onsave,
     onreveal,
+    wireAllowed,
+    stageAllowed,
+    wireNotice,
   }: {
     items: AttachmentItem[];
     drafts: AttachmentDraft[];
@@ -38,6 +41,9 @@
     onpreview: (item: AttachmentItem) => void;
     onsave: (item: AttachmentItem) => void;
     onreveal: (item: AttachmentItem) => void;
+    wireAllowed: boolean;
+    stageAllowed: boolean;
+    wireNotice: string;
   } = $props();
   let original = $state(false);
   let relay = $state<Record<string, boolean>>({});
@@ -54,18 +60,21 @@
     <button
       type="button"
       class="secondary-button compact"
-      disabled={busy}
+      disabled={busy || !stageAllowed}
       onclick={() => onpick(original)}>Choose file…</button
     >
     <button
       type="button"
       class="secondary-button compact"
-      disabled={busy}
+      disabled={busy || !stageAllowed}
       onclick={onpaste}>Paste image</button
     >
     <label
-      ><input type="checkbox" bind:checked={original} disabled={busy} /> Send as file
-      (keep original bytes)</label
+      ><input
+        type="checkbox"
+        bind:checked={original}
+        disabled={busy || !stageAllowed}
+      /> Send as file (keep original bytes)</label
     >
   </div>
   <p class="hint">
@@ -81,6 +90,7 @@
     /> Automatically accept images up to 25 MB from this contact</label
   >
   {#if notice}<p role="alert">{notice}</p>{/if}
+  {#if wireNotice}<p role="status">{wireNotice}</p>{/if}
   {#each drafts as draft (draft.handle)}
     <article class="attachment-draft" aria-label="Attachment preview">
       {#if draft.previewURL}<img
@@ -105,7 +115,9 @@
       <button
         type="button"
         class="secondary-button compact"
-        disabled={busy || (draft.requiresRelayWarning && !relay[draft.handle])}
+        disabled={busy ||
+          !wireAllowed ||
+          (draft.requiresRelayWarning && !relay[draft.handle])}
         onclick={() => onsend(draft, Boolean(relay[draft.handle]))}
         >Send file</button
       >
@@ -136,7 +148,7 @@
           <button
             type="button"
             class="secondary-button compact"
-            disabled={busy}
+            disabled={busy || !wireAllowed}
             onclick={() => ondecision(item, 'accept')}>Accept</button
           >
           <button
@@ -149,7 +161,7 @@
           <button
             type="button"
             class="secondary-button compact"
-            disabled={busy}
+            disabled={busy || !wireAllowed}
             onclick={() => ondecision(item, 'resume')}>Resume</button
           >
         {:else if item.state === 'complete'}
@@ -204,7 +216,7 @@
           <button
             type="button"
             class="secondary-button compact"
-            disabled={busy}
+            disabled={busy || !wireAllowed}
             onclick={() => ondecision(item, 'allow-relay')}
             >Allow relay bandwidth</button
           >{/if}

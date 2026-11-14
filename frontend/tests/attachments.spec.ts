@@ -5,6 +5,7 @@ import { unavailablePairing } from '../src/lib/pairing';
 import { unavailableConversation } from '../src/lib/messaging';
 import {
   contactSummary,
+  contactHint,
   messagePage,
   serveDefaultAppPreferences,
 } from './contact-events';
@@ -47,7 +48,12 @@ const item: AttachmentItem = {
 
 // This fixture exercises generated Wails bindings and the browser UI. Native
 // file access, OS dialogs and transport are verified separately in Go/native QA.
-async function desktop(page: Page, initial: AttachmentItem[] = []) {
+async function desktop(
+  page: Page,
+  initial: AttachmentItem[] = [],
+  peer: 'offline' | 'connected' | 'peer-removed' = 'offline',
+  protocol: 0 | 3 | 4 = 0,
+) {
   const calls: { name: string; args: unknown[] }[] = [],
     errors: string[] = [],
     external: string[] = [];
@@ -57,16 +63,22 @@ async function desktop(page: Page, initial: AttachmentItem[] = []) {
     items: initial,
     drafts: [] as AttachmentDraft[],
     autoAcceptImages: false,
+    peer,
+    protocol,
   };
   const conversation = () => ({
     ...unavailableConversation,
-    state: 'offline' as const,
+    state: state.peer,
     path: 'Relayed' as const,
     revision: state.revision,
     contactID,
     peerFingerprint: 'b'.repeat(64),
-    canSend: true,
-    canConnect: true,
+    peerProtocol: state.protocol,
+    attachmentsSupported: state.peer === 'connected' && state.protocol === 4,
+    contactControlsSupported:
+      state.peer === 'connected' && state.protocol === 4,
+    canSend: state.peer !== 'peer-removed',
+    canConnect: state.peer === 'offline',
   });
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('request', (request) => {
@@ -305,5 +317,68 @@ test('completed video does not create a player until Play is clicked, and Go off
   await expect(
     page.getByRole('region', { name: 'Attachments', exact: true }),
   ).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('a connected protocol-3 peer blocks file transfer while saved files and offline drafts remain usable', async ({
+  page,
+}) => {
+  const { calls, state, errors } = await desktop(
+    page,
+    [{ ...item, state: 'complete', transferredBytes: item.size }],
+    'connected',
+    3,
+  );
+  await expect(
+    page.getByText('Text messaging works with this device.', { exact: false }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Save…', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Show in folder', exact: true }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Choose file…', exact: true }).click();
+  await page
+    .getByRole('checkbox', {
+      name: 'This large transfer may use relay bandwidth.',
+    })
+    .check();
+  await expect(
+    page.getByRole('button', { name: 'Send file', exact: true }),
+  ).toBeDisabled();
+  expect(calls.some((call) => call.name === 'SendAttachment')).toBe(false);
+  state.peer = 'offline';
+  state.protocol = 0;
+  state.revision++;
+  await contactHint(page, contactID, state.revision);
+  await expect(
+    page.getByRole('button', { name: 'Send file', exact: true }),
+  ).toBeEnabled();
+  await page.getByRole('button', { name: 'Send file', exact: true }).click();
+  await expect(
+    page.getByRole('article', { name: 'Sent attachment' }),
+  ).toContainText('queued');
+  expect(errors).toEqual([]);
+});
+
+test('a removed contact keeps completed files saveable and prevents new drafts', async ({
+  page,
+}) => {
+  const { calls, errors } = await desktop(
+    page,
+    [{ ...item, state: 'complete', transferredBytes: item.size }],
+    'peer-removed',
+  );
+  await expect(
+    page.getByRole('button', { name: 'Choose file…', exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole('button', { name: 'Paste image', exact: true }),
+  ).toBeDisabled();
+  await page.getByRole('button', { name: 'Save…', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Show in folder', exact: true }),
+  ).toBeVisible();
+  expect(calls.some((call) => call.name === 'SaveAttachment')).toBe(true);
+  expect(calls.some((call) => call.name === 'ChooseAttachment')).toBe(false);
   expect(errors).toEqual([]);
 });

@@ -29,6 +29,12 @@ func (l notificationListener) Accept(ctx context.Context) (net.Conn, error) {
 
 func notificationFixture(t *testing.T) (*Service, messaging.Incoming) {
 	t.Helper()
+	local, _, incoming := notificationPairFixture(t)
+	return local, incoming
+}
+
+func notificationPairFixture(t *testing.T) (*Service, *Service, messaging.Incoming) {
+	t.Helper()
 	s, peer := unlockedInvitationService(t), unlockedInvitationService(t)
 	local, _ := s.application.Identity()
 	remote, _ := peer.application.Identity()
@@ -98,10 +104,10 @@ func notificationFixture(t *testing.T) (*Service, messaging.Incoming) {
 	}
 	select {
 	case notice := <-notices:
-		return s, notice
+		return s, peer, notice
 	case <-time.After(time.Second):
 		t.Fatal("new durable receive did not yield a native notice receipt")
-		return nil, messaging.Incoming{}
+		return nil, nil, messaging.Incoming{}
 	}
 }
 

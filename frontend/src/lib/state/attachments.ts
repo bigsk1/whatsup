@@ -247,6 +247,8 @@ const empty = () => ({
   saved: {} as Record<string, string>,
 });
 export function createAttachments(api: AttachmentBridge = bridge) {
+  let wireAllowed = true,
+    stageAllowed = true;
   let current = empty();
   const state = writable(current);
   const publish = (update: Partial<typeof current>) => {
@@ -382,6 +384,11 @@ export function createAttachments(api: AttachmentBridge = bridge) {
     state,
     select,
     reload,
+    setConnection(state: string, peerProtocol: number) {
+      stageAllowed = state !== 'peer-removed';
+      wireAllowed =
+        stageAllowed && !(state === 'connected' && peerProtocol === 3);
+    },
     older() {
       return action(async (id) => {
         const cursor = current.nextCursor,
@@ -429,22 +436,38 @@ export function createAttachments(api: AttachmentBridge = bridge) {
       if (targetVersion !== 0) void setTarget('').catch(() => {});
     },
     pick(original = false) {
+      if (!stageAllowed) return Promise.resolve();
       return action(async (id) => {
         await api.pick(id, original);
       });
     },
     paste() {
+      if (!stageAllowed) return Promise.resolve();
       return action(async (id) => {
         await api.paste(id);
       });
     },
     send(draft: AttachmentDraft, allow: boolean) {
+      if (!wireAllowed) {
+        publish({
+          notice:
+            'Attachments cannot be sent on this connection. Local drafts and saved files are kept.',
+        });
+        return Promise.resolve();
+      }
       return action((id) => api.send(id, draft.handle, allow));
     },
     discard(draft: AttachmentDraft) {
       return action((id) => api.discard(id, draft.handle));
     },
     decision(item: AttachmentItem, kind: string) {
+      if (!wireAllowed && ['accept', 'resume', 'allow-relay'].includes(kind)) {
+        publish({
+          notice:
+            'This connection cannot transfer attachments. Saved files remain available.',
+        });
+        return Promise.resolve();
+      }
       return action((id) => api.decision(id, item.id, kind));
     },
     setAutoAccept(enabled: boolean) {

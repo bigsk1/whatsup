@@ -27,16 +27,19 @@ var ErrUnavailable = errors.New("approved conversation is unavailable")
 var errPeerCapacity = errors.New("authenticated peer conversation capacity reached")
 
 type Snapshot struct {
-	State           string         `json:"state"`
-	Path            string         `json:"path"`
-	Revision        uint64         `json:"revision"`
-	ContactID       string         `json:"contactID"`
-	PeerFingerprint string         `json:"peerFingerprint"`
-	PeerDisplayName string         `json:"peerDisplayName"`
-	LocalName       string         `json:"localName"`
-	CanConnect      bool           `json:"canConnect"`
-	CanSend         bool           `json:"canSend"`
-	Messages        []chat.Message `json:"messages"`
+	State                    string         `json:"state"`
+	Path                     string         `json:"path"`
+	Revision                 uint64         `json:"revision"`
+	ContactID                string         `json:"contactID"`
+	PeerFingerprint          string         `json:"peerFingerprint"`
+	PeerDisplayName          string         `json:"peerDisplayName"`
+	LocalName                string         `json:"localName"`
+	CanConnect               bool           `json:"canConnect"`
+	CanSend                  bool           `json:"canSend"`
+	PeerProtocol             uint8          `json:"peerProtocol"`
+	AttachmentsSupported     bool           `json:"attachmentsSupported"`
+	ContactControlsSupported bool           `json:"contactControlsSupported"`
+	Messages                 []chat.Message `json:"messages"`
 }
 
 type Listener interface {
@@ -47,9 +50,10 @@ type Listener interface {
 // Factories are Go-only dependency boundaries used by disposable integration
 // tests. The production service always uses the reviewed transport constructors.
 type Factories struct {
-	Profile func(context.Context, string) (*transport.RelayProfile, error)
-	Listen  func(context.Context, storage.PendingRecord, *transport.RelayProfile) (Listener, error)
-	Dial    func(context.Context, storage.PendingRecord, *transport.RelayProfile) (net.Conn, error)
+	Profile         func(context.Context, string) (*transport.RelayProfile, error)
+	Listen          func(context.Context, storage.PendingRecord, *transport.RelayProfile) (Listener, error)
+	Dial            func(context.Context, storage.PendingRecord, *transport.RelayProfile) (net.Conn, error)
+	PreferredRegion func(*transport.RelayProfile) (uint16, error)
 }
 
 // Manager copies share the private state and lifecycle. Keeping its mutex
@@ -81,10 +85,27 @@ type managerState struct {
 	cancel        context.CancelFunc
 	raw           net.Conn
 	sessionActive bool
+	capabilities  sessionauth.Capabilities
+	controls      *controlSession
+	peerRemoved   bool
+	removing      bool
 	listener      Listener
 	wake          chan struct{}
 	workers       sync.WaitGroup
 	factories     Factories
+	profiles      map[string]*transport.RelayProfile
+	profileOrder  []string
+	routeRefresh  sync.Mutex
+	routeRestart  chan *routeRestartRequest
+	routeCancel   context.CancelFunc
+	routeDone     chan struct{}
+	runDone       chan struct{}
+	attempts      map[*routeAttempt]struct{}
+	listeners     map[*routeListener]struct{}
+	claim         *routeClaim
+	intentRunning bool
+	intentAgain   bool
+	planKey       [32]byte
 	// Used only by the network worker. A successful authentication resets the
 	// transport retry schedule; approved relay maps are reused only while valid.
 	authenticated uint64
@@ -128,9 +149,10 @@ type ContactOptions struct {
 
 func newManager(local *identity.Identity, app *storage.ApplicationState, id string, options ContactOptions) (*Manager, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &Manager{managerState: &managerState{local: local, application: app, targetID: id, revisions: options.Revisions, onChanged: options.OnChanged, onIncoming: options.OnIncoming, diagnostics: diagnostics.RateLimited(options.Diagnostics), path: transport.PathUnknown, state: "none", revision: 1, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1)}}
+	m := &Manager{managerState: &managerState{local: local, application: app, targetID: id, revisions: options.Revisions, onChanged: options.OnChanged, onIncoming: options.OnIncoming, diagnostics: diagnostics.RateLimited(options.Diagnostics), path: transport.PathUnknown, state: "none", revision: 1, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1), routeRestart: make(chan *routeRestartRequest, 1), profiles: map[string]*transport.RelayProfile{}, attempts: map[*routeAttempt]struct{}{}}}
 	m.factories = Factories{
-		Profile: transport.FetchRelayProfile,
+		Profile:         transport.FetchRelayProfile,
+		PreferredRegion: func(profile *transport.RelayProfile) (uint16, error) { return profile.PreferredRegion() },
 		Listen: func(ctx context.Context, record storage.PendingRecord, profile *transport.RelayProfile) (Listener, error) {
 			return transport.NewOngoingListener(ctx, transport.OngoingOptions{Record: record, Profile: profile, Policy: transport.RelayFallback, AllowRelayFallback: record.RelayFallbackConsent})
 		},
@@ -146,6 +168,9 @@ func newManager(local *identity.Identity, app *storage.ApplicationState, id stri
 	}
 	if options.Factories.Dial != nil {
 		m.factories.Dial = options.Factories.Dial
+	}
+	if options.Factories.PreferredRegion != nil {
+		m.factories.PreferredRegion = options.Factories.PreferredRegion
 	}
 	if m.refreshLocked() != nil {
 		cancel()
@@ -197,7 +222,7 @@ func (m *Manager) refreshLocked() error {
 				}
 			}
 		}
-		return nil
+		return m.refreshRemovalLocked()
 	}
 	if len(records) == 0 || records[0].Version != 2 {
 		if m.targetID != "" {
@@ -221,7 +246,7 @@ func (m *Manager) refreshLocked() error {
 			return ErrUnavailable
 		}
 	}
-	return nil
+	return m.refreshRemovalLocked()
 }
 
 func (m *Manager) failLocked() {
@@ -258,12 +283,15 @@ func (m *Manager) snapshotLocked(history ...bool) Snapshot {
 		result.State = "unavailable"
 	}
 	if m.record.ID != "" {
+		result.PeerProtocol = m.capabilities.WireVersion
+		result.AttachmentsSupported = m.sessionActive && m.capabilities.Attachments && !m.peerRemoved && !m.removing
+		result.ContactControlsSupported = m.sessionActive && m.capabilities.Control && !m.peerRemoved && !m.removing
 		result.ContactID, result.PeerFingerprint = m.record.ID, m.record.Peer.Fingerprint()
 		if names, err := m.application.ContactNames(m.record.ID); err == nil {
 			result.PeerDisplayName, result.LocalName = names.PeerDisplayName, names.LocalName
 		}
-		result.CanConnect = !m.running && m.ctx.Err() == nil && m.state != "failed" && m.state != "identity-changed"
-		result.CanSend = m.conversation != nil && m.state != "failed" && !capacityFailure(m.state)
+		result.CanConnect = !m.running && m.ctx.Err() == nil && m.state != "failed" && m.state != "identity-changed" && !m.peerRemoved && !m.removing
+		result.CanSend = m.conversation != nil && m.state != "failed" && !capacityFailure(m.state) && !m.peerRemoved && !m.removing
 		if m.conversation != nil && m.state != "failed" {
 			messages, pageErr := []chat.Message{}, error(nil)
 			if len(history) == 0 || history[0] {
@@ -283,7 +311,7 @@ func (m *Manager) snapshotLocked(history ...bool) Snapshot {
 			result.Messages = append(result.Messages, messages...)
 			if usage.Full {
 				result.CanSend = false
-				if m.state != "identity-changed" && m.state != "peer-capacity-reached" && m.state != "update-required" {
+				if m.state != "identity-changed" && m.state != "peer-capacity-reached" && m.state != "update-required" && !m.peerRemoved {
 					result.State = "capacity-reached"
 				}
 			}
@@ -308,11 +336,12 @@ func (m *Manager) Connect(id string) (Snapshot, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.refreshLocked() != nil || id == "" || m.record.ID != id || m.ctx.Err() != nil || m.state == "failed" || m.state == "identity-changed" {
+	if m.refreshLocked() != nil || id == "" || m.record.ID != id || m.ctx.Err() != nil || m.state == "failed" || m.state == "identity-changed" || m.peerRemoved || m.removing {
 		return m.snapshotLocked(), ErrUnavailable
 	}
 	if !m.running {
 		m.running, m.state = true, "connecting"
+		m.runDone = make(chan struct{})
 		m.bumpLocked()
 		m.workers.Add(1)
 		go m.run()
@@ -327,7 +356,7 @@ func (m *Manager) Send(id, text string) (Snapshot, error) {
 	m.mu.Lock()
 	var report diagnostics.Event
 	defer func() { m.mu.Unlock(); m.report(report) }()
-	if m.refreshLocked() != nil || m.record.ID != id || m.conversation == nil || m.state == "failed" || capacityFailure(m.state) {
+	if m.refreshLocked() != nil || m.record.ID != id || m.conversation == nil || m.state == "failed" || capacityFailure(m.state) || m.peerRemoved || m.removing {
 		return m.snapshotLocked(), ErrUnavailable
 	}
 	if _, err := m.conversation.Queue(text); err != nil {
@@ -403,7 +432,7 @@ func capacityFailure(state string) bool {
 }
 
 func terminalSession(err error) bool {
-	return terminalPersistence(err) || errors.Is(err, sessionauth.ErrIdentityChanged) || errors.Is(err, sessionauth.ErrIncompatible) || errors.Is(err, chat.ErrCapacity) || errors.Is(err, errPeerCapacity)
+	return terminalPersistence(err) || errors.Is(err, sessionauth.ErrIdentityChanged) || errors.Is(err, sessionauth.ErrIncompatible) || errors.Is(err, chat.ErrCapacity) || errors.Is(err, errPeerCapacity) || errors.Is(err, errPeerRemoved) || errors.Is(err, errRemovalSent)
 }
 
 func retryState(err error) string {
@@ -415,34 +444,37 @@ func retryState(err error) string {
 
 func (m *Manager) run() {
 	defer m.workers.Done()
-	defer func() { m.mu.Lock(); m.running = false; m.bumpLocked(); m.mu.Unlock() }()
-	var profile *transport.RelayProfile
+	m.startRelayIntent()
+	defer func() {
+		m.mu.Lock()
+		m.running = false
+		done := m.runDone
+		m.bumpLocked()
+		m.mu.Unlock()
+		if done != nil {
+			close(done)
+		}
+	}()
 	for attempt := 0; m.ctx.Err() == nil; attempt++ {
 		previousAuthentication := m.authenticated
-		var err error
-		if !profile.ReadyFor(m.record.RelayServiceURL) {
-			profile, err = m.factories.Profile(m.ctx, m.record.RelayServiceURL)
-			if err != nil {
-				profile = nil
-				if m.ctx.Err() == nil {
-					m.report(diagnostics.RelayFetchFailed)
-				}
-			}
-		}
-		if err == nil {
-			if m.record.Role == "inviter" {
-				err = m.serve(profile)
-			} else {
-				var raw net.Conn
-				raw, err = m.factories.Dial(m.ctx, m.record, profile)
-				if err == nil {
-					err = m.session(raw)
-				} else if m.ctx.Err() == nil {
-					m.report(diagnostics.DialFailed)
-				}
-			}
-		}
+		err := m.runRouteCycle()
 		if m.ctx.Err() != nil {
+			return
+		}
+		if m.authenticated != previousAuthentication {
+			attempt = 0
+		}
+		if errors.Is(err, errRoutesChanged) {
+			// A planned generation replacement is not a failed connection. The
+			// loop post must not advance backoff, including after fresh TLS.
+			attempt--
+			continue
+		}
+		if errors.Is(err, errPeerRemoved) {
+			m.changed("peer-removed")
+			return
+		}
+		if errors.Is(err, errRemovalSent) {
 			return
 		}
 		if errors.Is(err, sessionauth.ErrIdentityChanged) {
@@ -456,7 +488,7 @@ func (m *Manager) run() {
 		}
 		if errors.Is(err, sessionauth.ErrIncompatible) {
 			// The exact saved identity completed TLS while selecting a known
-			// previous application protocol. Stop automatic retries, but preserve
+			// unsupported application protocol. Stop automatic retries, but preserve
 			// the runtime so an explicit Connect can retry after updating.
 			m.changed("update-required")
 			return
@@ -478,9 +510,6 @@ func (m *Manager) run() {
 			m.changed(state)
 			return
 		}
-		if m.authenticated != previousAuthentication {
-			attempt = 0
-		}
 		m.changed(retryState(err))
 		// Transport failures retry automatically, never prompt for another
 		// invitation or silently choose a different relay provider.
@@ -489,116 +518,12 @@ func (m *Manager) run() {
 		case <-m.ctx.Done():
 			timer.Stop()
 			return
+		case request := <-m.routeRestart:
+			timer.Stop()
+			request.finish()
 		case <-timer.C:
 		}
 	}
-}
-
-func (m *Manager) serve(profile *transport.RelayProfile) error {
-	listener, err := m.factories.Listen(m.ctx, m.record, profile)
-	if err != nil {
-		if m.ctx.Err() == nil {
-			m.report(diagnostics.DialFailed)
-		}
-		return err
-	}
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		_ = listener.Close()
-		return ErrUnavailable
-	}
-	m.listener = listener
-	m.mu.Unlock()
-	defer func() { _ = listener.Close(); m.mu.Lock(); m.listener = nil; m.mu.Unlock() }()
-	for m.ctx.Err() == nil {
-		raw, err := listener.Accept(m.ctx)
-		if err != nil {
-			return err
-		}
-		err = m.session(raw)
-		if terminalSession(err) {
-			return err
-		}
-		if m.ctx.Err() != nil {
-			return m.ctx.Err()
-		}
-		m.changed(retryState(err))
-		if !profile.Ready() {
-			return ErrUnavailable
-		}
-	}
-	return ErrUnavailable
-}
-
-func (m *Manager) session(raw net.Conn) error {
-	ctx, cancel := context.WithCancel(m.ctx)
-	defer cancel()
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		_ = raw.Close()
-		return ErrUnavailable
-	}
-	m.raw = raw
-	m.mu.Unlock()
-	defer func() {
-		_ = raw.Close()
-		m.mu.Lock()
-		m.raw = nil
-		m.sessionActive = false
-		m.clearPathLocked()
-		m.mu.Unlock()
-	}()
-	binding, err := storage.ContactBinding(m.record)
-	if err != nil {
-		return ErrUnavailable
-	}
-	session, err := sessionauth.Authenticate(ctx, raw, sessionauth.Options{Local: m.local, Peer: m.record.Peer, ContactID: m.record.ID, Association: binding, Server: m.record.Role == "inviter"})
-	if err != nil {
-		if m.ctx.Err() == nil {
-			if errors.Is(err, sessionauth.ErrIdentityChanged) {
-				m.report(diagnostics.IdentityChanged)
-			} else if !errors.Is(err, sessionauth.ErrIncompatible) {
-				m.report(diagnostics.AuthenticationFailed)
-			}
-		}
-		return err
-	}
-	defer session.Close()
-	contact, err := pairing.ReconfirmAuthenticated(session, m.record)
-	if err != nil {
-		return err
-	}
-	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		contact.Revoke()
-		return ErrUnavailable
-	}
-	if m.conversation == nil {
-		if m.application.ApproveCommittedConversation(m.record, contact) != nil || m.openConversationLocked(contact) != nil {
-			m.state = "failed"
-			m.bumpLocked()
-			m.mu.Unlock()
-			contact.Revoke()
-			m.cancel()
-			return ErrUnavailable
-		}
-	} else {
-		contact.Revoke()
-	}
-	conversation := m.conversation
-	if err := conversation.ResetRetries(m.record.Peer); err != nil {
-		m.mu.Unlock()
-		return err
-	}
-	m.authenticated++
-	m.state = "connected"
-	m.sessionActive = true
-	m.bumpLocked()
-	m.mu.Unlock()
-	return m.exchange(ctx, session, conversation)
 }
 
 // Close joins all network/persistence work before the service closes the vault.
@@ -609,10 +534,19 @@ func (m *Manager) Close() {
 	}
 	m.mu.Lock()
 	m.closed = true
+	m.capabilities = sessionauth.Capabilities{}
 	m.state = "unavailable"
 	m.clearPathLocked()
 	m.bumpLocked()
 	raw, listener, contact := m.raw, m.listener, m.contact
+	attempts := make([]net.Conn, 0, len(m.attempts))
+	for attempt := range m.attempts {
+		attempts = append(attempts, attempt.raw)
+	}
+	listeners := make([]Listener, 0, len(m.listeners))
+	for owned := range m.listeners {
+		listeners = append(listeners, owned.listener)
+	}
 	m.mu.Unlock()
 	m.cancel()
 	if raw != nil {
@@ -620,6 +554,12 @@ func (m *Manager) Close() {
 	}
 	if listener != nil {
 		_ = listener.Close()
+	}
+	for _, conn := range attempts {
+		_ = conn.Close()
+	}
+	for _, owned := range listeners {
+		_ = owned.Close()
 	}
 	m.workers.Wait()
 	m.mu.Lock()

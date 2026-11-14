@@ -12,6 +12,9 @@ const id = 'AgICAgICAgICAgICAgICAg';
 
 function approved(): ConversationSnapshot {
   return {
+    peerProtocol: 0,
+    attachmentsSupported: false,
+    contactControlsSupported: false,
     state: 'offline',
     path: 'Unknown',
     revision: 1,
@@ -34,6 +37,53 @@ function approved(): ConversationSnapshot {
 }
 
 describe('public conversation boundary', () => {
+  it('validates protocol capabilities without granting features to legacy peers and keeps removed contact history', () => {
+    const value = approved();
+    for (const fields of [
+      {
+        peerProtocol: 3,
+        attachmentsSupported: false,
+        contactControlsSupported: false,
+      },
+      {
+        peerProtocol: 4,
+        attachmentsSupported: true,
+        contactControlsSupported: false,
+      },
+      {
+        peerProtocol: 4,
+        attachmentsSupported: true,
+        contactControlsSupported: true,
+      },
+    ])
+      expect(
+        validateConversation({ ...value, state: 'connected', ...fields })
+          .peerProtocol,
+      ).toBe(fields.peerProtocol);
+    for (const fields of [
+      { peerProtocol: 2 },
+      { peerProtocol: 3, attachmentsSupported: true },
+      { peerProtocol: 3, contactControlsSupported: true },
+      {
+        peerProtocol: 4,
+        attachmentsSupported: false,
+        contactControlsSupported: true,
+      },
+    ])
+      expect(() => validateConversation({ ...value, ...fields })).toThrow();
+    const removed = validateConversation({
+      ...value,
+      state: 'peer-removed',
+      canConnect: false,
+      canSend: false,
+    });
+    expect(removed.messages).toEqual(value.messages);
+    expect(removed.peerFingerprint).toBe(value.peerFingerprint);
+    expect(() => validateConversation({ ...removed, canSend: true })).toThrow();
+    expect(() =>
+      validateConversation({ ...removed, canConnect: true }),
+    ).toThrow();
+  });
   it('rejects invalid forget targets before native access and fails closed in a browser preview', async () => {
     for (const invalid of [
       '',

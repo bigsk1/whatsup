@@ -33,6 +33,10 @@ export function ApprovePairing(requestID: string, peerFingerprint: string): $Can
     return $Call.ByID(1516693078, requestID, peerFingerprint);
 }
 
+export function ApproveRelayChange(id: string, requestID: string, consent: boolean): $CancellablePromise<$models.RelayChangeSnapshot> {
+    return $Call.ByID(2249932415, id, requestID, consent);
+}
+
 export function CancelAttachment(id: string, attachment: string): $CancellablePromise<void> {
     return $Call.ByID(3627719846, id, attachment);
 }
@@ -43,6 +47,10 @@ export function CancelInvitation(): $CancellablePromise<pairflow$0.Snapshot> {
 
 export function CancelRecoveryImport(handle: string): $CancellablePromise<void> {
     return $Call.ByID(2861266029, handle);
+}
+
+export function CancelRelayChange(id: string, requestID: string): $CancellablePromise<$models.RelayChangeSnapshot> {
+    return $Call.ByID(1313107288, id, requestID);
 }
 
 export function ChooseAttachment(id: string, sendAsFile: boolean): $CancellablePromise<$models.AttachmentDraft> {
@@ -77,6 +85,10 @@ export function DeclineAttachment(id: string, attachment: string): $CancellableP
     return $Call.ByID(3472571724, id, attachment);
 }
 
+export function DeclineRelayChange(id: string, requestID: string): $CancellablePromise<$models.RelayChangeSnapshot> {
+    return $Call.ByID(3699637706, id, requestID);
+}
+
 export function DeleteMessage(contactID: string, messageID: string): $CancellablePromise<messaging$0.Snapshot> {
     return $Call.ByID(122046625, contactID, messageID);
 }
@@ -91,6 +103,14 @@ export function DiscardAttachment(id: string, handle: string): $CancellablePromi
 
 export function ExportRecovery(secret: string): $CancellablePromise<$models.RecoveryExportResult> {
     return $Call.ByID(1161439080, secret);
+}
+
+/**
+ * ExportRelayChange returns a signed, bounded contribution. It contains no
+ * endpoint, node private key, PSK or session capability; copying stays explicit.
+ */
+export function ExportRelayChange(id: string): $CancellablePromise<$models.RelayCarry> {
+    return $Call.ByID(1772410336, id);
 }
 
 /**
@@ -139,12 +159,28 @@ export function GetProfile(): $CancellablePromise<$models.ProfileSnapshot> {
     return $Call.ByID(3306528920);
 }
 
+/**
+ * GetRelayChange performs only local authenticated inspection. It never fetches
+ * a map, dials, selects a provider, or approves a pending peer proposal.
+ */
+export function GetRelayChange(id: string): $CancellablePromise<$models.RelayChangeSnapshot> {
+    return $Call.ByID(3143270932, id);
+}
+
 export function GetStatus(): $CancellablePromise<$models.Status> {
     return $Call.ByID(3129447825);
 }
 
 export function GetStorageSecurity(): $CancellablePromise<$models.StorageSecurity> {
     return $Call.ByID(743660954);
+}
+
+/**
+ * ImportRelayChange verifies the exact saved peer's contribution locally.
+ * Importing a proposal never manufactures local approval or permits its fetch.
+ */
+export function ImportRelayChange(id: string, text: string): $CancellablePromise<$models.RelayChangeSnapshot> {
+    return $Call.ByID(3575810653, id, text);
 }
 
 /**
@@ -173,6 +209,10 @@ export function PasteAttachment(id: string): $CancellablePromise<$models.Attachm
 
 export function PreviewAttachment(id: string, attachment: string): $CancellablePromise<string> {
     return $Call.ByID(22355730, id, attachment);
+}
+
+export function ProposeRelayChange(id: string, serviceURL: string, consent: boolean): $CancellablePromise<$models.RelayChangeSnapshot> {
+    return $Call.ByID(4083933878, id, serviceURL, consent);
 }
 
 export function ResumeAttachment(id: string, attachment: string): $CancellablePromise<void> {

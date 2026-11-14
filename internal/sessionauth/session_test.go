@@ -56,6 +56,9 @@ func TestSavedIdentitiesReconnectWithoutAnyUserDecision(t *testing.T) {
 		if left.err != nil || right.err != nil {
 			t.Fatal("saved identity authentication failed")
 		}
+		if left.session.Capabilities() != (Capabilities{WireVersion: 4, Attachments: true, Control: true}) || right.session.Capabilities() != left.session.Capabilities() {
+			t.Fatal("current peers did not negotiate authenticated extended capabilities")
+		}
 		if !left.session.Matches(a.Local.PublicKey(), a.Peer, a.ContactID, a.Association) || left.session.WithLivePeer(a.Peer, func() error { return nil }) != nil {
 			t.Fatal("live proof lost exact contact association")
 		}
@@ -175,9 +178,9 @@ func (s corruptHandshakeSigner) Sign(random io.Reader, digest []byte, options cr
 	return signature, err
 }
 
-func TestPreviousProtocolIsDiagnosticOnlyAfterPinnedTLSCompletes(t *testing.T) {
+func TestPreviousProtocolGrantsOnlyNegotiatedCapabilitiesAfterPinnedTLSCompletes(t *testing.T) {
 	for _, newServer := range []bool{true, false} {
-		for _, kind := range []string{"valid", "wrong-key", "wrong-association", "future-certificate", "expired-certificate", "invalid-profile", "bad-handshake-signature", "prefer-current", "unsupported"} {
+		for _, kind := range []string{"valid", "wrong-key", "wrong-association", "future-certificate", "expired-certificate", "invalid-profile", "bad-handshake-signature", "prefer-current", "prefer-extended", "unsupported"} {
 			t.Run(fmt.Sprintf("server=%v/%s", newServer, kind), func(t *testing.T) {
 				current, previous := optionsPair(t)
 				current.Server = newServer
@@ -216,13 +219,18 @@ func TestPreviousProtocolIsDiagnosticOnlyAfterPinnedTLSCompletes(t *testing.T) {
 					certificate.PrivateKey = corruptHandshakeSigner{certificate.PrivateKey.(crypto.Signer)}
 				}
 				association := "." + previous.ContactID + "." + base64.RawURLEncoding.EncodeToString(previous.Association[:])
-				protos := []string{diagnosticProtocol + association}
+				protos := []string{previousProtocol + association}
 				if kind == "prefer-current" {
-					// A current server chooses its own /3 preference even when
-					// the client offers /2 first. A current client also offers /3.
-					protos = []string{protocol + association, diagnosticProtocol + association}
+					// Base /4 stays interoperable without claiming new controls.
+					protos = []string{protocol + association, previousProtocol + association}
 					if newServer {
 						protos[0], protos[1] = protos[1], protos[0]
+					}
+				}
+				if kind == "prefer-extended" {
+					protos = []string{controlProtocol + association, protocol + association, previousProtocol + association}
+					if newServer {
+						protos[0], protos[2] = protos[2], protos[0]
 					}
 				}
 				if kind == "unsupported" {
@@ -248,9 +256,21 @@ func TestPreviousProtocolIsDiagnosticOnlyAfterPinnedTLSCompletes(t *testing.T) {
 				}
 				handshakeErr := legacy.HandshakeContext(ctx)
 				got := <-done
-				if kind == "prefer-current" {
-					if got.session == nil || got.err != nil || handshakeErr != nil || legacy.ConnectionState().NegotiatedProtocol != protocol+association {
+				if kind == "prefer-current" || kind == "prefer-extended" {
+					selected, caps := protocol, Capabilities{WireVersion: 4, Attachments: true}
+					if kind == "prefer-extended" {
+						selected = controlProtocol
+						caps.Control = true
+					}
+					if got.session == nil || got.err != nil || handshakeErr != nil || legacy.ConnectionState().NegotiatedProtocol != selected+association || got.session.Capabilities() != caps {
 						t.Fatalf("current protocol was not selected when both support it: %v / %v", got.err, handshakeErr)
+					}
+					_ = got.session.Close()
+					return
+				}
+				if kind == "valid" {
+					if got.session == nil || got.err != nil || handshakeErr != nil || got.session.Capabilities() != (Capabilities{WireVersion: 3}) {
+						t.Fatal("previous protocol did not establish exact messaging-only authority")
 					}
 					_ = got.session.Close()
 					return
@@ -259,12 +279,6 @@ func TestPreviousProtocolIsDiagnosticOnlyAfterPinnedTLSCompletes(t *testing.T) {
 					t.Fatal("legacy or unauthenticated peer obtained application authority")
 				}
 				want := ErrAuthentication
-				if kind == "valid" {
-					want = ErrIncompatible
-					if handshakeErr != nil || !legacy.ConnectionState().HandshakeComplete || legacy.ConnectionState().NegotiatedProtocol != diagnosticProtocol+association {
-						t.Fatalf("compatibility diagnostic preceded completed exact-context TLS: %v", handshakeErr)
-					}
-				}
 				if kind == "wrong-key" {
 					want = ErrIdentityChanged
 				}

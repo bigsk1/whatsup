@@ -73,6 +73,7 @@ export function connectionLabel(state: ConversationSnapshot['state']): string {
         failed: 'Connection unavailable',
         'capacity-reached': 'Local message storage full',
         'peer-capacity-reached': 'Contact message storage full',
+        'peer-removed': 'This contact removed you',
       } as Partial<Record<ConversationSnapshot['state'], string>>
     )[state] ?? 'Offline'
   );

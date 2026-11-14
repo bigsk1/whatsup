@@ -4,6 +4,9 @@
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
 import * as preferences$0 from "../preferences/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as storage$0 from "../storage/models.js";
 
 export type AppPreferences = preferences$0.Values;
 
@@ -74,6 +77,12 @@ export interface RecoveryImportPreview {
     "replaceRequired": boolean;
     "credentialResetRequired": boolean;
 }
+
+export interface RelayCarry {
+    "text": string;
+}
+
+export type RelayChangeSnapshot = storage$0.RelayChangeSnapshot;
 
 export interface SavedAttachment {
     "handle": string;

@@ -92,6 +92,13 @@ func newMessageRepository(t *testing.T) *blockedStore {
 	return &blockedStore{Repository: scope, entered: make(chan struct{}), release: make(chan struct{})}
 }
 
+type identifiedFixtureContact struct {
+	*pairing.Contact
+	id string
+}
+
+func (c identifiedFixtureContact) ContactID() string { return c.id }
+
 func newBlockedManager(t *testing.T) (*Manager, *blockedStore, *atomic.Int32) {
 	t.Helper()
 	vault, err := storage.Open(filepath.Join(t.TempDir(), "private"), &lifecycleKeys{})
@@ -138,6 +145,11 @@ func newBlockedManager(t *testing.T) (*Manager, *blockedStore, *atomic.Int32) {
 	}
 	contact, err := manager.Approve(record.Peer.Fingerprint())
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Production removal state is scoped to durable local approval. This fixture
+	// still substitutes only the message repository to exercise its fault paths.
+	if err := app.ApproveCommittedConversation(record, identifiedFixtureContact{contact, record.ID}); err != nil {
 		t.Fatal(err)
 	}
 	store := newMessageRepository(t)

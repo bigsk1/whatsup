@@ -16,6 +16,8 @@ export type {
     ProfileSnapshot,
     RecoveryExportResult,
     RecoveryImportPreview,
+    RelayCarry,
+    RelayChangeSnapshot,
     SavedAttachment,
     Status,
     StorageSecurity

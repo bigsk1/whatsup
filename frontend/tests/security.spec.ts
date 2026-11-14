@@ -42,6 +42,7 @@ async function desktop(page: Page, required = true) {
     storage: required ? 'locked' : 'unlocked',
     required,
     holdUnlock: undefined as Promise<void> | undefined,
+    holdSecurity: undefined as Promise<void> | undefined,
     failUnlock: false,
   };
   const calls: { operation: Operation; args: unknown[] }[] = [];
@@ -93,6 +94,7 @@ async function desktop(page: Page, required = true) {
         if (state.holdUnlock) await state.holdUnlock;
         break;
       case 'GetStorageSecurity':
+        if (state.holdSecurity) await state.holdSecurity;
         result = {
           requiresPassphrase: state.required,
           recoveryAvailable: state.storage === 'unlocked',
@@ -375,6 +377,50 @@ test('recovery export and authenticated import use native dialogs and opaque han
   expect(
     calls.find((x) => x.operation === 'CommitRecoveryImport')?.args,
   ).toEqual([token, secret, true, true]);
+  expect(
+    await page.evaluate(() => JSON.stringify({ ...localStorage })),
+  ).not.toContain(secret);
+});
+
+test('a late security-summary response preserves the current passphrase form without echoing or persisting it', async ({
+  page,
+}) => {
+  const { state } = await desktop(page, false);
+  await page.goto('/');
+  await securityPage(page);
+  let release!: () => void;
+  state.holdSecurity = new Promise<void>((resolve) => (release = resolve));
+  await page
+    .getByRole('button', { name: 'Export recovery copy…', exact: true })
+    .click();
+  const dialog = page.getByRole('dialog', {
+    name: 'Export an encrypted recovery copy',
+  });
+  await dialog
+    .getByLabel('New recovery passphrase', { exact: true })
+    .fill(secret);
+  const summaryReply = page.waitForResponse((response) => {
+    if (!response.url().endsWith('/wails/runtime')) return false;
+    const body = response.request().postDataJSON();
+    return methods.get(body?.args?.methodID) === 'GetStorageSecurity';
+  });
+  release();
+  state.holdSecurity = undefined;
+  await summaryReply;
+  await expect(
+    dialog.getByLabel('New recovery passphrase', { exact: true }),
+  ).toHaveValue(secret);
+  await dialog
+    .getByLabel('Confirm recovery passphrase', { exact: true })
+    .fill(secret);
+  await expect(
+    dialog.getByRole('button', {
+      name: 'Choose export location…',
+      exact: true,
+    }),
+  ).toBeEnabled();
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(dialog).not.toBeVisible();
   expect(
     await page.evaluate(() => JSON.stringify({ ...localStorage })),
   ).not.toContain(secret);

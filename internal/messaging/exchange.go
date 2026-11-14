@@ -32,18 +32,33 @@ type packet struct {
 	nonce      [16]byte
 	name       string
 	attachment transfer.Frame
+	control    controlFrame
 }
 
 var errProtocol = errors.New("authenticated messaging protocol failed")
 
 func readPacket(reader io.Reader) (packet, error) {
+	return readPacketFor(reader, sessionauth.Capabilities{WireVersion: 4, Attachments: true, Control: true})
+}
+
+func readPacketFor(reader io.Reader, capabilities sessionauth.Capabilities) (packet, error) {
 	var kind [1]byte
 	if _, err := io.ReadFull(reader, kind[:]); err != nil {
 		return packet{}, err
 	}
 	p := packet{kind: kind[0]}
 	switch p.kind {
+	case controlPacket:
+		if !capabilities.Control {
+			return packet{}, errProtocol
+		}
+		frame, err := readControl(reader)
+		p.control = frame
+		return p, err
 	case transferPacket:
+		if !capabilities.Attachments {
+			return packet{}, errProtocol
+		}
 		frame, err := transfer.ReadFrame(reader)
 		p.attachment = frame
 		return p, err
@@ -70,6 +85,21 @@ func readPacket(reader io.Reader) (packet, error) {
 }
 
 func writePacket(session *sessionauth.Session, p packet) error {
+	caps := session.Capabilities()
+	if p.kind == transferPacket && !caps.Attachments || p.kind == controlPacket && !caps.Control {
+		return errProtocol
+	}
+	if p.kind == controlPacket {
+		wire, err := encodeControl(p.control)
+		if err != nil || session.SetWriteDeadline(time.Now().Add(writeTimeout)) != nil {
+			return errProtocol
+		}
+		n, err := session.Write(wire)
+		if err != nil || n != len(wire) {
+			return errProtocol
+		}
+		return nil
+	}
 	if p.kind == profilePacket {
 		wire, err := encodeProfile(p.name)
 		if err != nil || session.SetWriteDeadline(time.Now().Add(writeTimeout)) != nil {
@@ -107,21 +137,47 @@ func writePacket(session *sessionauth.Session, p packet) error {
 }
 
 func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, conversation *chat.Conversation) error {
+	caps := session.Capabilities()
 	m.mu.Lock()
 	engine := m.transfers
+	control := m.controls
+	if control == nil || control.session != session {
+		control = &controlSession{requests: make(chan *controlRequest, 1), closed: make(chan struct{}), session: session}
+	}
+	m.controls = control
 	m.mu.Unlock()
-	if engine == nil {
+	defer close(control.closed)
+	relays := &relayExchange{manager: m, control: control, sent: map[[32]byte]bool{}, replies: map[[32]byte]bool{}}
+	var removal *controlRequest
+	defer func() {
+		if removal != nil {
+			removal.finish(false)
+		}
+		select {
+		case request := <-control.requests:
+			request.finish(false)
+		default:
+		}
+	}()
+	var epoch uint64
+	var failures <-chan transfer.Failure
+	var output <-chan transfer.Outbound
+	if caps.Attachments && engine == nil {
 		var err error
 		engine, err = m.attachmentEngine(m.record.ID)
 		if err != nil {
 			return err
 		}
 	}
-	epoch, err := engine.Begin(ctx, func() error { return session.WithLivePeer(m.record.Peer, func() error { return nil }) })
-	if err != nil {
-		return err
+	if caps.Attachments {
+		var err error
+		epoch, err = engine.Begin(ctx, func() error { return session.WithLivePeer(m.record.Peer, func() error { return nil }) })
+		if err != nil {
+			return err
+		}
+		defer engine.End(epoch)
+		failures, output = engine.Failures(), engine.Output()
 	}
-	defer engine.End(epoch)
 	// A cancellation must interrupt the initial profile write as well as the
 	// main select loop; otherwise a peer that stops reading could delay joining.
 	stop := context.AfterFunc(ctx, func() { _ = session.Close() })
@@ -145,7 +201,7 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 				_ = session.Close()
 				return
 			}
-			p, err := readPacket(session)
+			p, err := readPacketFor(session, caps)
 			select {
 			case incoming <- received{p, err}:
 			case <-work.Done():
@@ -189,6 +245,12 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 	var profileLimit profileBudget
 	sent := make(map[string]bool)
 	sendDue := func() (bool, error) {
+		m.mu.Lock()
+		blocked := m.removing || m.peerRemoved
+		m.mu.Unlock()
+		if blocked {
+			return false, nil
+		}
 		frame, due, err := conversation.NextAttempt(m.record.Peer)
 		if err != nil {
 			return false, err
@@ -204,6 +266,9 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 	if err := sendProfile(); err != nil {
 		return err
 	}
+	if err := relays.sync(); err != nil {
+		return err
+	}
 	if _, err := sendDue(); err != nil {
 		return err
 	}
@@ -212,6 +277,41 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 			return errProtocol
 		}
 		switch got.packet.kind {
+		case controlPacket:
+			if !caps.Control {
+				return errProtocol
+			}
+			frame := got.packet.control
+			if frame.kind >= routeReadyControl {
+				return relays.receive(frame)
+			}
+			if frame.kind == removedReceiptControl {
+				// This receipt came from this session's authenticated reader and
+				// may be queued just before the peer closes. It only concludes the
+				// exact outstanding notice; it grants no new application authority.
+				if removal == nil || frame.id != removal.frame.id {
+					return errProtocol
+				}
+				removal.finish(true)
+				return errRemovalSent
+			}
+			if session.WithLivePeer(m.record.Peer, func() error { return nil }) != nil {
+				return errProtocol
+			}
+			if frame.kind != removedControl {
+				return errProtocol
+			}
+			if err := m.application.MarkPeerRemoved(m.record, frame.id); err != nil {
+				return err
+			}
+			m.mu.Lock()
+			m.peerRemoved = true
+			m.state = "peer-removed"
+			m.bumpLocked()
+			m.mu.Unlock()
+			// Durable marker precedes receipt; a lost receipt cannot revive retries.
+			_ = writePacket(session, packet{kind: controlPacket, control: controlFrame{kind: removedReceiptControl, id: frame.id}})
+			return errPeerRemoved
 		case capacityPacket:
 			if !sent[got.packet.frame.ID] {
 				return errProtocol
@@ -281,7 +381,31 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 		return nil
 	}
 	var pendingTransfer *transfer.Outbound
+	startRemoval := func(request *controlRequest) error {
+		if removal != nil || !caps.Control || request.ctx.Err() != nil {
+			request.finish(false)
+			return nil
+		}
+		removal = request
+		if session.WithLivePeer(m.record.Peer, func() error { return nil }) != nil {
+			return errProtocol
+		}
+		return writePacket(session, packet{kind: controlPacket, control: request.frame})
+	}
 	for {
+		// Controls have priority over text and file chunks. All bytes still have
+		// one writer, so Forget can never interleave with another frame body.
+		select {
+		case request := <-control.requests:
+			if err := startRemoval(request); err != nil {
+				return err
+			}
+			continue
+		default:
+		}
+		if removal != nil && removal.ctx.Err() != nil {
+			return errRemovalSent
+		}
 		if pendingTransfer != nil {
 			// Drain control and chat packets between writes, then exhaust due
 			// chat frames before writing one bounded attachment chunk. Slow file
@@ -289,7 +413,12 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case failed := <-engine.Failures():
+			case request := <-control.requests:
+				if err := startRemoval(request); err != nil {
+					return err
+				}
+				continue
+			case failed := <-failures:
 				if failed.Epoch == epoch {
 					return failed.Err
 				}
@@ -305,7 +434,7 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 			} else if due {
 				continue
 			}
-			if pendingTransfer.Epoch == epoch {
+			if removal == nil && pendingTransfer.Epoch == epoch {
 				if err := writePacket(session, packet{kind: transferPacket, attachment: pendingTransfer.Frame}); err != nil {
 					return err
 				}
@@ -317,36 +446,50 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 			continue
 		}
 		select {
+		case request := <-control.requests:
+			if err := startRemoval(request); err != nil {
+				return err
+			}
 		case <-ctx.Done():
 			return ctx.Err()
 		case got := <-incoming:
 			if err := handleReceived(got); err != nil {
 				return err
 			}
-		case failed := <-engine.Failures():
+		case failed := <-failures:
 			if failed.Epoch == epoch {
 				return failed.Err
 			}
-		case outbound := <-engine.Output():
+		case outbound := <-output:
 			if outbound.Epoch == epoch {
 				pendingTransfer = &outbound
 			}
 		case <-m.wake:
+			if err := relays.sync(); err != nil {
+				return err
+			}
 			if err := sendProfile(); err != nil {
 				return err
 			}
-			engine.Wake()
+			if engine != nil && caps.Attachments && removal == nil {
+				engine.Wake()
+			}
 			if _, err := sendDue(); err != nil {
 				return err
 			}
 		case <-pathSamples.C:
 			m.samplePath()
-			engine.Wake()
+			if engine != nil && caps.Attachments && removal == nil {
+				engine.Wake()
+			}
 		case <-retry.C:
 			if !pingAt.IsZero() && time.Since(pingAt) > peerTimeout {
 				return errProtocol
 			}
 			if err := sendProfile(); err != nil {
+				return err
+			}
+			if err := relays.sync(); err != nil {
 				return err
 			}
 			if _, err := sendDue(); err != nil {

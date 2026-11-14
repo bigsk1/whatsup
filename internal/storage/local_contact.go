@@ -194,6 +194,14 @@ func (r *LocalContactReceipt) WithLocalApproval(operation func() error) error {
 }
 
 func (a *ApplicationState) removeConversationLocked(next *applicationEnvelope, id string) {
+	for i, r := range next.Routes {
+		if r.ContactID == id {
+			copy(next.Routes[i:], next.Routes[i+1:])
+			next.Routes[len(next.Routes)-1] = routeStateDisk{}
+			next.Routes = next.Routes[:len(next.Routes)-1]
+			break
+		}
+	}
 	for index, contact := range next.Contacts {
 		if contact.Version == 2 && contact.ContactID == id {
 			if a.attachments != nil {

@@ -1,7 +1,9 @@
 package desktop
 
 import (
+	"context"
 	"errors"
+	"time"
 
 	"whatsup/internal/diagnostics"
 	"whatsup/internal/messaging"
@@ -41,6 +43,11 @@ func (s *Service) ForgetContact(contactID string) (messaging.Snapshot, error) {
 	if index < 0 {
 		return current, errors.New("This contact is no longer available")
 	}
+	// Notify only an already authenticated online session. The bounded result
+	// never gates local deletion and cannot fetch a map or create a connection.
+	notice, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	_, _ = s.messages.NotifyRemoved(notice, contactID)
+	cancel()
 	s.retireAttachmentsLocked(contactID)
 	err = s.application.ForgetCommittedContact(records[index], func() error {
 		// Retire sets a permanent generation tombstone before joining this exact

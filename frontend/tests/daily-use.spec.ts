@@ -7,7 +7,11 @@ import {
   defaultAppPreferences,
   type AppPreferences,
 } from '../src/lib/state/preferences';
-import { contactHint, nativeHint } from './contact-events';
+import {
+  contactHint,
+  nativeHint,
+  serveDefaultRelayChange,
+} from './contact-events';
 
 const contactID = 'AQEBAQEBAQEBAQEBAQEBAQ';
 const generated = readFileSync(
@@ -51,6 +55,9 @@ async function fixture(page: Page) {
       canSend: true,
       unread: 0,
       path: 'Direct',
+      peerProtocol: 0,
+      attachmentsSupported: false,
+      contactControlsSupported: false,
     },
     failSave: false,
     messages: [] as ConversationMessage[],
@@ -68,6 +75,7 @@ async function fixture(page: Page) {
     host._wails.environment = { OS: 'windows', Arch: 'amd64', Debug: false };
   });
   await page.route('**/wails/runtime', async (route) => {
+    if (await serveDefaultRelayChange(route)) return;
     const request = route.request().postDataJSON();
     const operation = operations.get(request.args?.methodID);
     if (!operation) throw new Error('Unexpected daily-use fixture operation');

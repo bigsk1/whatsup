@@ -316,7 +316,8 @@ func StageRecovery(ctx context.Context, directory string, src io.Reader, secret 
 	if err != nil || !r.verified.Valid() {
 		return nil, ErrRecovery
 	}
-	if decodeCanonical(r.payload, &r.portable) != nil || r.portable.Version != 1 || validateEnvelope(r.portable.State) != nil || r.portable.State.MessageStoreState != "ready" || len(r.portable.State.DeleteScopes) != 0 || r.portable.State.MigrationBackup != "" || r.portable.State.MigrationBackupHash != "" {
+	r.portable, err = decodePortableApplication(r.payload)
+	if err != nil || r.portable.Version != 1 || validateEnvelope(r.portable.State) != nil || r.portable.State.MessageStoreState != "ready" || len(r.portable.State.DeleteScopes) != 0 || r.portable.State.MigrationBackup != "" || r.portable.State.MigrationBackupHash != "" {
 		return nil, ErrRecovery
 	}
 	if err := r.validateStage(ctx); err != nil {

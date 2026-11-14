@@ -24,11 +24,14 @@ type registryPeer struct {
 	app       *storage.ApplicationState
 	registry  *Registry
 	revisions *Revisions
+	directory string
+	keys      *lifecycleKeys
 }
 
 func newRegistryPeer(t *testing.T) *registryPeer {
 	t.Helper()
-	vault, err := storage.Open(filepath.Join(t.TempDir(), "private"), &lifecycleKeys{})
+	directory, keys := filepath.Join(t.TempDir(), "private"), &lifecycleKeys{}
+	vault, err := storage.Open(directory, keys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,12 +43,12 @@ func newRegistryPeer(t *testing.T) *registryPeer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &registryPeer{local: local, app: app, revisions: &Revisions{}}
+	p := &registryPeer{local: local, app: app, revisions: &Revisions{}, directory: directory, keys: keys}
 	t.Cleanup(func() {
 		if p.registry != nil {
 			p.registry.Close()
 		}
-		if err := app.Close(); err != nil {
+		if err := p.app.Close(); err != nil {
 			t.Error(err)
 		}
 	})

@@ -35,6 +35,8 @@
   import RecoveryDialog from './lib/components/RecoveryDialog.svelte';
   import { createSecurity, type SecurityOperation } from './lib/state/security';
   import { createAttachments } from './lib/state/attachments';
+  import { createRelayChange } from './lib/state/relay';
+  import RelayApprovalDialog from './lib/components/RelayApprovalDialog.svelte';
   import {
     createContacts,
     selectedConversation,
@@ -112,6 +114,21 @@
   const contacts = createContacts();
   const attachments = createAttachments();
   const attachmentsState = attachments.state;
+  const relayChange = createRelayChange();
+  const relayState = relayChange.state;
+  const relayActions = {
+    draft: (value: string) => relayChange.setDraft(value),
+    consent: (value: boolean) => relayChange.setConsent(value),
+    preset: () => relayChange.preset(),
+    propose: () => void relayChange.propose(),
+    cancel: (id: string) => void relayChange.cancel(id),
+    reload: () => void relayChange.reload(),
+    manual: (value: boolean) => relayChange.setManual(value),
+    export: () => void relayChange.exportCarry(),
+    copy: () => void relayChange.copyCarry(),
+    importText: (value: string) => relayChange.setImportText(value),
+    inspect: () => void relayChange.inspectCarry(),
+  };
   const contactsState = contacts.state;
   const conversation = $derived(selectedConversation($contactsState));
   const conversationNotice = $derived(
@@ -128,6 +145,29 @@
     Object.values($contactsState.forgetting).some(Boolean),
   );
   let conversationEpoch = 0;
+  const attachmentWireAllowed = $derived(
+    conversation.state !== 'peer-removed' &&
+      !(conversation.state === 'connected' && conversation.peerProtocol === 3),
+  );
+  const attachmentStageAllowed = $derived(
+    conversation.state !== 'peer-removed',
+  );
+  $effect(() => {
+    attachments.setConnection(conversation.state, conversation.peerProtocol);
+    if (
+      native &&
+      status.storageState === 'unlocked' &&
+      conversation.contactID &&
+      conversation.state !== 'peer-removed'
+    ) {
+      relayChange.start();
+      relayChange.select(conversation.contactID, {
+        peerProtocol: conversation.peerProtocol,
+        attachmentsSupported: conversation.attachmentsSupported,
+        contactControlsSupported: conversation.contactControlsSupported,
+      });
+    } else relayChange.stop();
+  });
 
   $effect(() => {
     if (
@@ -143,6 +183,7 @@
   });
 
   function clearConversation() {
+    relayChange.stop();
     attachments.stop();
     historyActions.reset();
     historyDialog?.close();
@@ -167,6 +208,7 @@
       void refreshLocalProfile();
       if (native) void appPreferences.load();
       if (native) void security.load();
+      if (native && conversation.contactID) void relayChange.reload();
     }
   }
 
@@ -389,6 +431,7 @@
         contacts.setVisible(visible && !document.hidden && !settingsOpen);
         if (visible && conversationEnabled()) void contacts.reload();
         if (visible && conversationEnabled()) void attachments.reload();
+        if (visible && conversationEnabled()) void relayChange.reload();
       },
     });
     const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -408,6 +451,7 @@
         );
         void contacts.reload();
         void attachments.reload();
+        void relayChange.reload();
       }
     };
     window.addEventListener('focus', recoverContacts);
@@ -671,7 +715,12 @@
 
     {#if hasContact}
       <section class="message-space" aria-label="Conversation">
-        {#if conversation.state === 'identity-changed'}
+        {#if conversation.state === 'peer-removed'}
+          <p class="connection-notice" role="status">
+            This contact removed you. Messaging and automatic reconnect have
+            stopped. Your saved history and files stay on this device.
+          </p>
+        {:else if conversation.state === 'identity-changed'}
           <p class="connection-notice" role="alert">
             Your contact's identity could not be verified. The connection
             stopped; your saved contact was not changed.
@@ -785,6 +834,12 @@
           {#key conversation.contactID}
             <AttachmentPanel
               items={$attachmentsState.items}
+              wireAllowed={attachmentWireAllowed}
+              stageAllowed={attachmentStageAllowed}
+              wireNotice={conversation.state === 'connected' &&
+              conversation.peerProtocol === 3
+                ? 'Text messaging works with this device. It needs an update for attachments; local drafts and queued files are kept.'
+                : ''}
               drafts={$attachmentsState.drafts}
               busy={$attachmentsState.busy}
               notice={$attachmentsState.notice}
@@ -871,6 +926,7 @@
             ? 'Choose attachment'
             : 'Attach file unavailable'}
           disabled={!status.attachmentsAvailable ||
+            !attachmentStageAllowed ||
             !hasContact ||
             busy ||
             $attachmentsState.busy}
@@ -896,6 +952,7 @@
           onpaste={(event) => {
             if (
               status.attachmentsAvailable &&
+              attachmentStageAllowed &&
               event.clipboardData?.types.includes('Files')
             ) {
               event.preventDefault();
@@ -968,6 +1025,8 @@
   security={$securityState}
   onsecurity={securityAction}
   onreloadsecurity={() => void security.load()}
+  relay={$relayState}
+  onrelay={relayActions}
   onpreferences={updatePreferences}
   onstorage={storageAction}
   canForget={hasContact && status.storageState === 'unlocked'}
@@ -982,6 +1041,20 @@
   {contactSaving}
   {contactNotice}
   onsavecontact={(contactID, name) => void updateContactName(contactID, name)}
+/>
+
+<RelayApprovalDialog
+  snapshot={$relayState.snapshot}
+  supported={$relayState.capabilities.contactControlsSupported ||
+    $relayState.manual}
+  loaded={$relayState.loaded}
+  busy={$relayState.busy || busy}
+  consent={$relayState.approvalConsent}
+  notice={$relayState.notice}
+  onconsent={relayChange.setApprovalConsent}
+  onapprove={(id) => void relayChange.approve(id)}
+  ondecline={(id) => void relayChange.decline(id)}
+  onreload={() => void relayChange.reload()}
 />
 
 <PassphraseDialog

@@ -13,6 +13,7 @@ export const conversationStates = [
   'update-required',
   'capacity-reached',
   'peer-capacity-reached',
+  'peer-removed',
 ] as const;
 
 export type ConversationState = (typeof conversationStates)[number];
@@ -36,6 +37,9 @@ export interface ConversationSnapshot {
   canSend: boolean;
   messages: ConversationMessage[];
   path: 'Unknown' | 'Direct' | 'Relayed';
+  peerProtocol: 0 | 3 | 4;
+  attachmentsSupported: boolean;
+  contactControlsSupported: boolean;
 }
 
 export const unavailableConversation: ConversationSnapshot = Object.freeze({
@@ -49,6 +53,9 @@ export const unavailableConversation: ConversationSnapshot = Object.freeze({
   canSend: false,
   messages: [],
   path: 'Unknown',
+  peerProtocol: 0,
+  attachmentsSupported: false,
+  contactControlsSupported: false,
 });
 
 const idPattern = /^[A-Za-z0-9_-]{21}[AQgw]$/;
@@ -135,6 +142,9 @@ export function validateConversation(value: unknown): ConversationSnapshot {
       'canSend',
       'messages',
       'path',
+      'peerProtocol',
+      'attachmentsSupported',
+      'contactControlsSupported',
     ]) ||
     !conversationStates.includes(record.state as ConversationState) ||
     !Number.isSafeInteger(record.revision) ||
@@ -147,6 +157,17 @@ export function validateConversation(value: unknown): ConversationSnapshot {
     !validDisplayName(record.localName) ||
     typeof record.canConnect !== 'boolean' ||
     typeof record.canSend !== 'boolean' ||
+    ![0, 3, 4].includes(record.peerProtocol as number) ||
+    typeof record.attachmentsSupported !== 'boolean' ||
+    typeof record.contactControlsSupported !== 'boolean' ||
+    ((record.attachmentsSupported || record.contactControlsSupported) &&
+      record.peerProtocol !== 4) ||
+    (record.contactControlsSupported && !record.attachmentsSupported) ||
+    (record.state === 'peer-removed' &&
+      (record.canConnect ||
+        record.canSend ||
+        record.attachmentsSupported ||
+        record.contactControlsSupported)) ||
     !['Unknown', 'Direct', 'Relayed'].includes(record.path as string) ||
     !Array.isArray(record.messages) ||
     record.messages.length > 100
@@ -165,6 +186,9 @@ export function validateConversation(value: unknown): ConversationSnapshot {
         record.localName !== '' ||
         record.canConnect ||
         record.canSend ||
+        record.peerProtocol !== 0 ||
+        record.attachmentsSupported ||
+        record.contactControlsSupported ||
         record.messages.length !== 0))
   )
     return invalid();
@@ -219,6 +243,9 @@ export function validateConversation(value: unknown): ConversationSnapshot {
     localName: record.localName,
     canConnect: record.canConnect,
     canSend: record.canSend,
+    peerProtocol: record.peerProtocol as 0 | 3 | 4,
+    attachmentsSupported: record.attachmentsSupported as boolean,
+    contactControlsSupported: record.contactControlsSupported as boolean,
     messages,
     path:
       record.state === 'connected'

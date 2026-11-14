@@ -18,10 +18,37 @@ const securityID = Number(
     /export function GetStorageSecurity\([\s\S]*?\$Call\.ByID\((\d+)/,
   )?.[1],
 );
+const relayID = Number(
+  generated.match(
+    /export function GetRelayChange\([\s\S]*?\$Call\.ByID\((\d+)/,
+  )?.[1],
+);
+export async function serveDefaultRelayChange(route: Route): Promise<boolean> {
+  const body = route.request().postDataJSON();
+  if (body.args?.methodID !== relayID) return false;
+  const contactID = body.args.args[0];
+  await route.fulfill({
+    json: {
+      contactID,
+      revision: 0,
+      requestID: '',
+      state: 'idle',
+      currentServiceURL: 'https://relay.example/map.json',
+      proposedServiceURL: '',
+      proposedHost: '',
+      localApproved: false,
+      peerApproved: false,
+      canPropose: true,
+      canApprove: false,
+    },
+  });
+  return true;
+}
 
 export async function serveDefaultAppPreferences(
   route: Route,
 ): Promise<boolean> {
+  if (await serveDefaultRelayChange(route)) return true;
   if (route.request().postDataJSON().args?.methodID === securityID) {
     await route.fulfill({
       json: { requiresPassphrase: false, recoveryAvailable: true, busy: false },

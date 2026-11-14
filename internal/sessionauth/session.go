@@ -34,13 +34,12 @@ const (
 	MaxClockSkew    = 5 * time.Minute
 	certificateName = "WhatsUp contact v1"
 	// Version 4 adds bounded attachment offers, approval and chunk checkpoints.
-	// Both peers must understand it before any attachment or text is sent.
+	// Protocol 3 remains supported for text, profile, heartbeat and capacity frames.
 	// Wire protocol versions are independent of application release numbers.
-	protocol = "whatsup-contact/4"
-	// The previous protocol is recognized only to diagnose a pinned peer after
-	// TLS authentication. It never grants an application Session or permission
-	// to send legacy/new message packets.
-	diagnosticProtocol = "whatsup-contact/3"
+	protocol        = "whatsup-contact/4"
+	controlProtocol = "whatsup-contact/4-control1"
+	// Previous protocol framing is selected only after exact-contact mutual TLS.
+	previousProtocol = "whatsup-contact/3"
 )
 
 var (
@@ -61,17 +60,34 @@ type Options struct {
 // Session is an authenticated stream, never a durable contact or restored proof.
 // Copies share closure. Only its guarded methods establish live peer authority.
 type Session struct{ state *sessionState }
+
+// Capabilities are fixed by the authenticated TLS transcript. They describe
+// framing support, never local approval or permission to perform an action.
+type Capabilities struct {
+	WireVersion uint8
+	Attachments bool
+	Control     bool
+}
+
+func (s *Session) Capabilities() Capabilities {
+	if s == nil || s.state == nil {
+		return Capabilities{}
+	}
+	return s.state.capabilities
+}
+
 type sessionState struct {
-	mu          sync.Mutex
-	raw         net.Conn
-	tls         *tls.Conn
-	local, peer identity.PublicKey
-	contactID   string
-	association [32]byte
-	expires     time.Time
-	closed      bool
-	stop        func() bool
-	timer       *time.Timer
+	mu           sync.Mutex
+	raw          net.Conn
+	tls          *tls.Conn
+	local, peer  identity.PublicKey
+	contactID    string
+	association  [32]byte
+	capabilities Capabilities
+	expires      time.Time
+	closed       bool
+	stop         func() bool
+	timer        *time.Timer
 }
 
 func (Session) String() string               { return "[private authenticated WhatsUp contact session]" }
@@ -90,6 +106,19 @@ func validID(value string) bool {
 // ID and canonical credential/relay-policy association into the TLS transcript.
 // VerifyConnection replaces website PKI with mandatory exact Ed25519 key pins.
 func Authenticate(ctx context.Context, raw net.Conn, options Options) (*Session, error) {
+	return authenticate(ctx, raw, options, [][32]byte{options.Association}, false)
+}
+
+// AuthenticateCandidates permits one server-side physical listener to serve at
+// most two explicitly approved route associations. The caller must validate each
+// candidate against its durable consent ledger before and after authentication.
+// Clients still offer exactly one association; the returned proof is bound only
+// to the association actually selected in the authenticated TLS transcript.
+func AuthenticateCandidates(ctx context.Context, raw net.Conn, options Options, associations [][32]byte) (*Session, error) {
+	return authenticate(ctx, raw, options, associations, true)
+}
+
+func authenticate(ctx context.Context, raw net.Conn, options Options, associations [][32]byte, candidates bool) (*Session, error) {
 	if raw == nil {
 		return nil, ErrAuthentication
 	}
@@ -102,16 +131,42 @@ func Authenticate(ctx context.Context, raw net.Conn, options Options) (*Session,
 	if ctx == nil || ctx.Err() != nil || options.Local == nil || !options.Peer.Valid() || options.Local.PublicKey().Equal(options.Peer) || !validID(options.ContactID) || options.Association == [32]byte{} {
 		return nil, ErrAuthentication
 	}
+	if candidates && !options.Server || len(associations) < 1 || len(associations) > 2 || associations[0] != options.Association {
+		return nil, ErrAuthentication
+	}
+	associations = append([][32]byte(nil), associations...)
+	type negotiatedRoute struct {
+		association  [32]byte
+		capabilities Capabilities
+	}
+	routes := make(map[string]negotiatedRoute, 3*len(associations))
+	nextProtos := make([]string, 0, 3*len(associations))
+	for i, association := range associations {
+		if association == [32]byte{} || i > 0 && association == associations[0] {
+			return nil, ErrAuthentication
+		}
+		suffix := "." + options.ContactID + "." + base64.RawURLEncoding.EncodeToString(association[:])
+		for _, choice := range []struct {
+			name string
+			caps Capabilities
+		}{
+			{controlProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true}},
+			{protocol, Capabilities{WireVersion: 4, Attachments: true}},
+			{previousProtocol, Capabilities{WireVersion: 3}},
+		} {
+			alpn := choice.name + suffix
+			nextProtos = append(nextProtos, alpn)
+			routes[alpn] = negotiatedRoute{association: association, capabilities: choice.caps}
+		}
+	}
 	now := time.Now()
 	expires := now.Add(MaxLifetime)
 	certificate, err := newCertificate(options.Local, now, expires)
 	if err != nil {
 		return nil, ErrAuthentication
 	}
-	alpn := protocol + "." + options.ContactID + "." + base64.RawURLEncoding.EncodeToString(options.Association[:])
-	diagnosticALPN := diagnosticProtocol + "." + options.ContactID + "." + base64.RawURLEncoding.EncodeToString(options.Association[:])
 	verify := func(state tls.ConnectionState) error {
-		if state.NegotiatedProtocol != alpn && state.NegotiatedProtocol != diagnosticALPN {
+		if _, approved := routes[state.NegotiatedProtocol]; !approved {
 			return ErrAuthentication
 		}
 		return verifyPeer(state, options.Peer, state.NegotiatedProtocol, time.Now())
@@ -119,7 +174,7 @@ func Authenticate(ctx context.Context, raw net.Conn, options Options) (*Session,
 	var identityRejected atomic.Bool
 	config := &tls.Config{
 		MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
-		Certificates: []tls.Certificate{certificate}, NextProtos: []string{alpn, diagnosticALPN},
+		Certificates: []tls.Certificate{certificate}, NextProtos: nextProtos,
 		ClientAuth: tls.RequireAnyClientCert, SessionTicketsDisabled: true,
 		// A saved contact pins an identity, not a DNS name. No connection is
 		// accepted without the exact-key and certificate checks below.
@@ -156,13 +211,8 @@ func Authenticate(ctx context.Context, raw net.Conn, options Options) (*Session,
 	if err != nil || !stopped || work.Err() != nil || !state.HandshakeComplete || verify(state) != nil || raw.SetDeadline(time.Time{}) != nil {
 		return nil, ErrAuthentication
 	}
-	if state.NegotiatedProtocol == diagnosticALPN {
-		// Only a completed TLS handshake proving the exact peer and contact
-		// association can establish this diagnostic. A ClientHello or an
-		// unauthenticated TLS alert is never an authoritative update signal.
-		return nil, ErrIncompatible
-	}
-	s := &Session{state: &sessionState{raw: raw, tls: connection, local: options.Local.PublicKey(), peer: options.Peer, contactID: options.ContactID, association: options.Association, expires: expires}}
+	selected := routes[state.NegotiatedProtocol]
+	s := &Session{state: &sessionState{raw: raw, tls: connection, local: options.Local.PublicKey(), peer: options.Peer, contactID: options.ContactID, association: selected.association, capabilities: selected.capabilities, expires: expires}}
 	s.state.mu.Lock()
 	s.state.stop = context.AfterFunc(ctx, func() { _ = s.Close() })
 	s.state.timer = time.AfterFunc(time.Until(expires), func() { _ = s.Close() })

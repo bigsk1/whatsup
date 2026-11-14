@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	ApplicationSchemaVersion = 7
+	ApplicationSchemaVersion = 8
 	MaxContacts              = 32
 	maxChatBytes             = 2 << 20
 	maxChatMessages          = 256
@@ -130,6 +130,7 @@ type applicationEnvelope struct {
 	MigrationBackup     string              `json:"migrationBackup,omitempty"`
 	MigrationBackupHash string              `json:"migrationBackupSHA256,omitempty"`
 	DeleteScopes        []string            `json:"deleteScopes"`
+	Routes              []routeStateDisk    `json:"routes"`
 }
 
 // Schema 3 is decoded exactly before adding the committed section.
@@ -213,6 +214,8 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 	defer clear(payload)
 	write := false
 	oldSchema := false
+	currentSchema := false
+	metadataMigration := false
 	if os.IsNotExist(err) {
 		local, generateErr := identity.Generate()
 		if generateErr != nil {
@@ -302,7 +305,16 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 				}
 			}
 			write = true
+		case 7:
+			var old applicationEnvelopeV7
+			if decodeCanonical(payload, &old) != nil {
+				return nil, ErrState
+			}
+			a.state = upgradeEnvelopeV7(old)
+			write = true
+			metadataMigration = true
 		case ApplicationSchemaVersion:
+			currentSchema = true
 			if decodeCanonical(payload, &a.state) != nil {
 				a.clearLocked()
 				return nil, ErrState
@@ -310,10 +322,19 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 		default:
 			return nil, ErrState
 		}
-		oldSchema = version.Version < ApplicationSchemaVersion
+		oldSchema = version.Version <= 6
+	}
+	if !currentSchema && a.state.Routes == nil {
+		a.state.Routes = []routeStateDisk{}
 	}
 	if oldSchema {
 		if err := a.prepareMessageMigrationLocked(); err != nil {
+			a.clearLocked()
+			return nil, err
+		}
+	}
+	if metadataMigration {
+		if err := a.backupRootMetadataLocked(); err != nil {
 			a.clearLocked()
 			return nil, err
 		}
@@ -507,6 +528,10 @@ func (a *ApplicationState) cloneLocked() applicationEnvelope {
 	next.PendingContacts = append([]pendingRecordDisk{}, a.state.PendingContacts...)
 	next.CommittedContacts = append([]pendingRecordDisk{}, a.state.CommittedContacts...)
 	next.DeleteScopes = append([]string{}, a.state.DeleteScopes...)
+	next.Routes = make([]routeStateDisk, len(a.state.Routes))
+	for i, r := range a.state.Routes {
+		next.Routes[i] = cloneRoute(r)
+	}
 	return next
 }
 
@@ -539,10 +564,14 @@ func (a *ApplicationState) clearLocked() {
 	clear(a.state.CommittedContacts)
 	clear(a.commitReceipts)
 	clear(a.localReceipts)
+	clear(a.state.Routes)
 	a.state = applicationEnvelope{}
 }
 
 func validateEnvelope(state applicationEnvelope) error {
+	if state.Routes == nil || len(state.Routes) > MaxContacts {
+		return ErrState
+	}
 	if state.Version != ApplicationSchemaVersion || state.Identity.Version != 1 || len(state.Identity.Seed) != 32 || state.Contacts == nil || len(state.Contacts) > MaxContacts || state.PendingContacts == nil || len(state.PendingContacts) > MaxPendingContacts || state.CommittedContacts == nil || len(state.CommittedContacts) > MaxCommittedContacts {
 		return ErrState
 	}
@@ -607,7 +636,7 @@ func validateEnvelope(state applicationEnvelope) error {
 			}
 		}
 	}
-	return nil
+	return validateRouteStates(state)
 }
 
 // These structural DTOs bound the chat section without granting storage a chat

@@ -31,6 +31,9 @@ const contact = (
   revision = 1,
   unread = 0,
 ): ContactSummary => ({
+  peerProtocol: 0,
+  attachmentsSupported: false,
+  contactControlsSupported: false,
   state: 'offline',
   path: 'Unknown',
   contactID,
@@ -84,6 +87,9 @@ function fixture() {
     connect: vi.fn(async (id) => snapshot(contact(id, 2))),
     send: vi.fn(async (id) => snapshot(contact(id, 2), [message()])),
     forget: vi.fn(async () => ({
+      peerProtocol: 0 as const,
+      attachmentsSupported: false,
+      contactControlsSupported: false,
       state: 'none' as const,
       path: 'Unknown' as const,
       revision: 2,

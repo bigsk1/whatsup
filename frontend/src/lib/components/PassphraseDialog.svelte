@@ -20,6 +20,7 @@
   let current = $state(''),
     secret = $state(''),
     confirm = $state('');
+  let shownOperation: SecurityOperation | undefined;
   const visible = $derived(operation !== '' && operation !== 'import-confirm');
   const newSecret = $derived(operation === 'enable' || operation === 'export');
   const needsCurrent = $derived(
@@ -58,7 +59,8 @@
     const active = visible,
       mode = operation;
     untrack(() => {
-      if (!dialog) return;
+      if (!dialog || shownOperation === mode) return;
+      shownOperation = mode;
       clear();
       if (active && !dialog.open) {
         dialog.showModal();

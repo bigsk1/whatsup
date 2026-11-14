@@ -71,6 +71,9 @@ function approved(
   overrides: Partial<ConversationSnapshot> = {},
 ): ConversationSnapshot {
   return {
+    peerProtocol: 0,
+    attachmentsSupported: false,
+    contactControlsSupported: false,
     state: 'offline',
     path: 'Unknown',
     revision: 1,

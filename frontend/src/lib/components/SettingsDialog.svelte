@@ -18,6 +18,8 @@
   import type { Accent, Preferences, Theme } from '../themes/preferences';
   import type { AppPreferences } from '../state/preferences';
   import type { StorageSecurity, SecurityOperation } from '../state/security';
+  import RelayChangePanel from './RelayChangePanel.svelte';
+  import type { RelayChangeState } from '../state/relay';
 
   type Page =
     'profile' | 'contact' | 'appearance' | 'privacy' | 'app' | 'security';
@@ -46,6 +48,8 @@
     security,
     onsecurity,
     onreloadsecurity,
+    relay,
+    onrelay,
   }: {
     status: Status;
     preferences: Preferences;
@@ -81,6 +85,20 @@
     };
     onsecurity: (operation: SecurityOperation) => void;
     onreloadsecurity: () => void;
+    relay: RelayChangeState;
+    onrelay: {
+      draft: (value: string) => void;
+      consent: (value: boolean) => void;
+      preset: () => void;
+      propose: () => void;
+      cancel: (id: string) => void;
+      reload: () => void;
+      manual: (value: boolean) => void;
+      export: () => void;
+      copy: () => void;
+      importText: (value: string) => void;
+      inspect: () => void;
+    };
   } = $props();
   let open = $state(false);
   let selected = $state<Page>('profile');
@@ -408,6 +426,41 @@
                   </div>
                 </dl>
               </section>
+              {#if conversation.state === 'peer-removed'}<section
+                  class="settings-card"
+                >
+                  <h2>This contact removed you</h2>
+                  <p>
+                    Your history and saved files are kept. Messaging and
+                    automatic reconnect have stopped.
+                  </p>
+                </section>
+              {:else}<section class="settings-card">
+                  <RelayChangePanel
+                    snapshot={relay.snapshot}
+                    capabilities={relay.capabilities}
+                    draftURL={relay.draftURL}
+                    consent={relay.consent}
+                    loaded={relay.loaded}
+                    loading={relay.loading}
+                    busy={relay.busy || busy}
+                    notice={relay.notice}
+                    manual={relay.manual}
+                    exportText={relay.exportText}
+                    importText={relay.importText}
+                    ondraft={onrelay.draft}
+                    onconsent={onrelay.consent}
+                    onpreset={onrelay.preset}
+                    onpropose={onrelay.propose}
+                    oncancel={onrelay.cancel}
+                    onreload={onrelay.reload}
+                    onmanual={onrelay.manual}
+                    onexport={onrelay.export}
+                    oncopy={onrelay.copy}
+                    onimporttext={onrelay.importText}
+                    oninspect={onrelay.inspect}
+                  />
+                </section>{/if}
               <section class="settings-card" aria-labelledby="forget-heading">
                 <div class="settings-card-heading">
                   <div>

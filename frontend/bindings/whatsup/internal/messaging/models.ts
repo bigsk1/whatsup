@@ -15,6 +15,9 @@ export interface ContactSummary {
     "localName": string;
     "canConnect": boolean;
     "canSend": boolean;
+    "peerProtocol": number;
+    "attachmentsSupported": boolean;
+    "contactControlsSupported": boolean;
     "unread": number;
 }
 
@@ -44,5 +47,8 @@ export interface Snapshot {
     "localName": string;
     "canConnect": boolean;
     "canSend": boolean;
+    "peerProtocol": number;
+    "attachmentsSupported": boolean;
+    "contactControlsSupported": boolean;
     "messages": chat$0.Message[] | null;
 }
