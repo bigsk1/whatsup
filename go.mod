@@ -2,6 +2,8 @@ module whatsup
 
 go 1.27.4
 
+godebug multipathtcp=0
+
 require (
 	github.com/fxamacker/cbor/v2 v2.9.3
 	github.com/go-ole/go-ole v1.3.0
