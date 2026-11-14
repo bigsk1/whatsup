@@ -117,7 +117,9 @@ async function crowdedConversation(page: Page, os: string) {
   }, os);
   await page.goto('/');
   await expect(page.locator('.message-bubble')).toHaveCount(12);
-  await expect(page.locator('.attachment-list article')).toHaveCount(13);
+  await expect(
+    page.getByRole('button', { name: 'Expand attachments', exact: true }),
+  ).toContainText('13 files');
   return errors;
 }
 
@@ -209,6 +211,21 @@ for (const { label, width, height, os } of [
       name: 'Attachments',
       exact: true,
     });
+    await expect(
+      attachments.getByRole('button', {
+        name: 'Expand attachments',
+        exact: true,
+      }),
+    ).toHaveAttribute('aria-expanded', 'false');
+    expect((await box(attachments)).height).toBeLessThan(80);
+    await attachments
+      .getByRole('button', { name: 'Expand attachments', exact: true })
+      .click();
+    await expect(attachments.locator('.attachment-list article')).toHaveCount(
+      13,
+    );
+    await expectAnchorsUnmoved(page, original);
+    const attachmentBody = attachments.locator('.attachment-content');
     expect(
       await history.evaluate(
         (element) => element.scrollHeight > element.clientHeight,
@@ -221,7 +238,9 @@ for (const { label, width, height, os } of [
       history.locator('.message-bubble footer').last(),
     ).toBeInViewport({ ratio: 1 });
     await expectAnchorsUnmoved(page, original);
-    expect(await attachments.evaluate((element) => element.scrollTop)).toBe(0);
+    expect(await attachmentBody.evaluate((element) => element.scrollTop)).toBe(
+      0,
+    );
     const historyPosition = await history.evaluate(
       (element) => element.scrollTop,
     );
@@ -230,7 +249,7 @@ for (const { label, width, height, os } of [
     await list.evaluate((element) => {
       element.scrollTop = element.scrollHeight;
     });
-    await attachments.evaluate((element) => {
+    await attachmentBody.evaluate((element) => {
       element.scrollTop = element.scrollHeight;
     });
     await expect(
@@ -243,7 +262,7 @@ for (const { label, width, height, os } of [
 
     // Each control must be reachable through ordinary pane scrolling. They
     // need not fit simultaneously in the compact window on every system font.
-    await attachments.evaluate((element) => {
+    await attachmentBody.evaluate((element) => {
       element.scrollTop = 0;
     });
     for (const control of [
@@ -255,7 +274,7 @@ for (const { label, width, height, os } of [
       }),
       attachments.locator('.image-permission'),
     ]) {
-      await reachAttachmentControl(page, attachments, control);
+      await reachAttachmentControl(page, attachmentBody, control);
       await expectAnchorsUnmoved(page, original);
       expect(await history.evaluate((element) => element.scrollTop)).toBe(
         historyPosition,
@@ -266,6 +285,10 @@ for (const { label, width, height, os } of [
         name: 'Automatically accept images up to 25 MB from this contact',
       }),
     ).toBeInViewport({ ratio: 1 });
+    await attachments
+      .getByRole('button', { name: 'Collapse attachments', exact: true })
+      .click();
+    await expect(attachmentBody).toBeHidden();
     await expectAnchorsUnmoved(page, original);
     expect(errors).toEqual([]);
   });

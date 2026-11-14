@@ -131,6 +131,9 @@
   };
   const contactsState = contacts.state;
   const conversation = $derived(selectedConversation($contactsState));
+  const attachmentsSelected = $derived(
+    $attachmentsState.contactID === conversation.contactID,
+  );
   const conversationNotice = $derived(
     $contactsState.notices[conversation.contactID] || $contactsState.notice,
   );
@@ -833,20 +836,21 @@
         {#if status.attachmentsAvailable}
           {#key conversation.contactID}
             <AttachmentPanel
-              items={$attachmentsState.items}
+              items={attachmentsSelected ? $attachmentsState.items : []}
               wireAllowed={attachmentWireAllowed}
               stageAllowed={attachmentStageAllowed}
               wireNotice={conversation.state === 'connected' &&
               conversation.peerProtocol === 3
                 ? 'Text messaging works with this device. It needs an update for attachments; local drafts and queued files are kept.'
                 : ''}
-              drafts={$attachmentsState.drafts}
+              drafts={attachmentsSelected ? $attachmentsState.drafts : []}
               busy={$attachmentsState.busy}
-              notice={$attachmentsState.notice}
-              videos={$attachmentsState.videos}
-              saved={$attachmentsState.saved}
-              autoAcceptImages={$attachmentsState.autoAcceptImages}
-              hasMore={$attachmentsState.hasMore}
+              notice={attachmentsSelected ? $attachmentsState.notice : ''}
+              videos={attachmentsSelected ? $attachmentsState.videos : {}}
+              saved={attachmentsSelected ? $attachmentsState.saved : {}}
+              autoAcceptImages={attachmentsSelected &&
+                $attachmentsState.autoAcceptImages}
+              hasMore={attachmentsSelected && $attachmentsState.hasMore}
               onolder={() => void attachments.older()}
               onpick={(original) => void attachments.pick(original)}
               onpaste={() => void attachments.paste()}

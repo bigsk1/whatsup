@@ -15,6 +15,7 @@ import type {
 } from '../src/lib/state/attachments';
 
 const contactID = 'AQEBAQEBAQEBAQEBAQEBAQ';
+const secondContactID = 'BAQEBAQEBAQEBAQEBAQEBA';
 const fileID = 'AgICAgICAgICAgICAgICAg';
 const token = 'S'.repeat(32);
 const generated = readFileSync(
@@ -53,6 +54,7 @@ async function desktop(
   initial: AttachmentItem[] = [],
   peer: 'offline' | 'connected' | 'peer-removed' = 'offline',
   protocol: 0 | 3 | 4 = 0,
+  second?: { items: AttachmentItem[]; holdTarget?: () => Promise<void> },
 ) {
   const calls: { name: string; args: unknown[] }[] = [],
     errors: string[] = [],
@@ -66,13 +68,21 @@ async function desktop(
     peer,
     protocol,
   };
-  const conversation = () => ({
+  let draftSequence = 0;
+  const nextDraftHandle = () =>
+    String.fromCharCode(83 + draftSequence++).repeat(32);
+  const conversation = (selected = contactID) => ({
     ...unavailableConversation,
     state: state.peer,
     path: 'Relayed' as const,
     revision: state.revision,
-    contactID,
-    peerFingerprint: 'b'.repeat(64),
+    contactID: selected,
+    peerFingerprint: (selected === contactID ? 'b' : 'c').repeat(64),
+    localName: second
+      ? selected === contactID
+        ? 'Synthetic first'
+        : 'Synthetic second'
+      : '',
     peerProtocol: state.protocol,
     attachmentsSupported: state.peer === 'connected' && state.protocol === 4,
     contactControlsSupported:
@@ -123,13 +133,20 @@ async function desktop(
         break;
       case 'GetContacts':
         result =
-          state.storage === 'unlocked' ? [contactSummary(conversation())] : [];
+          state.storage === 'unlocked'
+            ? [
+                contactSummary(conversation()),
+                ...(second
+                  ? [contactSummary(conversation(secondContactID))]
+                  : []),
+              ]
+            : [];
         break;
       case 'GetMessages':
-        result = messagePage(conversation());
+        result = messagePage(conversation(args[0] as string));
         break;
       case 'MarkRead':
-        result = contactSummary(conversation());
+        result = contactSummary(conversation(args[0] as string));
         break;
       case 'GetProfile':
         result = { displayName: '', shareDisplayName: false };
@@ -138,28 +155,32 @@ async function desktop(
         result = { ...unavailablePairing, state: 'idle' };
         break;
       case 'SetAttachmentInputContact':
+        if (args[0] === secondContactID) await second?.holdTarget?.();
         break;
       case 'GetAttachments':
       case 'GetAttachmentHistory':
         result = {
-          contactID,
+          contactID: args[0],
           revision: state.revision,
-          items: state.items,
-          drafts: state.drafts,
-          autoAcceptImages: state.autoAcceptImages,
+          items:
+            args[0] === secondContactID ? (second?.items ?? []) : state.items,
+          drafts: args[0] === secondContactID ? [] : state.drafts,
+          autoAcceptImages:
+            args[0] === secondContactID ? false : state.autoAcceptImages,
           nextCursor: '',
           hasMore: false,
         };
         break;
       case 'ChooseAttachment':
-        state.drafts = [draft];
+        state.drafts = [{ ...draft, handle: nextDraftHandle() }];
         state.revision++;
-        result = draft;
+        result = state.drafts[0];
         break;
       case 'PasteAttachment':
         state.drafts = [
           {
             ...draft,
+            handle: nextDraftHandle(),
             name: 'pasted-image.png',
             mediaType: 'image/png',
             size: 100,
@@ -229,11 +250,43 @@ async function desktop(
   return { state, calls, errors, external };
 }
 
+async function expandAttachments(page: Page) {
+  await page
+    .getByRole('button', { name: 'Expand attachments', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'Collapse attachments', exact: true }),
+  ).toHaveAttribute('aria-expanded', 'true');
+}
+
+async function attachmentUpdate(page: Page, revision: number) {
+  const loaded = page.waitForResponse((response) => {
+    if (!response.url().endsWith('/wails/runtime')) return false;
+    return (
+      operations.get(response.request().postDataJSON().args?.methodID) ===
+      'GetAttachments'
+    );
+  });
+  await contactHint(page, contactID, revision);
+  await (await loaded).finished();
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }),
+  );
+}
+
 test('file selection remains a draft and a large relayed send requires explicit confirmation', async ({
   page,
 }) => {
   const { calls, errors, external } = await desktop(page);
-  await page.getByRole('button', { name: 'Choose file…', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Expand attachments', exact: true }),
+  ).toHaveAttribute('aria-expanded', 'false');
+  await page
+    .getByRole('button', { name: 'Choose attachment', exact: true })
+    .click();
   await expect(
     page.getByRole('article', { name: 'Attachment preview' }),
   ).toContainText(draft.name);
@@ -268,6 +321,9 @@ test('receiving requires approval and only Save and Show in folder are offered',
   ).toHaveCount(0);
   await page.getByRole('button', { name: 'Accept', exact: true }).click();
   await expect(
+    page.getByRole('button', { name: 'Collapse attachments', exact: true }),
+  ).toHaveAttribute('aria-expanded', 'true');
+  await expect(
     page.getByRole('button', { name: 'Save…', exact: true }),
   ).toBeVisible();
   await expect(
@@ -289,6 +345,229 @@ test('receiving requires approval and only Save and Show in folder are offered',
   expect(errors).toEqual([]);
 });
 
+test('saved attachment history starts collapsed and its keyboard toggle preserves Save access and data', async ({
+  page,
+}) => {
+  const completed = {
+    ...item,
+    state: 'complete' as const,
+    transferredBytes: item.size,
+  };
+  const { state, calls, errors } = await desktop(page, [completed]);
+  const panel = page.getByRole('region', { name: 'Attachments', exact: true });
+  const toggle = panel.locator('.attachment-toggle');
+  await expect(toggle).toContainText('1 file');
+  await expect(toggle).toHaveAccessibleName('Expand attachments');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  const contentID = await toggle.getAttribute('aria-controls');
+  expect(contentID).toBeTruthy();
+  await expect(panel.locator('.attachment-content')).toHaveAttribute(
+    'id',
+    contentID!,
+  );
+  await expect(panel.locator('.attachment-content')).toBeHidden();
+  await expect(panel.getByRole('article')).toHaveCount(0);
+  expect((await panel.boundingBox())!.height).toBeLessThan(80);
+
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(toggle).toHaveAccessibleName('Collapse attachments');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(
+    panel.getByRole('button', { name: 'Save…', exact: true }),
+  ).toBeVisible();
+  await page.keyboard.press('Space');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(panel.locator('.attachment-content')).toBeHidden();
+  await expect(toggle).toHaveAttribute('aria-controls', contentID!);
+  expect(state.items).toEqual([completed]);
+  expect(
+    calls.some((call) =>
+      ['SaveAttachment', 'DeclineAttachment', 'DiscardAttachment'].includes(
+        call.name,
+      ),
+    ),
+  ).toBe(false);
+
+  await page.keyboard.press('Enter');
+  await panel.getByRole('button', { name: 'Save…', exact: true }).click();
+  await expect(
+    panel.getByRole('button', { name: 'Show in folder', exact: true }),
+  ).toBeVisible();
+  expect(state.items).toEqual([completed]);
+  expect(errors).toEqual([]);
+});
+
+test('manual collapse survives progress and completion while a new incoming offer reopens it', async ({
+  page,
+}) => {
+  const { state, errors } = await desktop(page, [item]);
+  const panel = page.getByRole('region', { name: 'Attachments', exact: true });
+  const toggle = panel.locator('.attachment-toggle');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+  for (const [transferState, progress] of [
+    ['accepted', 16],
+    ['accepted', 32],
+    ['complete', item.size],
+  ] as const) {
+    state.items = [
+      { ...item, state: transferState, transferredBytes: progress },
+    ];
+    await attachmentUpdate(page, ++state.revision);
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  }
+  state.items = [
+    state.items[0],
+    {
+      ...item,
+      id: 'AwMDAwMDAwMDAwMDAwMDAw',
+      name: 'Synthetic new offer.pdf',
+    },
+  ];
+  await attachmentUpdate(page, ++state.revision);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(
+    panel.getByRole('button', { name: 'Accept', exact: true }),
+  ).toBeVisible();
+  await panel.getByRole('button', { name: 'Accept', exact: true }).click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(
+    panel.getByRole('button', { name: 'Save…', exact: true }),
+  ).toHaveCount(2);
+  expect(errors).toEqual([]);
+});
+
+test('composer paste and a new file draft reveal previews after manual collapse', async ({
+  page,
+}) => {
+  const { state, calls, errors } = await desktop(page, [
+    { ...item, state: 'complete', transferredBytes: item.size },
+  ]);
+  const panel = page.getByRole('region', { name: 'Attachments', exact: true });
+  const toggle = panel.locator('.attachment-toggle');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await page
+    .getByRole('textbox', { name: 'Message', exact: true })
+    .evaluate((element) => {
+      const data = new DataTransfer();
+      data.items.add(
+        new File(['synthetic browser paste intent'], 'synthetic.png', {
+          type: 'image/png',
+        }),
+      );
+      element.dispatchEvent(
+        new ClipboardEvent('paste', {
+          clipboardData: data,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+  await expect(
+    panel.getByRole('article', { name: 'Attachment preview' }),
+  ).toContainText('pasted-image.png');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  expect(calls.find((call) => call.name === 'PasteAttachment')?.args).toEqual([
+    contactID,
+  ]);
+  await toggle.click();
+  state.drafts = state.drafts.map((value) => ({ ...value }));
+  await attachmentUpdate(page, ++state.revision);
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await page
+    .getByRole('button', { name: 'Choose attachment', exact: true })
+    .click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(
+    panel.getByRole('article', { name: 'Attachment preview' }),
+  ).toContainText(draft.name);
+  expect(calls.some((call) => call.name === 'SendAttachment')).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test('switching from pending attachments to another contact keeps restored history collapsed and scoped', async ({
+  page,
+}) => {
+  let releaseTarget!: () => void;
+  const targetHeld = new Promise<void>((resolve) => {
+    releaseTarget = resolve;
+  });
+  const completed: AttachmentItem = {
+    ...item,
+    id: 'BQUFBQUFBQUFBQUFBQUFBQ',
+    name: 'Synthetic second saved.pdf',
+    state: 'complete',
+    transferredBytes: item.size,
+  };
+  const { calls, errors } = await desktop(page, [item], 'offline', 0, {
+    items: [completed],
+    holdTarget: () => targetHeld,
+  });
+  await page
+    .getByRole('button', { name: 'Choose attachment', exact: true })
+    .click();
+  const panel = page.getByRole('region', { name: 'Attachments', exact: true });
+  await expect(
+    panel.getByRole('article', { name: 'Attachment preview' }),
+  ).toBeVisible();
+  await expect(
+    panel.getByRole('button', { name: 'Accept', exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole('button', {
+      name: 'Conversation with Synthetic second',
+      exact: true,
+    })
+    .click();
+  await expect
+    .poll(() =>
+      calls.some(
+        (call) =>
+          call.name === 'SetAttachmentInputContact' &&
+          call.args[0] === secondContactID,
+      ),
+    )
+    .toBe(true);
+  await expect(panel.locator('.attachment-toggle')).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+  await expect(panel.locator('.attachment-toggle')).toContainText('0 files');
+  await expect(panel.getByRole('article')).toHaveCount(0);
+  releaseTarget();
+  await expect
+    .poll(() =>
+      calls.some(
+        (call) =>
+          call.name === 'GetAttachments' && call.args[0] === secondContactID,
+      ),
+    )
+    .toBe(true);
+  await expect(panel.locator('.attachment-toggle')).toContainText('1 file');
+  await expect(panel.locator('.attachment-toggle')).toHaveAttribute(
+    'aria-expanded',
+    'false',
+  );
+  await expandAttachments(page);
+  await expect(
+    panel.getByRole('article', { name: 'Received attachment' }),
+  ).toContainText(completed.name);
+  await expect(
+    panel.getByRole('article', { name: 'Attachment preview' }),
+  ).toHaveCount(0);
+  await expect(
+    panel.getByRole('button', { name: 'Accept', exact: true }),
+  ).toHaveCount(0);
+  await panel.getByRole('button', { name: 'Save…', exact: true }).click();
+  await expect
+    .poll(() => calls.find((call) => call.name === 'SaveAttachment')?.args)
+    .toEqual([secondContactID, completed.id]);
+  expect(errors).toEqual([]);
+});
+
 test('completed video does not create a player until Play is clicked, and Go offline clears it', async ({
   page,
 }) => {
@@ -302,6 +581,7 @@ test('completed video does not create a player until Play is clicked, and Go off
     },
   ]);
   await expect(page.locator('video')).toHaveCount(0);
+  await expandAttachments(page);
   await expect(
     page.getByRole('button', { name: 'Save…', exact: true }),
   ).toBeVisible();
@@ -329,6 +609,7 @@ test('a connected protocol-3 peer blocks file transfer while saved files and off
     'connected',
     3,
   );
+  await expandAttachments(page);
   await expect(
     page.getByText('Text messaging works with this device.', { exact: false }),
   ).toBeVisible();
@@ -368,6 +649,7 @@ test('a removed contact keeps completed files saveable and prevents new drafts',
     [{ ...item, state: 'complete', transferredBytes: item.size }],
     'peer-removed',
   );
+  await expandAttachments(page);
   await expect(
     page.getByRole('button', { name: 'Choose file…', exact: true }),
   ).toBeDisabled();
