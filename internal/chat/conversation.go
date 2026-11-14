@@ -1,49 +1,44 @@
 package chat
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"math/big"
-	"os"
 	"sync"
 	"time"
 
 	"whatsup/internal/identity"
+	"whatsup/internal/message"
 	"whatsup/internal/pairing"
 )
 
 const (
-	MaxMessages        = 256
-	MaxStoredTextBytes = 256 << 10
-	MaxSnapshotBytes   = 2 << 20 // below the encrypted vault's 4 MiB safety limit
-	RetryMin           = time.Second
-	RetryMax           = 5 * time.Minute
-	Incoming           = "incoming"
-	Outgoing           = "outgoing"
+	MaxPageMessages  = 100
+	MaxPageTextBytes = 1 << 20
+	RetryMin         = time.Second
+	RetryMax         = 5 * time.Minute
+	Incoming         = message.Incoming
+	Outgoing         = message.Outgoing
 )
 
 var (
 	ErrContact  = errors.New("approved conversation contact required")
-	ErrCapacity = errors.New("local conversation capacity reached")
-	ErrStore    = errors.New("conversation persistence failed; reopen before retrying")
-	ErrCorrupt  = errors.New("conversation state is invalid or belongs to another identity")
-	ErrConflict = errors.New("message ID already refers to different content")
-	ErrAck      = errors.New("acknowledgement does not refer to an outgoing message")
+	ErrCapacity = message.ErrCapacity
+	ErrStore    = message.ErrStore
+	ErrCorrupt  = message.ErrCorrupt
+	ErrConflict = message.ErrConflict
+	ErrAck      = message.ErrAck
 	ErrRetry    = errors.New("invalid retry delay")
+	ErrPage     = errors.New("invalid conversation page request")
 )
 
-// Store must encrypt state with OS-protected credentials and make Save durable
-// before returning success. Use a fresh storage.ApplicationState.ChatStore for
-// each Conversation. It preserves identity and other contacts in one envelope
-// and rejects reused or stale writers. Never pass the application's raw Vault
-// here. There is no plaintext filesystem fallback here.
-type Store interface {
-	Load() ([]byte, error)
-	Save([]byte) error
-}
+// Store is a contact-scoped encrypted record repository. The application must
+// create it only for this exact approved contact; never supply a raw database or
+// a snapshot writer. No chat operation serializes or rewrites whole history.
+type Store = message.Repository
+
+type Message = message.Message
 
 type Options struct {
 	Now func() time.Time
@@ -52,38 +47,24 @@ type Options struct {
 	Jitter func(minimum, maximum time.Duration) (time.Duration, error)
 }
 
-type Message struct {
-	ID        string    `json:"id"`
-	Direction string    `json:"direction"`
-	Text      string    `json:"text"`
-	CreatedAt time.Time `json:"createdAt"`
-	Delivered bool      `json:"delivered"`
-}
-
 type Attempt struct {
 	ID          string    `json:"id"`
 	Count       uint32    `json:"count"`
 	NextAttempt time.Time `json:"nextAttempt"`
 }
 
-type snapshot struct {
-	Version  int                `json:"version"`
-	Local    identity.PublicKey `json:"local"`
-	Peer     identity.PublicKey `json:"peer"`
-	Messages []Message          `json:"messages"`
-	Outbox   []Attempt          `json:"outbox"`
-}
-
 // Conversation has no bridge binding, networking, or pending-pairing API. Its
 // constructor requires a locally approved contact. The caller remains responsible
 // for the additional mutual-authentication/durable-activation requirement.
+// Only retry deadlines and ordering live here; durable state belongs to Store.
 type Conversation struct {
 	mu      sync.Mutex
 	store   Store
 	contact *pairing.Contact
 	now     func() time.Time
 	jitter  func(time.Duration, time.Duration) (time.Duration, error)
-	state   snapshot
+	pending []string
+	retries map[string]Attempt
 	failed  bool
 }
 
@@ -100,80 +81,91 @@ func Open(store Store, contact *pairing.Contact, options Options) (*Conversation
 	if options.Jitter == nil {
 		options.Jitter = randomDelay
 	}
-	conversation := &Conversation{store: store, contact: contact, now: options.Now, jitter: options.Jitter}
-	data, err := store.Load()
-	if errors.Is(err, os.ErrNotExist) {
-		state := snapshot{Version: ProtocolVersion, Local: contact.Local(), Peer: contact.Peer()}
-		if err := conversation.commit(state); err != nil {
-			return nil, err
+	c := &Conversation{store: store, contact: contact, now: options.Now, jitter: options.Jitter, retries: make(map[string]Attempt)}
+	err := c.withPeer(contact.Peer(), func() error {
+		if scoped, ok := store.(interface{ Claim() error }); ok {
+			if err := scoped.Claim(); err != nil {
+				return err
+			}
 		}
-		return conversation, nil
-	}
+		ids, err := store.PendingIDs()
+		if err != nil {
+			return c.repositoryError(err)
+		}
+		now := c.now()
+		for _, id := range ids {
+			if !validID(id) {
+				return ErrCorrupt
+			}
+			if _, duplicate := c.retries[id]; duplicate {
+				return ErrCorrupt
+			}
+			c.pending = append(c.pending, id)
+			c.retries[id] = Attempt{ID: id, NextAttempt: now}
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, errors.Join(ErrStore, err)
+		return nil, err
 	}
-	if len(data) == 0 || len(data) > MaxSnapshotBytes {
-		return nil, ErrCorrupt
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&conversation.state); err != nil {
-		return nil, ErrCorrupt
-	}
-	canonical, err := json.Marshal(conversation.state)
-	if err != nil || !bytes.Equal(data, canonical) || !conversation.state.Local.Equal(contact.Local()) || !conversation.state.Peer.Equal(contact.Peer()) || validateSnapshot(conversation.state) != nil {
-		return nil, ErrCorrupt
-	}
-	return conversation, nil
+	return c, nil
 }
 
-// Queue persists local text before reporting success, even while the peer is
-// offline. It grants no pending identity access and never transmits by itself.
-func (c *Conversation) Queue(text string) (message Message, err error) {
-	err = c.withPeer(c.contact.Peer(), func() error {
+// Queue commits the message and its durable outbox membership atomically before
+// returning its stable ID. Scheduling is in memory and does not touch the vault.
+func (c *Conversation) Queue(text string) (queued Message, err error) {
+	err = c.withPeer(c.peer(), func() error {
 		if err := validateText(text); err != nil {
 			return err
 		}
-		if len(c.state.Messages) >= MaxMessages || storedBytes(c.state)+len(text) > MaxStoredTextBytes {
-			return ErrCapacity
+		now := c.now()
+		if now.IsZero() {
+			return ErrCorrupt
 		}
-		var id string
-		for attempts := 0; attempts < 3; attempts++ {
-			var bytes [16]byte
-			if _, err := rand.Read(bytes[:]); err != nil {
+		for attempt := 0; attempt < 3; attempt++ {
+			var id [16]byte
+			if _, err := rand.Read(id[:]); err != nil {
 				return err
 			}
-			id = base64.RawURLEncoding.EncodeToString(bytes[:])
-			if findMessage(c.state.Messages, id) < 0 {
-				break
+			candidate := Message{ID: base64.RawURLEncoding.EncodeToString(id[:]), Direction: Outgoing, Text: text, CreatedAt: now.UTC()}
+			if err := c.store.Queue(candidate); err != nil {
+				if errors.Is(err, ErrConflict) {
+					continue
+				}
+				return c.repositoryError(err)
 			}
-			id = ""
+			c.pending = append(c.pending, candidate.ID)
+			c.retries[candidate.ID] = Attempt{ID: candidate.ID, NextAttempt: now}
+			queued = candidate
+			return nil
 		}
-		if id == "" {
-			return ErrConflict
-		}
-		queued := Message{ID: id, Direction: Outgoing, Text: text, CreatedAt: c.now().UTC()}
-		next := clone(c.state)
-		next.Messages = append(next.Messages, queued)
-		next.Outbox = append(next.Outbox, Attempt{ID: id, NextAttempt: queued.CreatedAt})
-		if err := c.commit(next); err != nil {
-			return err
-		}
-		message = queued
-		return nil
+		return ErrConflict
 	})
-	return message, err
+	return queued, err
 }
 
-// NextAttempt returns one due frame only for the pinned authenticated session
-// peer. Persisting its next retry before handing it to a sender bounds retries
-// across crashes. Successful socket writes never remove messages from the outbox.
+// NextAttempt reads only the next due durable record. A socket write never
+// acknowledges a message. Backoff changes remain in memory; reopening rebuilds
+// immediately eligible attempts from authenticated encrypted outbox records.
 func (c *Conversation) NextAttempt(authenticatedPeer identity.PublicKey) (frame Frame, due bool, err error) {
 	err = c.withPeer(authenticatedPeer, func() error {
-		now := c.now().UTC()
-		for index, attempt := range c.state.Outbox {
+		now := c.now()
+		for _, id := range c.pending {
+			attempt := c.retries[id]
 			if now.Before(attempt.NextAttempt) {
 				continue
+			}
+			stored, err := c.store.Get(id)
+			if err != nil {
+				if errors.Is(err, message.ErrNotFound) {
+					c.failed = true
+					return ErrCorrupt
+				}
+				return c.repositoryError(err)
+			}
+			if stored.ID != id || validateStored(stored) != nil || stored.Direction != Outgoing || stored.Delivered {
+				c.failed = true
+				return ErrCorrupt
 			}
 			ceiling := retryCeiling(attempt.Count)
 			floor := ceiling / 2
@@ -187,16 +179,12 @@ func (c *Conversation) NextAttempt(authenticatedPeer identity.PublicKey) (frame 
 			if delay < floor || delay > ceiling {
 				return ErrRetry
 			}
-			next := clone(c.state)
-			if next.Outbox[index].Count < ^uint32(0) {
-				next.Outbox[index].Count++
+			if attempt.Count < ^uint32(0) {
+				attempt.Count++
 			}
-			next.Outbox[index].NextAttempt = now.Add(delay)
-			message := c.state.Messages[findMessage(c.state.Messages, attempt.ID)]
-			if err := c.commit(next); err != nil {
-				return err
-			}
-			frame = Frame{Version: ProtocolVersion, Type: MessageFrame, ID: message.ID, Text: message.Text}
+			attempt.NextAttempt = now.Add(delay)
+			c.retries[id] = attempt
+			frame = Frame{Version: ProtocolVersion, Type: MessageFrame, ID: id, Text: stored.Text}
 			due = true
 			return nil
 		}
@@ -205,30 +193,16 @@ func (c *Conversation) NextAttempt(authenticatedPeer identity.PublicKey) (frame 
 	return frame, due, err
 }
 
-// Receive returns an acknowledgement only after new incoming text and its
-// deduplication ID have been saved durably. Lost acknowledgements can be retried
-// after restart without inserting another message. IDs are never silently evicted;
-// reaching the bounded history capacity rejects new messages explicitly.
+// Receive returns an acknowledgement only after the incoming record and its
+// duplicate-check state are committed. A duplicate is checked before disk quota;
+// a lost ACK cannot turn a saved message into another history entry.
 func (c *Conversation) Receive(authenticatedPeer identity.PublicKey, frame Frame) (ack Frame, err error) {
 	err = c.withPeer(authenticatedPeer, func() error {
 		if frame.Type != MessageFrame || frame.Validate() != nil {
 			return ErrFrame
 		}
-		if index := findMessage(c.state.Messages, frame.ID); index >= 0 {
-			message := c.state.Messages[index]
-			if message.Direction != Incoming || message.Text != frame.Text {
-				return ErrConflict
-			}
-			ack = Frame{Version: ProtocolVersion, Type: AckFrame, ID: frame.ID}
-			return nil
-		}
-		if len(c.state.Messages) >= MaxMessages || storedBytes(c.state)+len(frame.Text) > MaxStoredTextBytes {
-			return ErrCapacity
-		}
-		next := clone(c.state)
-		next.Messages = append(next.Messages, Message{ID: frame.ID, Direction: Incoming, Text: frame.Text, CreatedAt: c.now().UTC(), Delivered: true})
-		if err := c.commit(next); err != nil {
-			return err
+		if _, err := c.store.Receive(Message{ID: frame.ID, Direction: Incoming, Text: frame.Text, CreatedAt: c.now().UTC(), Delivered: true}); err != nil {
+			return c.repositoryError(err)
 		}
 		ack = Frame{Version: ProtocolVersion, Type: AckFrame, ID: frame.ID}
 		return nil
@@ -236,72 +210,131 @@ func (c *Conversation) Receive(authenticatedPeer identity.PublicKey, frame Frame
 	return ack, err
 }
 
-// Acknowledge removes only the acknowledged outgoing queue entry, while keeping
-// its delivered history. The session must authenticate the peer; a matching
-// claimed ID alone is never sufficient. Repeated authenticated acks are idempotent.
+// Acknowledge atomically marks the record delivered and removes its encrypted
+// outbox membership. Only after that commit does memory forget the retry entry.
 func (c *Conversation) Acknowledge(authenticatedPeer identity.PublicKey, frame Frame) error {
 	return c.withPeer(authenticatedPeer, func() error {
 		if frame.Type != AckFrame || frame.Validate() != nil {
 			return ErrFrame
 		}
-		index := findMessage(c.state.Messages, frame.ID)
-		if index < 0 || c.state.Messages[index].Direction != Outgoing {
-			return ErrAck
+		if err := c.store.Acknowledge(frame.ID); err != nil {
+			return c.repositoryError(err)
 		}
-		if c.state.Messages[index].Delivered {
-			return nil
-		}
-		next := clone(c.state)
-		next.Messages[index].Delivered = true
-		for pending, attempt := range next.Outbox {
-			if attempt.ID == frame.ID {
-				next.Outbox = append(next.Outbox[:pending], next.Outbox[pending+1:]...)
+		delete(c.retries, frame.ID)
+		for index, id := range c.pending {
+			if id == frame.ID {
+				c.pending = append(c.pending[:index], c.pending[index+1:]...)
 				break
 			}
 		}
-		return c.commit(next)
+		return nil
 	})
 }
 
-// Messages and Outbox are backend-only copies, not an unguarded bridge API.
+// Messages is a bounded compatibility snapshot for the current single-contact
+// UI. New callers should use Page so read failures remain explicit.
 func (c *Conversation) Messages() []Message {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]Message(nil), c.state.Messages...)
+	messages, _ := c.Page(0, MaxPageMessages)
+	return messages
 }
 
-func (c *Conversation) Outbox() []Attempt {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]Attempt(nil), c.state.Outbox...)
+func (c *Conversation) Page(beforeSequence uint64, limit int) (messages []Message, err error) {
+	if limit < 1 || limit > MaxPageMessages {
+		return nil, ErrPage
+	}
+	err = c.withPeer(c.peer(), func() error {
+		stored, err := c.store.Page(beforeSequence, limit)
+		if err != nil {
+			return c.repositoryError(err)
+		}
+		if len(stored) > limit {
+			c.failed = true
+			return ErrCorrupt
+		}
+		seen := make(map[string]bool, len(stored))
+		var previous uint64
+		total := 0
+		for _, item := range stored {
+			if validateStored(item) != nil || seen[item.ID] || item.Sequence <= previous || beforeSequence != 0 && item.Sequence >= beforeSequence {
+				c.failed = true
+				return ErrCorrupt
+			}
+			seen[item.ID] = true
+			previous = item.Sequence
+			total += len(item.Text)
+		}
+		start := 0
+		for total > MaxPageTextBytes && start < len(stored) {
+			total -= len(stored[start].Text)
+			start++
+		}
+		messages = append([]Message(nil), stored[start:]...)
+		return nil
+	})
+	return messages, err
 }
 
-// HasCapacity reports whether at least one more text byte can be queued. The
-// actual text and remaining byte budget are still checked atomically by Queue.
+func (c *Conversation) Usage() (usage message.Usage, err error) {
+	err = c.withPeer(c.peer(), func() error {
+		var err error
+		usage, err = c.store.Usage()
+		return c.repositoryError(err)
+	})
+	return usage, err
+}
+
 func (c *Conversation) HasCapacity() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return !c.failed && len(c.state.Messages) < MaxMessages && storedBytes(c.state) < MaxStoredTextBytes
+	usage, err := c.Usage()
+	return err == nil && !usage.Full
 }
 
-// ResetRetries makes the durable outbox immediately eligible after a freshly
-// authenticated connection. A new session must not inherit a five-minute wait
-// accumulated while the peer was unavailable. Nothing is acknowledged/deleted.
+func (c *Conversation) DeleteLocal(id string) error {
+	if !validID(id) {
+		return ErrFrame
+	}
+	return c.withPeer(c.peer(), func() error { return c.repositoryError(c.store.DeleteLocal(id)) })
+}
+
+// ClearHistory removes local visibility without revoking the contact or silently
+// deleting unacknowledged outgoing work. The repository retains pending bodies
+// and deduplication evidence required for safe retries.
+func (c *Conversation) ClearHistory() error {
+	return c.withPeer(c.peer(), func() error { return c.repositoryError(c.store.ClearHistory()) })
+}
+
+func (c *Conversation) Outbox() (attempts []Attempt) {
+	_ = c.withPeer(c.peer(), func() error {
+		for _, id := range c.pending {
+			attempts = append(attempts, c.retries[id])
+		}
+		return nil
+	})
+	return attempts
+}
+
+// ResetRetries wakes only this approved conversation after fresh authentication.
+// It writes no retry timestamp or retry count to persistent storage.
 func (c *Conversation) ResetRetries(authenticatedPeer identity.PublicKey) error {
 	return c.withPeer(authenticatedPeer, func() error {
-		if len(c.state.Outbox) == 0 {
-			return nil
+		now := c.now()
+		for _, id := range c.pending {
+			c.retries[id] = Attempt{ID: id, NextAttempt: now}
 		}
-		next := clone(c.state)
-		for index := range next.Outbox {
-			next.Outbox[index].Count = 0
-			next.Outbox[index].NextAttempt = c.now().UTC()
-		}
-		return c.commit(next)
+		return nil
 	})
+}
+
+func (c *Conversation) peer() identity.PublicKey {
+	if c == nil || c.contact == nil {
+		return identity.PublicKey{}
+	}
+	return c.contact.Peer()
 }
 
 func (c *Conversation) withPeer(peer identity.PublicKey, operation func() error) error {
+	if c == nil || c.contact == nil || c.store == nil || operation == nil {
+		return ErrContact
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.failed {
@@ -310,76 +343,23 @@ func (c *Conversation) withPeer(peer identity.PublicKey, operation func() error)
 	return c.contact.WithAuthenticatedPeer(peer, operation)
 }
 
-func (c *Conversation) commit(next snapshot) error {
-	if err := validateSnapshot(next); err != nil {
+func (c *Conversation) repositoryError(err error) error {
+	if err == nil || errors.Is(err, ErrCapacity) || errors.Is(err, ErrConflict) || errors.Is(err, ErrAck) || errors.Is(err, message.ErrNotFound) {
 		return err
 	}
-	data, err := json.Marshal(next)
-	if err != nil || len(data) > MaxSnapshotBytes {
-		return ErrCapacity
+	c.failed = true
+	if errors.Is(err, ErrCorrupt) {
+		return errors.Join(ErrCorrupt, err)
 	}
-	if err := c.store.Save(data); err != nil {
-		// The store may have renamed its file before reporting a directory-sync
-		// failure. Keep memory unchanged and require reopening to reconcile any
-		// durable change; continuing could otherwise overwrite uncertain state.
-		c.failed = true
-		return errors.Join(ErrStore, err)
-	}
-	c.state = next
-	return nil
+	return errors.Join(ErrStore, err)
 }
 
-func validateSnapshot(state snapshot) error {
-	if state.Version != ProtocolVersion || !state.Local.Valid() || !state.Peer.Valid() || state.Local.Equal(state.Peer) || len(state.Messages) > MaxMessages || len(state.Outbox) > MaxMessages || storedBytes(state) > MaxStoredTextBytes {
+func validateStored(item Message) error {
+	if !validID(item.ID) || validateText(item.Text) != nil || item.CreatedAt.IsZero() || item.Sequence == 0 ||
+		(item.Direction != Incoming && item.Direction != Outgoing) || item.Direction == Incoming && !item.Delivered {
 		return ErrCorrupt
 	}
-	seen := make(map[string]Message, len(state.Messages))
-	for _, message := range state.Messages {
-		if !validID(message.ID) || validateText(message.Text) != nil || message.CreatedAt.IsZero() || (message.Direction != Incoming && message.Direction != Outgoing) || (message.Direction == Incoming && !message.Delivered) {
-			return ErrCorrupt
-		}
-		if _, duplicate := seen[message.ID]; duplicate {
-			return ErrCorrupt
-		}
-		seen[message.ID] = message
-	}
-	pending := make(map[string]bool, len(state.Outbox))
-	for _, attempt := range state.Outbox {
-		message, exists := seen[attempt.ID]
-		if !exists || message.Direction != Outgoing || message.Delivered || pending[attempt.ID] || attempt.NextAttempt.IsZero() {
-			return ErrCorrupt
-		}
-		pending[attempt.ID] = true
-	}
-	for _, message := range state.Messages {
-		if message.Direction == Outgoing && message.Delivered == pending[message.ID] {
-			return ErrCorrupt
-		}
-	}
 	return nil
-}
-
-func clone(state snapshot) snapshot {
-	state.Messages = append([]Message(nil), state.Messages...)
-	state.Outbox = append([]Attempt(nil), state.Outbox...)
-	return state
-}
-
-func storedBytes(state snapshot) int {
-	bytes := 0
-	for _, message := range state.Messages {
-		bytes += len(message.Text)
-	}
-	return bytes
-}
-
-func findMessage(messages []Message, id string) int {
-	for index, message := range messages {
-		if message.ID == id {
-			return index
-		}
-	}
-	return -1
 }
 
 func retryCeiling(count uint32) time.Duration {

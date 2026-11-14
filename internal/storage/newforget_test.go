@@ -28,11 +28,11 @@ func prepareForgetStorage(t *testing.T, a *ApplicationState, fill byte) (Pending
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Load(); !errors.Is(err, os.ErrNotExist) {
+	if _, err := loadChatFixtureTest(store); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("expected an empty synthetic conversation")
 	}
 	payload := queuedChat(t, pin.approvedPin, "synthetic message waiting offline")
-	if err := store.Save(payload); err != nil {
+	if err := writeChatFixtureTest(store, payload); err != nil {
 		t.Fatal(err)
 	}
 	return r, pin, receipt, local, store, payload
@@ -50,11 +50,11 @@ func TestForgetCommittedContactAcceptsConsumedReceiptAndPreservesOtherSections(t
 		t.Fatal(err)
 	}
 	legacyStore, _ := a.ChatStore(legacy)
-	if _, err := legacyStore.Load(); !errors.Is(err, os.ErrNotExist) {
+	if _, err := loadChatFixtureTest(legacyStore); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("expected empty legacy section")
 	}
 	legacyPayload := queuedChat(t, legacy, "synthetic unrelated legacy history")
-	if err := legacyStore.Save(legacyPayload); err != nil {
+	if err := writeChatFixtureTest(legacyStore, legacyPayload); err != nil {
 		t.Fatal(err)
 	}
 	pending := ongoingRecord(t, a, 194)
@@ -89,11 +89,11 @@ func TestForgetCommittedContactAcceptsConsumedReceiptAndPreservesOtherSections(t
 	if err != nil || len(got) != 1 || got[0] != other || a.findContactLocked(r.Local, r.Peer) >= 0 {
 		t.Fatal("forget did not remove only the exact contact scope")
 	}
-	if store.Save(payload) == nil || approval.WithLocalApproval(func() error { return nil }) == nil || receipt.ValidateRecord(r) == nil {
+	if writeChatFixtureTest(store, payload) == nil || approval.WithLocalApproval(func() error { return nil }) == nil || receipt.ValidateRecord(r) == nil {
 		t.Fatal("removed contact retained a stale writer or receipt")
 	}
 	readOther, _ := a.ChatStore(otherPin)
-	if got, err := readOther.Load(); err != nil || !bytes.Equal(got, otherPayload) {
+	if got, err := loadChatFixtureTest(readOther); err != nil || !bytes.Equal(got, otherPayload) {
 		t.Fatal("forget changed unrelated current conversation")
 	}
 	if got := readChat(t, a, legacy); !bytes.Equal(got, legacyPayload) {
@@ -176,10 +176,10 @@ func TestForgetRequiresExactRecordAndSamePeerRepairingCannotInheritHistory(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Load(); !errors.Is(err, os.ErrNotExist) {
+	if _, err := loadChatFixtureTest(store); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("same peer's new pairing inherited forgotten history/outbox")
 	}
-	if fresh.LocalNodePrivate == r.LocalNodePrivate || fresh.PresharedKey == r.PresharedKey || oldStore.Save(oldPayload) == nil {
+	if fresh.LocalNodePrivate == r.LocalNodePrivate || fresh.PresharedKey == r.PresharedKey || writeChatFixtureTest(oldStore, oldPayload) == nil {
 		t.Fatal("same peer's new association reused removed keys or old history writer")
 	}
 }
@@ -214,7 +214,7 @@ func TestForgetDoesNotDeleteWhenStopOrSaveFails(t *testing.T) {
 			if approval.WithLocalApproval(func() error { return nil }) == nil {
 				t.Fatal("failed deletion retained usable local authority")
 			}
-			if store.Save(payload) == nil {
+			if writeChatFixtureTest(store, payload) == nil {
 				t.Fatal("failed stop/save retained a writable chat handle")
 			}
 			after, _ := os.ReadFile(filepath.Join(directory, "state.vault"))
@@ -245,7 +245,7 @@ func TestForgetUncertainWriteAfterReplacementRequiresReconciliation(t *testing.T
 	if err := a.ForgetCommittedContact(r, func() error { return nil }); err == nil {
 		t.Fatal("uncertain replacement was reported as completed deletion")
 	}
-	if store.Save(payload) == nil || approval.WithLocalApproval(func() error { return nil }) == nil {
+	if writeChatFixtureTest(store, payload) == nil || approval.WithLocalApproval(func() error { return nil }) == nil {
 		t.Fatal("uncertain delete retained usable open-state authority")
 	}
 	if err := a.Close(); err != nil {

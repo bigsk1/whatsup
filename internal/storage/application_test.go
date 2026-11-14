@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"whatsup/internal/identity"
+	"whatsup/internal/message"
 )
 
 func TestApplicationScopeFormattingNeverRevealsStateCopies(t *testing.T) {
@@ -92,11 +93,104 @@ func readChat(t *testing.T, a *ApplicationState, pin *approvedPin) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := store.Load()
+	payload, err := loadChatFixtureTest(store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return payload
+}
+
+// These fixture codecs preserve exact legacy snapshots for migration assertions
+// while exercising the new typed record API. They do not restore snapshot
+// writes to production or replace any existing record/history wholesale.
+func writeChatFixtureTest(store *ChatStore, payload []byte) error {
+	if validateChat(payload, store.local, store.peer) != nil {
+		return ErrState
+	}
+	var state storedChat
+	if decodeCanonical(payload, &state) != nil {
+		return ErrState
+	}
+	if _, err := store.PendingIDs(); err != nil {
+		return err
+	}
+	for _, old := range state.Messages {
+		item := message.Message{ID: old.ID, Direction: old.Direction, Text: old.Text, CreatedAt: old.CreatedAt, Delivered: old.Delivered}
+		if old.Direction == message.Incoming {
+			if _, err := store.Receive(item); err != nil {
+				return err
+			}
+		} else {
+			item.Delivered = false
+			if err := store.Queue(item); err != nil {
+				return err
+			}
+			if old.Delivered {
+				if err := store.Acknowledge(old.ID); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func loadChatFixtureTest(store *ChatStore) ([]byte, error) {
+	if err := store.Claim(); err != nil {
+		return nil, err
+	}
+	return encodeChatRecordsTest(store)
+}
+
+func encodeChatRecordsTest(store *ChatStore) ([]byte, error) {
+	state := storedChat{Version: 1, Local: store.local, Peer: store.peer}
+	var records []message.Message
+	var cursor uint64
+	for {
+		page, err := store.Page(cursor, 100)
+		if err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			break
+		}
+		records = append(page, records...)
+		cursor = page[0].Sequence
+	}
+	if len(records) == 0 {
+		return nil, os.ErrNotExist
+	}
+	pending, err := store.PendingIDs()
+	if err != nil {
+		return nil, err
+	}
+	ids := make(map[string]bool, len(pending))
+	for _, id := range pending {
+		ids[id] = true
+	}
+	for _, item := range records {
+		state.Messages = append(state.Messages, storedMessage{ID: item.ID, Direction: item.Direction, Text: item.Text, CreatedAt: item.CreatedAt, Delivered: item.Delivered})
+		if ids[item.ID] {
+			state.Outbox = append(state.Outbox, storedAttempt{ID: item.ID, NextAttempt: item.CreatedAt})
+		}
+	}
+	return json.Marshal(state)
+}
+
+func queuedMessageTest(id, text string) message.Message {
+	return message.Message{ID: id, Direction: message.Outgoing, Text: text, CreatedAt: time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)}
+}
+
+// A historical snapshot fixture must not inherit the new fixture application's
+// SQLite database. Only synthetic TempDir files are removed, after its close.
+func legacyVaultForTest(t *testing.T, directory string, keys *memoryKeys) *Vault {
+	t.Helper()
+	for _, name := range []string{"messages.sqlite", "messages.sqlite-wal", "messages.sqlite-shm", "messages.sqlite-journal", "messages.lock"} {
+		if err := os.Remove(filepath.Join(directory, name)); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	return openTest(t, directory, keys)
 }
 
 func TestApplicationScopesCannotOverwriteIdentityOrAnotherContact(t *testing.T) {
@@ -118,11 +212,11 @@ func TestApplicationScopesCannotOverwriteIdentityOrAnotherContact(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Load(); !os.IsNotExist(err) {
+	if _, err := loadChatFixtureTest(store); !os.IsNotExist(err) {
 		t.Fatal("new contact obtained existing history")
 	}
 	payload := queuedChat(t, pin, "synthetic scoped content")
-	if err := store.Save(payload); err != nil {
+	if err := writeChatFixtureTest(store, payload); err != nil {
 		t.Fatal(err)
 	}
 	clear(payload)
@@ -135,12 +229,16 @@ func TestApplicationScopesCannotOverwriteIdentityOrAnotherContact(t *testing.T) 
 	if !bytes.Contains(loaded, []byte("synthetic scoped content")) {
 		t.Fatal("caller mutated retained state")
 	}
-	if err := store.Save([]byte(`{"version":1,"identitySeed":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}`)); !errors.Is(err, ErrState) {
-		t.Fatal("chat accepted identity schema")
-	}
 	other := pinFor(t, a, 13)
-	if err := store.Save(emptyChat(t, other)); !errors.Is(err, ErrState) {
-		t.Fatal("chat accepted another peer pin")
+	if err := a.PinApprovedContact(other); err != nil {
+		t.Fatal(err)
+	}
+	otherStore, err := a.ChatStore(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := otherStore.Get("AAAAAAAAAAAAAAAAAAAAAA"); !errors.Is(err, message.ErrNotFound) {
+		t.Fatal("another approved contact obtained this contact's record")
 	}
 	if err := v.Save([]byte(`{}`)); !errors.Is(err, ErrScope) {
 		t.Fatal("raw writer bypassed envelope")
@@ -151,7 +249,7 @@ func TestApplicationScopesCannotOverwriteIdentityOrAnotherContact(t *testing.T) 
 	if err := a.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Load(); !errors.Is(err, ErrLocked) {
+	if _, err := loadChatFixtureTest(store); !errors.Is(err, ErrLocked) {
 		t.Fatal("closed scope readable")
 	}
 	_, a = openApplicationTest(t, dir, keys)
@@ -163,7 +261,7 @@ func TestApplicationScopesCannotOverwriteIdentityOrAnotherContact(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	loaded, _ = store.Load()
+	loaded, _ = loadChatFixtureTest(store)
 	if !bytes.Contains(loaded, []byte("synthetic scoped content")) {
 		t.Fatal("chat did not survive reopen")
 	}
@@ -245,8 +343,8 @@ func TestApplicationFailedCommitPoisonsAllScopesUntilReopen(t *testing.T) {
 				t.Fatal(err)
 			}
 			store, _ := a.ChatStore(pin)
-			before := emptyChat(t, pin)
-			if err := store.Save(before); err != nil {
+			before := queuedChat(t, pin, "synthetic durable queue before root failure")
+			if err := writeChatFixtureTest(store, before); err != nil {
 				t.Fatal(err)
 			}
 			a.save = func(payload []byte) error {
@@ -257,20 +355,19 @@ func TestApplicationFailedCommitPoisonsAllScopesUntilReopen(t *testing.T) {
 				}
 				return errors.New("synthetic uncertain commit")
 			}
-			after := queuedChat(t, pin, "synthetic uncertain content")
-			if err := store.Save(after); !errors.Is(err, ErrStateFailed) {
-				t.Fatal("save failure hidden")
+			if _, err := a.SetProfile("synthetic uncertain root metadata", false); !errors.Is(err, ErrStateFailed) {
+				t.Fatal("root save failure hidden")
 			}
-			if !bytes.Equal(a.state.Contacts[0].Chat, before) {
-				t.Fatal("failed save published speculative memory")
+			if a.state.Profile.DisplayName != "" {
+				t.Fatal("failed root save published speculative memory")
 			}
 			if _, err := a.Identity(); !errors.Is(err, ErrStateFailed) {
 				t.Fatal("failed envelope still usable")
 			}
-			if err := store.Save(before); !errors.Is(err, ErrStateFailed) {
+			if err := writeChatFixtureTest(store, before); !errors.Is(err, ErrStateFailed) {
 				t.Fatal("scope wrote after uncertain commit")
 			}
-			if _, err := store.Load(); !errors.Is(err, ErrStateFailed) {
+			if _, err := loadChatFixtureTest(store); !errors.Is(err, ErrStateFailed) {
 				t.Fatal("scope read after uncertain commit")
 			}
 			if _, err := OpenApplication(v); !errors.Is(err, ErrStateFailed) {
@@ -279,13 +376,16 @@ func TestApplicationFailedCommitPoisonsAllScopesUntilReopen(t *testing.T) {
 			_ = a.Close()
 			_, a = openApplicationTest(t, dir, keys)
 			store, _ = a.ChatStore(pin)
-			got, _ := store.Load()
-			expected := before
-			if writeFirst {
-				expected = after
+			got, _ := loadChatFixtureTest(store)
+			if !bytes.Equal(got, before) {
+				t.Fatal("root failure changed the independent committed message records")
 			}
-			if !bytes.Equal(got, expected) {
-				t.Fatal("reopen did not reconcile durable state")
+			expectedName := ""
+			if writeFirst {
+				expectedName = "synthetic uncertain root metadata"
+			}
+			if a.state.Profile.DisplayName != expectedName {
+				t.Fatal("reopen did not reconcile the uncertain root replacement")
 			}
 		})
 	}
@@ -312,9 +412,9 @@ func TestApplicationConcurrentScopesPreserveEverySection(t *testing.T) {
 				errorsFound <- err
 				return
 			}
-			payload, _ := json.Marshal(storedChat{Version: 1, Local: pin.local, Peer: pin.peer})
-			for range 4 {
-				if err := store.Save(payload); err != nil {
+			for index := range 4 {
+				id := fmt.Sprintf("%021dA", index)
+				if err := store.Queue(queuedMessageTest(id, fmt.Sprintf("synthetic transaction %d", index))); err != nil {
 					errorsFound <- err
 					return
 				}
@@ -333,8 +433,8 @@ func TestApplicationConcurrentScopesPreserveEverySection(t *testing.T) {
 		if err != nil {
 			t.Fatal("concurrent pin lost")
 		}
-		if got, err := store.Load(); err != nil || !bytes.Equal(got, emptyChat(t, pin)) {
-			t.Fatal("concurrent section lost")
+		if got, err := store.Page(0, 100); err != nil || len(got) != 4 {
+			t.Fatal("concurrent contact transactions lost a record")
 		}
 	}
 }
@@ -359,21 +459,17 @@ func TestApplicationRejectsUnapprovedWrongLocalAndOversizedSections(t *testing.T
 		t.Fatal(err)
 	}
 	store, _ := a.ChatStore(pin)
-	if err := store.Save(make([]byte, maxChatBytes+1)); !errors.Is(err, ErrState) {
-		t.Fatal("oversized chat accepted")
-	}
-	unknown := emptyChat(t, pin)
-	unknown = append(unknown[:len(unknown)-1], []byte(`,"unknown":true}`)...)
-	if err := store.Save(unknown); !errors.Is(err, ErrState) {
-		t.Fatal("unknown chat schema accepted")
-	}
 	pin.revoked = true
 	if _, err := a.ChatStore(pin); !errors.Is(err, ErrContact) {
 		t.Fatal("revoked pin reopened history")
 	}
+	invalid := queuedMessageTest("AAAAAAAAAAAAAAAAAAAAAA", string(make([]byte, 16*1024+1)))
+	if err := store.Queue(invalid); !errors.Is(err, message.ErrCorrupt) {
+		t.Fatal("oversized message record accepted")
+	}
 }
 
-func TestApplicationRejectsStaleScopedWriterWithoutLosingNewChat(t *testing.T) {
+func TestApplicationScopedTransactionsPreserveOtherHandlesAndClaimOnce(t *testing.T) {
 	_, a := openApplicationTest(t, privateDirectory(t), &memoryKeys{})
 	pin := pinFor(t, a, 21)
 	if err := a.PinApprovedContact(pin); err != nil {
@@ -381,26 +477,24 @@ func TestApplicationRejectsStaleScopedWriterWithoutLosingNewChat(t *testing.T) {
 	}
 	first, _ := a.ChatStore(pin)
 	stale, _ := a.ChatStore(pin)
-	if _, err := stale.Load(); !os.IsNotExist(err) {
+	if _, err := loadChatFixtureTest(stale); !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
-	newer := queuedChat(t, pin, "synthetic newer content")
-	if err := first.Save(newer); err != nil {
+	newer := queuedMessageTest("AAAAAAAAAAAAAAAAAAAAAA", "synthetic first transaction")
+	if err := first.Queue(newer); err != nil {
 		t.Fatal(err)
 	}
-	if err := stale.Save(emptyChat(t, pin)); !errors.Is(err, ErrStateConflict) {
-		t.Fatal("stale writer erased newer chat")
+	second := queuedMessageTest("AQEBAQEBAQEBAQEBAQEBAQ", "synthetic second transaction")
+	if err := stale.Queue(second); err != nil {
+		t.Fatal("independent record writer could not serialize after the first")
 	}
-	if _, err := stale.Load(); !errors.Is(err, ErrScopeUsed) {
+	if _, err := loadChatFixtureTest(stale); !errors.Is(err, ErrScopeUsed) {
 		t.Fatal("same store checked out twice")
 	}
 	fresh, _ := a.ChatStore(pin)
-	got, err := fresh.Load()
-	if err != nil || !bytes.Equal(got, newer) {
-		t.Fatal("conflict changed durable chat")
-	}
-	if err := fresh.Save(got); err != nil {
-		t.Fatal("freshly loaded writer could not reconcile")
+	got, err := fresh.Page(0, 100)
+	if err != nil || len(got) != 2 || got[0].Text != newer.Text || got[1].Text != second.Text {
+		t.Fatal("transactional writers lost another handle's record")
 	}
 	if _, err := a.Identity(); err != nil {
 		t.Fatal("known conflict poisoned unaffected identity")

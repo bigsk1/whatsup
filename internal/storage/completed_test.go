@@ -152,7 +152,7 @@ func TestNewActivationCannotInheritLegacyHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := queuedChat(t, pin, "synthetic history belonging to prior approval")
-	if err := chat.Save(payload); err != nil {
+	if err := writeChatFixtureTest(chat, payload); err != nil {
 		t.Fatal(err)
 	}
 	if err := app.SavePendingContact(record); err != nil {
@@ -215,7 +215,7 @@ func TestSchemaThreeMigrationPreservesSeedKeyPinsChatAndPending(t *testing.T) {
 	}
 	chat, _ := app.ChatStore(pin)
 	payload := queuedChat(t, pin, "synthetic schema three history")
-	if err := chat.Save(payload); err != nil {
+	if err := writeChatFixtureTest(chat, payload); err != nil {
 		t.Fatal(err)
 	}
 	record := pendingFor(t, app, 159)
@@ -223,6 +223,11 @@ func TestSchemaThreeMigrationPreservesSeedKeyPinsChatAndPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	old := legacySnapshotForTest(app.state)
+	for index := range old.Contacts {
+		if old.Contacts[index].Peer.Equal(pin.peer) {
+			old.Contacts[index].Chat = bytes.Clone(payload)
+		}
+	}
 	legacy, err := json.Marshal(applicationEnvelopeV3{Version: 3, Identity: old.Identity, Contacts: old.Contacts, PendingContacts: old.PendingContacts})
 	if err != nil {
 		t.Fatal(err)
@@ -230,7 +235,7 @@ func TestSchemaThreeMigrationPreservesSeedKeyPinsChatAndPending(t *testing.T) {
 	if err := app.Close(); err != nil {
 		t.Fatal(err)
 	}
-	vault := openTest(t, directory, keys)
+	vault := legacyVaultForTest(t, directory, keys)
 	if err := vault.Save(legacy); err != nil {
 		t.Fatal(err)
 	}

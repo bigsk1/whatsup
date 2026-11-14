@@ -3,6 +3,7 @@ package identity
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -32,9 +33,26 @@ func TestIdentityRestorationAndSignatures(t *testing.T) {
 	if other.PublicKey().Verify(message, signature) {
 		t.Fatal("substituted identity accepted")
 	}
-	encoded, _ := json.Marshal(first)
-	if string(encoded) != "{}" || bytes.Contains(encoded, seed[:]) {
-		t.Fatal("private identity material serialized")
+	encoded, err := json.Marshal(first)
+	if err == nil || len(encoded) != 0 {
+		t.Fatal("private identity was serializable")
+	}
+}
+
+func TestIdentityPointerAndValueFormattingCannotExposeSyntheticSeed(t *testing.T) {
+	i, err := FromSeed(bytes.Repeat([]byte{123}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []any{i, *i, Identity{}, &Identity{}} {
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
+			if got := fmt.Sprintf(verb, value); got != "[private WhatsUp identity]" {
+				t.Fatal("identity formatting exposed a private seed")
+			}
+		}
+		if encoded, err := json.Marshal(value); err == nil || len(encoded) != 0 {
+			t.Fatal("identity value or pointer was serializable")
+		}
 	}
 }
 

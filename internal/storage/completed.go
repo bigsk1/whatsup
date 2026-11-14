@@ -236,6 +236,9 @@ func (r *CommitReceipt) CancelAfterRevocation(revoke func()) error {
 		if err := a.commitLocked(next); err != nil {
 			return err
 		}
+		if err := a.finishMessageDeletesLocked(); err != nil {
+			return err
+		}
 		delete(a.commitReceipts, record.ID)
 		delete(a.localReceipts, record.ID)
 		return nil
@@ -269,6 +272,9 @@ func (a *ApplicationState) RemoveCommittedContact(id string) error {
 		next.CommittedContacts = next.CommittedContacts[:len(next.CommittedContacts)-1]
 		a.removeConversationLocked(&next, id)
 		if err := a.commitLocked(next); err != nil {
+			return err
+		}
+		if err := a.finishMessageDeletesLocked(); err != nil {
 			return err
 		}
 		delete(a.commitReceipts, id)

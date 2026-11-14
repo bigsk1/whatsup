@@ -49,39 +49,44 @@ type Factories struct {
 	Dial    func(context.Context, storage.PendingRecord, *transport.RelayProfile) (net.Conn, error)
 }
 
-type Manager struct {
-	mu           sync.Mutex
-	local        *identity.Identity
-	application  *storage.ApplicationState
-	record       storage.PendingRecord
-	contact      *pairing.Contact
-	conversation *chat.Conversation
-	state        string
-	revision     uint64
-	closed       bool
-	running      bool
-	ctx          context.Context
-	cancel       context.CancelFunc
-	raw          net.Conn
-	listener     Listener
-	wake         chan struct{}
-	workers      sync.WaitGroup
-	factories    Factories
+// Manager copies share the private state and lifecycle. Keeping its mutex
+// behind this pointer also makes value-format redaction safe without copylocks.
+type Manager struct{ *managerState }
+
+type managerState struct {
+	mu            sync.Mutex
+	local         *identity.Identity
+	application   *storage.ApplicationState
+	record        storage.PendingRecord
+	contact       *pairing.Contact
+	conversation  *chat.Conversation
+	state         string
+	revision      uint64
+	closed        bool
+	running       bool
+	ctx           context.Context
+	cancel        context.CancelFunc
+	raw           net.Conn
+	sessionActive bool
+	listener      Listener
+	wake          chan struct{}
+	workers       sync.WaitGroup
+	factories     Factories
 	// Used only by the network worker. A successful authentication resets the
 	// transport retry schedule; approved relay maps are reused only while valid.
 	authenticated uint64
 }
 
-func (*Manager) String() string               { return "[private WhatsUp messaging coordinator]" }
-func (*Manager) GoString() string             { return "[private WhatsUp messaging coordinator]" }
-func (*Manager) MarshalJSON() ([]byte, error) { return nil, ErrUnavailable }
+func (Manager) String() string               { return "[private WhatsUp messaging coordinator]" }
+func (Manager) GoString() string             { return "[private WhatsUp messaging coordinator]" }
+func (Manager) MarshalJSON() ([]byte, error) { return nil, ErrUnavailable }
 
 func New(local *identity.Identity, app *storage.ApplicationState, factories ...Factories) (*Manager, error) {
 	if local == nil || app == nil || len(factories) > 1 {
 		return nil, ErrUnavailable
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &Manager{local: local, application: app, state: "none", revision: 1, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1)}
+	m := &Manager{managerState: &managerState{local: local, application: app, state: "none", revision: 1, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1)}}
 	m.factories = Factories{
 		Profile: transport.FetchRelayProfile,
 		Listen: func(ctx context.Context, record storage.PendingRecord, profile *transport.RelayProfile) (Listener, error) {
@@ -197,8 +202,20 @@ func (m *Manager) snapshotLocked() Snapshot {
 		result.CanConnect = !m.running && m.ctx.Err() == nil && m.state != "failed" && m.state != "identity-changed"
 		result.CanSend = m.conversation != nil && m.state != "failed" && !capacityFailure(m.state)
 		if m.conversation != nil && m.state != "failed" {
-			result.Messages = append(result.Messages, m.conversation.Messages()...)
-			if !m.conversation.HasCapacity() {
+			messages, pageErr := m.conversation.Page(0, chat.MaxPageMessages)
+			usage, usageErr := m.conversation.Usage()
+			if pageErr != nil || usageErr != nil {
+				m.state = "failed"
+				m.revision++
+				m.cancel()
+				result.State = "failed"
+				result.Revision = m.revision
+				result.CanSend = false
+				result.CanConnect = false
+				return result
+			}
+			result.Messages = append(result.Messages, messages...)
+			if usage.Full {
 				result.CanSend = false
 				if m.state != "identity-changed" && m.state != "peer-capacity-reached" && m.state != "update-required" {
 					result.State = "capacity-reached"
@@ -210,7 +227,7 @@ func (m *Manager) snapshotLocked() Snapshot {
 }
 
 func (m *Manager) Snapshot() Snapshot {
-	if m == nil {
+	if m == nil || m.managerState == nil {
 		return Snapshot{State: "unavailable", Messages: []chat.Message{}}
 	}
 	m.mu.Lock()
@@ -220,6 +237,9 @@ func (m *Manager) Snapshot() Snapshot {
 }
 
 func (m *Manager) Connect(id string) (Snapshot, error) {
+	if m == nil || m.managerState == nil {
+		return m.Snapshot(), ErrUnavailable
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.refreshLocked() != nil || id == "" || m.record.ID != id || m.ctx.Err() != nil || m.state == "failed" || m.state == "identity-changed" {
@@ -235,12 +255,19 @@ func (m *Manager) Connect(id string) (Snapshot, error) {
 }
 
 func (m *Manager) Send(id, text string) (Snapshot, error) {
+	if m == nil || m.managerState == nil {
+		return m.Snapshot(), ErrUnavailable
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.refreshLocked() != nil || m.record.ID != id || m.conversation == nil || m.state == "failed" || capacityFailure(m.state) {
 		return m.snapshotLocked(), ErrUnavailable
 	}
 	if _, err := m.conversation.Queue(text); err != nil {
+		if errors.Is(err, chat.ErrCapacity) {
+			m.state = "capacity-reached"
+			m.revision++
+		}
 		if terminalPersistence(err) {
 			m.state = "failed"
 			m.revision++
@@ -268,7 +295,7 @@ func (m *Manager) changed(state string) {
 // MetadataChanged publishes a completed local metadata save and wakes only an
 // already running session. It never starts a relay fetch, listener or dial.
 func (m *Manager) MetadataChanged() {
-	if m == nil {
+	if m == nil || m.managerState == nil {
 		return
 	}
 	m.mu.Lock()
@@ -374,7 +401,6 @@ func (m *Manager) run() {
 				state = "peer-capacity-reached"
 			}
 			m.changed(state)
-			m.cancel()
 			return
 		}
 		if m.authenticated != previousAuthentication {
@@ -438,7 +464,7 @@ func (m *Manager) session(raw net.Conn) error {
 	}
 	m.raw = raw
 	m.mu.Unlock()
-	defer func() { _ = raw.Close(); m.mu.Lock(); m.raw = nil; m.mu.Unlock() }()
+	defer func() { _ = raw.Close(); m.mu.Lock(); m.raw = nil; m.sessionActive = false; m.mu.Unlock() }()
 	binding, err := storage.ContactBinding(m.record)
 	if err != nil {
 		return ErrUnavailable
@@ -477,6 +503,7 @@ func (m *Manager) session(raw net.Conn) error {
 	}
 	m.authenticated++
 	m.state = "connected"
+	m.sessionActive = true
 	m.revision++
 	m.mu.Unlock()
 	return m.exchange(ctx, session, conversation)
@@ -485,7 +512,7 @@ func (m *Manager) session(raw net.Conn) error {
 // Close joins all network/persistence work before the service closes the vault.
 // The same approved record remains durable for normal future reconnects.
 func (m *Manager) Close() {
-	if m == nil {
+	if m == nil || m.managerState == nil {
 		return
 	}
 	m.mu.Lock()

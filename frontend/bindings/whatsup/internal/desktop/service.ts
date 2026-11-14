@@ -29,6 +29,10 @@ export function CancelInvitation(): $CancellablePromise<pairflow$0.Snapshot> {
     return $Call.ByID(3037999004);
 }
 
+export function ClearHistory(contactID: string): $CancellablePromise<messaging$0.Snapshot> {
+    return $Call.ByID(2511817842, contactID);
+}
+
 /**
  * ConnectContact starts automatic authentication/retry for an already approved
  * identity. It never creates an invitation or requests fingerprint approval.
@@ -39,6 +43,10 @@ export function ConnectContact(contactID: string): $CancellablePromise<messaging
 
 export function CreateInvitation(relayMapURL: string, allowRelayFallback: boolean): $CancellablePromise<$models.InvitationShare> {
     return $Call.ByID(3777505958, relayMapURL, allowRelayFallback);
+}
+
+export function DeleteMessage(contactID: string, messageID: string): $CancellablePromise<messaging$0.Snapshot> {
+    return $Call.ByID(122046625, contactID, messageID);
 }
 
 export function DenyPairing(requestID: string): $CancellablePromise<pairflow$0.Snapshot> {

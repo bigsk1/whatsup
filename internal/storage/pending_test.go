@@ -100,7 +100,7 @@ func TestPendingContactEncryptedReopenAndScopeIsolation(t *testing.T) {
 	}
 	chat, _ := app.ChatStore(pin)
 	payload := queuedChat(t, pin, "synthetic existing history")
-	if err := chat.Save(payload); err != nil {
+	if err := writeChatFixtureTest(chat, payload); err != nil {
 		t.Fatal(err)
 	}
 	record := pendingFor(t, app, 103)
@@ -213,11 +213,11 @@ func TestPendingContactConflictCapacityAndConcurrentChatPreservation(t *testing.
 	}
 	first, _ := app.ChatStore(pin)
 	stale, _ := app.ChatStore(pin)
-	_, _ = stale.Load()
+	_, _ = loadChatFixtureTest(stale)
 	newer := queuedChat(t, pin, "synthetic concurrent queue")
 	var group sync.WaitGroup
 	errorsFound := make(chan error, MaxPendingContacts)
-	group.Go(func() { errorsFound <- first.Save(newer) })
+	group.Go(func() { errorsFound <- writeChatFixtureTest(first, newer) })
 	for index := 1; index < MaxPendingContacts; index++ {
 		next := pendingFor(t, app, byte(110+index))
 		group.Go(func() { errorsFound <- app.SavePendingContact(next) })
@@ -235,8 +235,8 @@ func TestPendingContactConflictCapacityAndConcurrentChatPreservation(t *testing.
 	if err := app.RemovePendingContact(record.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := stale.Save(emptyChat(t, pin)); !errors.Is(err, ErrStateConflict) {
-		t.Fatal("pending writes/removal reset the stale-chat guard")
+	if item, err := stale.Get("AAAAAAAAAAAAAAAAAAAAAA"); err != nil || item.Text != "synthetic concurrent queue" {
+		t.Fatal("pending writes/removal hid a serialized record from another handle")
 	}
 	if !bytes.Equal(readChat(t, app, pin), newer) {
 		t.Fatal("pending writes or stale chat replaced newer content")

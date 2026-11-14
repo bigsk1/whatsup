@@ -79,7 +79,7 @@ func TestDesktopForgetPreservesIdentityAndEnablesFreshPairingWithoutRestart(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Load(); err != nil {
+	if _, err := store.Page(0, 100); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := s.ForgetContact(r.ID); err != nil || got.State != "none" || got.ContactID != "" || len(got.Messages) != 0 || got.CanConnect || got.CanSend {
@@ -98,7 +98,7 @@ func TestDesktopForgetPreservesIdentityAndEnablesFreshPairingWithoutRestart(t *t
 	if _, err := oldMessages.Send(r.ID, "synthetic stale message"); err == nil || approval.WithLocalApproval(func() error { return nil }) == nil {
 		t.Fatal("forget retained a stale runtime or receipt")
 	}
-	if _, err := store.Load(); err == nil {
+	if _, err := store.Page(0, 100); err == nil {
 		t.Fatal("forget retained an old conversation handle")
 	}
 	if oldPairing.Snapshot().State != "unavailable" {

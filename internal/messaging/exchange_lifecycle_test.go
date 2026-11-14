@@ -14,6 +14,7 @@ import (
 	"github.com/tailscale/tailcat"
 	"whatsup/internal/chat"
 	"whatsup/internal/identity"
+	"whatsup/internal/message"
 	"whatsup/internal/pairing"
 	"whatsup/internal/sessionauth"
 	"whatsup/internal/storage"
@@ -50,7 +51,7 @@ func (c *readDeadlineFault) SetReadDeadline(limit time.Time) error {
 	return c.Conn.SetReadDeadline(limit)
 }
 
-func exchangeFixture(t *testing.T) (*Manager, *sessionauth.Session, *sessionauth.Session, *chat.Conversation, *readDeadlineFault) {
+func exchangeFixture(t *testing.T, repositories ...message.Repository) (*Manager, *sessionauth.Session, *sessionauth.Session, *chat.Conversation, *readDeadlineFault) {
 	t.Helper()
 	local, _ := identity.Generate()
 	peer, _ := identity.Generate()
@@ -92,7 +93,14 @@ func exchangeFixture(t *testing.T) (*Manager, *sessionauth.Session, *sessionauth
 		t.Fatal(err)
 	}
 	t.Cleanup(contact.Revoke)
-	store := &initiallyEmptyStore{&blockedStore{}}
+	var store message.Repository
+	if len(repositories) == 0 {
+		store = newMessageRepository(t)
+	} else if len(repositories) == 1 {
+		store = repositories[0]
+	} else {
+		t.Fatal("one repository per test conversation is required")
+	}
 	conversation, err := chat.Open(store, contact, chat.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +114,7 @@ func exchangeFixture(t *testing.T) (*Manager, *sessionauth.Session, *sessionauth
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = app.Close() })
-	m := &Manager{application: app, record: storage.PendingRecord{Peer: peer.PublicKey()}, state: "connected", wake: make(chan struct{}, 1)}
+	m := &Manager{managerState: &managerState{application: app, record: storage.PendingRecord{Peer: peer.PublicKey()}, state: "connected", wake: make(chan struct{}, 1)}}
 	return m, server.session, client, conversation, fault
 }
 

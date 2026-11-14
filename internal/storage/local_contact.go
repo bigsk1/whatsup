@@ -85,7 +85,7 @@ func (a *ApplicationState) ApproveCommittedConversation(record PendingRecord, co
 			return ErrCapacity
 		}
 		next := a.cloneLocked()
-		next.Contacts = append(next.Contacts, contactSection{Version: 2, Local: record.Local, Peer: record.Peer, ContactID: record.ID})
+		next.Contacts = append(next.Contacts, contactSection{Version: 2, Local: record.Local, Peer: record.Peer, ContactID: record.ID, StoreID: record.ID})
 		return a.commitLocked(next)
 	})
 }
@@ -196,6 +196,7 @@ func (r *LocalContactReceipt) WithLocalApproval(operation func() error) error {
 func (a *ApplicationState) removeConversationLocked(next *applicationEnvelope, id string) {
 	for index, contact := range next.Contacts {
 		if contact.Version == 2 && contact.ContactID == id {
+			next.DeleteScopes = append(next.DeleteScopes, contact.StoreID)
 			copy(next.Contacts[index:], next.Contacts[index+1:])
 			clear(next.Contacts[len(next.Contacts)-1:])
 			next.Contacts = next.Contacts[:len(next.Contacts)-1]

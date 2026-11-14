@@ -2,9 +2,9 @@ package messaging
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"errors"
-	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -16,6 +16,8 @@ import (
 	"tailscale.com/types/key"
 	"whatsup/internal/chat"
 	"whatsup/internal/identity"
+	"whatsup/internal/message"
+	"whatsup/internal/messagestore"
 	"whatsup/internal/pairing"
 	"whatsup/internal/storage"
 	"whatsup/internal/transport"
@@ -32,21 +34,62 @@ func (k *lifecycleKeys) Get() (string, error) {
 func (k *lifecycleKeys) Set(value string) error { k.value = value; return nil }
 
 type blockedStore struct {
-	data             []byte
+	message.Repository
 	armed            bool
+	full             bool
 	entered, release chan struct{}
 	once             sync.Once
 }
 
-func (s *blockedStore) Load() ([]byte, error) { return s.data, nil }
-func (s *blockedStore) Save(data []byte) error {
+func (s *blockedStore) Queue(item message.Message) error {
 	if s.armed {
 		s.once.Do(func() { close(s.entered) })
 		<-s.release
 		return errors.New("synthetic uncertain save")
 	}
-	s.data = append([]byte(nil), data...)
-	return nil
+	if s.full {
+		return message.ErrCapacity
+	}
+	return s.Repository.Queue(item)
+}
+
+func (s *blockedStore) Receive(item message.Message) (bool, error) {
+	if s.full {
+		if _, err := s.Repository.Get(item.ID); err != nil {
+			if errors.Is(err, message.ErrNotFound) {
+				return false, message.ErrCapacity
+			}
+			return false, err
+		}
+	}
+	return s.Repository.Receive(item)
+}
+
+func (s *blockedStore) Usage() (message.Usage, error) {
+	usage, err := s.Repository.Usage()
+	if err == nil && s.full {
+		usage.Full = true
+	}
+	return usage, err
+}
+
+func newMessageRepository(t *testing.T) *blockedStore {
+	t.Helper()
+	var root [32]byte
+	if _, err := rand.Read(root[:]); err != nil {
+		t.Fatal(err)
+	}
+	db, err := messagestore.Open(filepath.Join(t.TempDir(), "messages"), root[:], messagestore.Options{})
+	clear(root[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	scope, err := db.Scope("AQEBAQEBAQEBAQEBAQEBAQ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &blockedStore{Repository: scope, entered: make(chan struct{}), release: make(chan struct{})}
 }
 
 func newBlockedManager(t *testing.T) (*Manager, *blockedStore, *atomic.Int32) {
@@ -97,10 +140,8 @@ func newBlockedManager(t *testing.T) (*Manager, *blockedStore, *atomic.Int32) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := &blockedStore{entered: make(chan struct{}), release: make(chan struct{})}
-	// chat.Open needs an absent snapshot rather than invalid zero-length data.
-	store.data = nil
-	conversation, err := chat.Open(&initiallyEmptyStore{store}, contact, chat.Options{})
+	store := newMessageRepository(t)
+	conversation, err := chat.Open(store, contact, chat.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,15 +159,6 @@ func newBlockedManager(t *testing.T) (*Manager, *blockedStore, *atomic.Int32) {
 		_ = app.Close()
 	})
 	return m, store, calls
-}
-
-type initiallyEmptyStore struct{ *blockedStore }
-
-func (s *initiallyEmptyStore) Load() ([]byte, error) {
-	if s.data == nil {
-		return nil, os.ErrNotExist
-	}
-	return s.blockedStore.Load()
 }
 
 func TestTerminalPersistenceClassificationDoesNotTreatProtocolFailuresAsStorageFailure(t *testing.T) {

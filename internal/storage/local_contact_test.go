@@ -162,7 +162,7 @@ func TestLocalConversationRequiresDurableContactPinAndRestoresOffline(t *testing
 		t.Fatal(err)
 	}
 	payload := queuedChat(t, pin.approvedPin, "synthetic offline durable queue")
-	if err := store.Save(payload); err != nil {
+	if err := writeChatFixtureTest(store, payload); err != nil {
 		t.Fatal(err)
 	}
 	receipt, err := a.LocalConversation(r)
@@ -195,7 +195,7 @@ func TestLocalConversationRequiresDurableContactPinAndRestoresOffline(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.Load()
+	got, err := loadChatFixtureTest(store)
 	if err != nil || !bytes.Equal(got, payload) {
 		t.Fatal("offline reopen lost durable queue")
 	}
@@ -208,7 +208,7 @@ func TestLocalConversationRequiresDurableContactPinAndRestoresOffline(t *testing
 	if restored.WithLocalApproval(func() error { return nil }) == nil {
 		t.Fatal("removed contact retained stale local approval")
 	}
-	if _, err := store.Load(); err == nil {
+	if _, err := loadChatFixtureTest(store); err == nil {
 		t.Fatal("removed contact retained chat handle")
 	}
 }
@@ -254,7 +254,7 @@ func TestSchemaFourMigrationPreservesLegacyCredentialsWithoutInventingPolicy(t *
 	if err := a.Close(); err != nil {
 		t.Fatal(err)
 	}
-	vault := openTest(t, directory, keys)
+	vault := legacyVaultForTest(t, directory, keys)
 	if err := vault.Save(encoded); err != nil {
 		t.Fatal(err)
 	}

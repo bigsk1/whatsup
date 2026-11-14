@@ -2,7 +2,9 @@ package storage
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -174,5 +176,53 @@ func TestBoundsLocksAndUnsafeFiles(t *testing.T) {
 		if _, err := Open(dir, keys); !errors.Is(err, ErrUnsafePath) {
 			t.Fatal("accepted symlink")
 		}
+	}
+}
+
+func TestVaultFormattingAndJSONCannotExposeSyntheticKeyMaterial(t *testing.T) {
+	v := &Vault{vaultState: &vaultState{key: []byte("synthetic OS wrapping material"), master: []byte("synthetic unwrapped master material")}}
+	for _, value := range []any{v, *v, Vault{}, &Vault{}} {
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
+			if got := fmt.Sprintf(verb, value); got != "[locked backend-only WhatsUp vault]" {
+				t.Fatal("vault value or pointer formatting exposed its state")
+			}
+		}
+		if data, err := json.Marshal(value); err == nil || len(data) != 0 {
+			t.Fatal("vault value or pointer was serializable")
+		}
+	}
+}
+
+func TestZeroVaultsFailClosedAndCopiesShareRevocation(t *testing.T) {
+	for _, v := range []*Vault{nil, {}} {
+		if _, err := OpenApplication(v); !errors.Is(err, ErrLocked) {
+			t.Fatal("zero vault constructed application authority")
+		}
+		if _, err := v.Load(); !errors.Is(err, ErrLocked) {
+			t.Fatal("zero vault returned readable state")
+		}
+		if err := v.Save([]byte("synthetic forbidden state")); !errors.Is(err, ErrLocked) {
+			t.Fatal("zero vault saved data")
+		}
+		if _, err := v.deriveKeyLocked("messages/v1"); !errors.Is(err, ErrLocked) {
+			t.Fatal("zero vault derived a key")
+		}
+		if err := v.Close(); err != nil {
+			t.Fatal("closing an empty capability was not idempotent")
+		}
+	}
+	v := openTest(t, privateDirectory(t), &memoryKeys{})
+	if err := v.Save([]byte("synthetic shared capability")); err != nil {
+		t.Fatal(err)
+	}
+	copy := *v
+	if err := copy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.Load(); !errors.Is(err, ErrLocked) {
+		t.Fatal("closing a copied vault left its original capability active")
+	}
+	if err := v.Save(nil); !errors.Is(err, ErrLocked) {
+		t.Fatal("copied vault closure allowed its original to write")
 	}
 }

@@ -262,7 +262,7 @@ func TestApplicationScopedChatReceiveAcknowledgementAndRestart(t *testing.T) {
 	}
 }
 
-func TestApplicationScopedChatRejectsSharedAndStaleConversationStores(t *testing.T) {
+func TestApplicationScopedChatRejectsSharedHandleAndSerializesRecordStores(t *testing.T) {
 	dir, keys := filepath.Join(t.TempDir(), "private"), &processKeys{}
 	vault, err := storage.Open(dir, keys)
 	if err != nil {
@@ -295,12 +295,12 @@ func TestApplicationScopedChatRejectsSharedAndStaleConversationStores(t *testing
 	if _, err := a.Queue("synthetic newer queue item"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stale.Queue("synthetic stale queue item"); !errors.Is(err, storage.ErrStateConflict) {
-		t.Fatal("stale conversation overwrote queue")
+	if _, err := stale.Queue("synthetic concurrent queue item"); err != nil {
+		t.Fatal("independent per-record transaction was rejected")
 	}
 	freshStore, _ := app.ChatStore(contact)
 	fresh, err := chat.Open(freshStore, contact, chat.Options{})
-	if err != nil || len(fresh.Messages()) != 1 || fresh.Messages()[0].Text != "synthetic newer queue item" || len(fresh.Outbox()) != 1 {
+	if err != nil || len(fresh.Messages()) != 2 || fresh.Messages()[0].Text != "synthetic newer queue item" || fresh.Messages()[1].Text != "synthetic concurrent queue item" || len(fresh.Outbox()) != 2 {
 		t.Fatal("conversation conflict lost newest durable content")
 	}
 }

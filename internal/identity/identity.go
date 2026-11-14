@@ -15,6 +15,8 @@ import (
 
 var ErrInvalidKey = errors.New("invalid identity key")
 
+var errPrivateSerialization = errors.New("private identity cannot be serialized")
+
 // PublicKey is the public half of a device identity, never a display name.
 type PublicKey [ed25519.PublicKeySize]byte
 
@@ -23,8 +25,9 @@ type Identity struct {
 	seed [ed25519.SeedSize]byte
 }
 
-func (i *Identity) String() string   { return "[private WhatsUp identity]" }
-func (i *Identity) GoString() string { return i.String() }
+func (Identity) String() string               { return "[private WhatsUp identity]" }
+func (i Identity) GoString() string           { return i.String() }
+func (Identity) MarshalJSON() ([]byte, error) { return nil, errPrivateSerialization }
 
 func Generate() (*Identity, error) {
 	var seed [ed25519.SeedSize]byte

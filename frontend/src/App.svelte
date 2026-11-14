@@ -25,6 +25,8 @@
   import PairingDialog from './lib/components/PairingDialog.svelte';
   import InvitationDialog from './lib/components/InvitationDialog.svelte';
   import ForgetContactDialog from './lib/components/ForgetContactDialog.svelte';
+  import HistoryDialog from './lib/components/HistoryDialog.svelte';
+  import { createHistoryActions } from './lib/state/history';
   import {
     hasDesktopBridge,
     requestStatus,
@@ -83,6 +85,9 @@
   let aboutDialog: HTMLDialogElement;
   let invitationDialog: InvitationDialog;
   let forgetDialog: ForgetContactDialog;
+  let historyDialog: HistoryDialog;
+  const historyActions = createHistoryActions();
+  const historyState = historyActions.state;
   let pairing: PairingStatus = $state({ ...unavailablePairing });
   let pairingNotice = $state('');
   let actionRequest = $state('');
@@ -110,6 +115,8 @@
   let conversationSequence = 0;
 
   function clearConversation() {
+    historyActions.reset();
+    historyDialog?.close();
     if (conversationTimer !== undefined)
       window.clearInterval(conversationTimer);
     conversationTimer = undefined;
@@ -215,7 +222,7 @@
   }
 
   function openSettings() {
-    if (forgetDialog?.isOpen()) return;
+    if (forgetDialog?.isOpen() || historyDialog?.isOpen()) return;
     if (aboutDialog?.open) aboutDialog.close();
     settings.show();
   }
@@ -340,6 +347,19 @@
     if (!conversationEnabled() || conversation.contactID === '') return;
     settings.close();
     forgetDialog.show();
+  }
+
+  async function changeLocalHistory(
+    selectedContact: string,
+    messageID?: string,
+  ) {
+    const epoch = conversationEpoch;
+    const result =
+      messageID === undefined
+        ? await historyActions.clear(selectedContact)
+        : await historyActions.remove(selectedContact, messageID);
+    if (result && acceptConversation(result, epoch, selectedContact))
+      historyDialog.close();
   }
 
   async function forgetConversation(selectedContact: string) {
@@ -867,6 +887,11 @@
         {#if hasContact}
           <button
             class="secondary-button compact"
+            disabled={busy || $historyState.busy}
+            onclick={() => historyDialog.show()}>Clear history…</button
+          >
+          <button
+            class="secondary-button compact"
             disabled={busy}
             onclick={showForgetContact}>Forget contact…</button
           >
@@ -1001,6 +1026,13 @@
             >
               <p class="message-text" dir="auto">{message.text}</p>
               <footer>
+                <button
+                  class="text-button"
+                  aria-label="Delete local message"
+                  disabled={busy || $historyState.busy}
+                  onclick={() => historyDialog.show(message.id)}
+                  >Delete locally</button
+                >
                 <time datetime={message.createdAt}
                   >{new Date(message.createdAt).toLocaleTimeString([], {
                     hour: '2-digit',
@@ -1178,6 +1210,16 @@
   enabled={native && !busy && status.storageState === 'unlocked'}
   busy={forgetting}
   onconfirm={(contactID) => void forgetConversation(contactID)}
+/>
+
+<HistoryDialog
+  bind:this={historyDialog}
+  contactID={conversation.contactID}
+  enabled={native && !busy && status.storageState === 'unlocked'}
+  busy={$historyState.busy}
+  notice={$historyState.notice}
+  onconfirm={(contactID, messageID) =>
+    void changeLocalHistory(contactID, messageID)}
 />
 
 <PairingDialog

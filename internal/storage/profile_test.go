@@ -39,7 +39,7 @@ func TestProfileAndContactNamesPersistEncryptedWithoutChangingIdentityOrChatWrit
 		t.Fatal(err)
 	}
 	// Metadata saves must preserve the generation of an existing scoped writer.
-	if err := store.Save(payload); err != nil {
+	if err := writeChatFixtureTest(store, payload); err != nil {
 		t.Fatal("name changes invalidated an unrelated chat writer")
 	}
 	if _, err := a.SetProfile("Synthetic owner", true); err != nil {
@@ -251,7 +251,7 @@ func TestConcurrentNameAndChatSavesDoNotLoseEitherSection(t *testing.T) {
 	go func() {
 		defer workers.Done()
 		for range 25 {
-			if err := store.Save(payload); err != nil {
+			if err := writeChatFixtureTest(store, payload); err != nil {
 				errors <- err
 				return
 			}
@@ -263,8 +263,11 @@ func TestConcurrentNameAndChatSavesDoNotLoseEitherSection(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := a.ContactNames(r.ID)
-	if err != nil || got.LocalName != "Synthetic-label-"+strings.Repeat("x", 24) || !bytes.Equal(a.state.Contacts[0].Chat, payload) {
+	if err != nil || got.LocalName != "Synthetic-label-"+strings.Repeat("x", 24) {
 		t.Fatal("concurrent metadata/chat saves lost a section")
+	}
+	if record, err := store.Get("AAAAAAAAAAAAAAAAAAAAAA"); err != nil || record.Text != "synthetic message waiting offline" {
+		t.Fatal("concurrent metadata saves changed a committed message record")
 	}
 }
 
@@ -280,7 +283,7 @@ func TestSchemaFiveMigrationPreservesExactIdentityContactsAndHistory(t *testing.
 	seed, wrapping := local.Seed(), keys.value
 	old := applicationEnvelopeV5{Version: 5, Identity: a.state.Identity, Contacts: []contactSectionV5{}, PendingContacts: a.state.PendingContacts, CommittedContacts: a.state.CommittedContacts}
 	for _, c := range a.state.Contacts {
-		old.Contacts = append(old.Contacts, contactSectionV5{Version: c.Version, Local: c.Local, Peer: c.Peer, ContactID: c.ContactID, Chat: c.Chat})
+		old.Contacts = append(old.Contacts, contactSectionV5{Version: c.Version, Local: c.Local, Peer: c.Peer, ContactID: c.ContactID, Chat: bytes.Clone(payload)})
 	}
 	encoded, err := json.Marshal(old)
 	if err != nil {
@@ -289,7 +292,7 @@ func TestSchemaFiveMigrationPreservesExactIdentityContactsAndHistory(t *testing.
 	if err := a.Close(); err != nil {
 		t.Fatal(err)
 	}
-	vault := openTest(t, directory, keys)
+	vault := legacyVaultForTest(t, directory, keys)
 	if err := vault.Save(encoded); err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +305,12 @@ func TestSchemaFiveMigrationPreservesExactIdentityContactsAndHistory(t *testing.
 	gotNames, err := migrated.ContactNames(r.ID)
 	committed, _ := migrated.CommittedContacts()
 	gotPending, _ := migrated.PendingContacts()
-	if err != nil || migrated.state.Version != ApplicationSchemaVersion || gotIdentity.Seed() != seed || keys.value != wrapping || keys.writes != 1 || gotProfile != (profile.Local{Revision: 1}) || gotNames != (profile.Contact{}) || len(committed) != 1 || committed[0] != r || len(gotPending) != 1 || gotPending[0] != pending || !bytes.Equal(migrated.state.Contacts[0].Chat, payload) {
+	scope, scopeErr := migrated.ChatStore(&identifiedPin{approvedPin: &approvedPin{local: r.Local, peer: r.Peer}, id: r.ID})
+	var history []byte
+	if scopeErr == nil {
+		history, scopeErr = loadChatFixtureTest(scope)
+	}
+	if err != nil || scopeErr != nil || migrated.state.Version != ApplicationSchemaVersion || gotIdentity.Seed() != seed || keys.value != wrapping || keys.writes != 1 || gotProfile != (profile.Local{Revision: 1}) || gotNames != (profile.Contact{}) || len(committed) != 1 || committed[0] != r || len(gotPending) != 1 || gotPending[0] != pending || !bytes.Equal(history, payload) {
 		t.Fatal("schema five migration changed old state or enabled sharing")
 	}
 	// New fields under the old version must be rejected rather than silently

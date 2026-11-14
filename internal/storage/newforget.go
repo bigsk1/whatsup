@@ -70,6 +70,9 @@ func (a *ApplicationState) ForgetCommittedContact(record PendingRecord, stop fun
 		if err := a.commitLocked(next); err != nil {
 			return err
 		}
+		if err := a.finishMessageDeletesLocked(); err != nil {
+			return err
+		}
 		delete(a.commitReceipts, record.ID)
 		delete(a.localReceipts, record.ID)
 		return nil

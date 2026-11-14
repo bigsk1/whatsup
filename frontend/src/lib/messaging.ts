@@ -55,7 +55,7 @@ const timestamp =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 const encoder = new TextEncoder();
 const maximumText = 16 * 1024;
-const maximumStoredText = 256 * 1024;
+const maximumStoredText = 1024 * 1024;
 // Unicode 18.0 RGI emoji tag sequences. Keep this exact allowlist aligned with Go;
 // a black flag followed by arbitrary tag letters could still hide ASCII text.
 const emojiTagFlags = [
@@ -145,7 +145,7 @@ export function validateConversation(value: unknown): ConversationSnapshot {
     typeof record.canConnect !== 'boolean' ||
     typeof record.canSend !== 'boolean' ||
     !Array.isArray(record.messages) ||
-    record.messages.length > 256
+    record.messages.length > 100
   )
     return invalid();
   const hasContact = !['unavailable', 'none'].includes(record.state as string);

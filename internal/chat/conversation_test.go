@@ -3,50 +3,20 @@ package chat
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/tailscale/tailcat"
-	"github.com/zalando/go-keyring"
 	"tailscale.com/types/key"
-
 	"whatsup/internal/identity"
+	"whatsup/internal/message"
 	"whatsup/internal/pairing"
-	"whatsup/internal/storage"
 )
-
-type memoryStore struct {
-	data             []byte
-	fail             bool
-	writeBeforeError bool
-	saves            int
-}
-
-func (store *memoryStore) Load() ([]byte, error) {
-	if store.data == nil {
-		return nil, os.ErrNotExist
-	}
-	return bytes.Clone(store.data), nil
-}
-
-func (store *memoryStore) Save(data []byte) error {
-	store.saves++
-	if !store.fail || store.writeBeforeError {
-		store.data = bytes.Clone(data)
-	}
-	if store.fail {
-		return errors.New("synthetic persistence failure")
-	}
-	return nil
-}
 
 func testKey(t *testing.T, fill byte) identity.PublicKey {
 	t.Helper()
@@ -64,14 +34,12 @@ func testContact(t *testing.T, local, peer byte) *pairing.Contact {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = manager.Close() })
-	endpoint := tailcat.ConnInfo{ServerPublic: tailcat.NodePublic{NodePublic: key.NewNode().Public()},
-		ServerDiscoPublic: tailcat.DiscoPublic{DiscoPublic: key.NewDisco().Public()},
-		PresharedKey:      tailcat.NewPresharedKey(), RegionID: 1}
+	endpoint := tailcat.ConnInfo{ServerPublic: tailcat.NodePublic{NodePublic: key.NewNode().Public()}, ServerDiscoPublic: tailcat.DiscoPublic{DiscoPublic: key.NewDisco().Public()}, PresharedKey: tailcat.NewPresharedKey(), RegionID: 1}
 	invite, err := manager.Create(string(endpoint.Addr()), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Reserve(invite.Link(), testKey(t, peer)); err != nil {
+	if _, err = manager.Reserve(invite.Link(), testKey(t, peer)); err != nil {
 		t.Fatal(err)
 	}
 	contact, err := manager.Approve(testKey(t, peer).Fingerprint())
@@ -84,432 +52,452 @@ func testContact(t *testing.T, local, peer byte) *pairing.Contact {
 
 func openTest(t *testing.T, store Store, contact *pairing.Contact, options Options) *Conversation {
 	t.Helper()
-	conversation, err := Open(store, contact, options)
+	c, err := Open(store, contact, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return conversation
+	return c
+}
+
+func recordID(value uint64) string {
+	var id [16]byte
+	binary.BigEndian.PutUint64(id[8:], value)
+	return base64.RawURLEncoding.EncodeToString(id[:])
 }
 
 func TestTwoIndependentDomainsDurableDedupAndAcknowledgement(t *testing.T) {
-	// These domains have synthetic authenticated-peer inputs. This is a durable
-	// protocol test, not a real network, mutual-approval, direct, or relay test.
+	// Synthetic approved-peer inputs isolate transactional domain rules. These
+	// are not two-machine, encryption or network-path verification.
 	storeA, storeB := &memoryStore{}, &memoryStore{}
 	contactA, contactB := testContact(t, 1, 2), testContact(t, 2, 1)
 	a := openTest(t, storeA, contactA, Options{})
-	b := openTest(t, storeB, contactB, Options{})
-	message, err := a.Queue("synthetic durable message")
+	clock := time.Now()
+	b := openTest(t, storeB, contactB, Options{Now: func() time.Time { return clock }})
+	queued, err := a.Queue("synthetic durable message")
 	if err != nil || len(a.Outbox()) != 1 {
-		t.Fatal("message not durably queued")
+		t.Fatal("queue was not committed")
 	}
 	a = openTest(t, storeA, contactA, Options{})
 	frame, due, err := a.NextAttempt(contactA.Peer())
-	if err != nil || !due || frame.ID != message.ID || len(a.Outbox()) != 1 {
-		t.Fatal("reopen changed stable ID or send deleted queue entry")
+	if err != nil || !due || frame.ID != queued.ID || len(a.Outbox()) != 1 {
+		t.Fatal("reopen or write lost stable outbox membership")
 	}
 	ack, err := b.Receive(contactB.Peer(), frame)
-	if err != nil || ack.ID != frame.ID || len(b.Messages()) != 1 {
-		t.Fatal("receive did not durably acknowledge")
+	if err != nil || len(b.Messages()) != 1 {
+		t.Fatal("saved receive did not acknowledge")
 	}
-	// Lose the first acknowledgement, restart the receiver, then retry the exact
-	// ID. No second message or second persistence operation is needed.
-	b = openTest(t, storeB, contactB, Options{})
-	saves := storeB.saves
+	// Lose ACK and restart the receiver. Locally stamped receive time changes,
+	// while the original stable ID/body still deduplicates without another write.
+	clock = clock.Add(time.Hour)
+	b = openTest(t, storeB, contactB, Options{Now: func() time.Time { return clock }})
+	writes := storeB.writes
 	ack, err = b.Receive(contactB.Peer(), frame)
-	if err != nil || len(b.Messages()) != 1 || storeB.saves != saves {
-		t.Fatal("restart lost durable deduplication")
+	if err != nil || storeB.writes != writes || len(b.Messages()) != 1 {
+		t.Fatal("lost ACK reinserted a durable record")
 	}
-	if err := a.Acknowledge(contactA.Peer(), ack); err != nil {
+	if err = a.Acknowledge(contactA.Peer(), ack); err != nil {
 		t.Fatal(err)
 	}
 	a = openTest(t, storeA, contactA, Options{})
-	if len(a.Outbox()) != 0 || len(a.Messages()) != 1 || !a.Messages()[0].Delivered {
-		t.Fatal("acknowledged queue/history state did not survive reopen")
+	if len(a.Outbox()) != 0 || !a.Messages()[0].Delivered {
+		t.Fatal("ACK did not atomically update delivery/outbox")
 	}
-	if err := a.Acknowledge(contactA.Peer(), ack); err != nil {
-		t.Fatal("repeated authenticated ack was not idempotent")
+	if err = a.Acknowledge(contactA.Peer(), ack); err != nil {
+		t.Fatal("duplicate ACK was not idempotent")
 	}
-	frame.Text = "substituted content"
-	if _, err := b.Receive(contactB.Peer(), frame); !errors.Is(err, ErrConflict) {
-		t.Fatal("stable message ID was allowed to change content")
+	frame.Text = "different body for same ID"
+	if _, err = b.Receive(contactB.Peer(), frame); !errors.Is(err, ErrConflict) {
+		t.Fatal("stable message ID changed content")
 	}
 }
 
-func TestThirdPeerAndRevokedContactCannotMutateState(t *testing.T) {
+func TestThirdPeerAndRevokedContactCannotReadOrMutateState(t *testing.T) {
 	store := &memoryStore{}
 	contact := testContact(t, 1, 2)
-	conversation := openTest(t, store, contact, Options{})
-	queued, _ := conversation.Queue("synthetic outgoing")
-	ack := Frame{Version: ProtocolVersion, Type: AckFrame, ID: queued.ID}
-	incoming := Frame{Version: ProtocolVersion, Type: MessageFrame, ID: syntheticID, Text: "synthetic incoming"}
-	before := bytes.Clone(store.data)
-	if _, _, err := conversation.NextAttempt(testKey(t, 3)); !errors.Is(err, pairing.ErrPeer) {
-		t.Fatal("third peer could send")
+	c := openTest(t, store, contact, Options{})
+	queued, _ := c.Queue("synthetic outgoing")
+	frame := Frame{Version: ProtocolVersion, Type: MessageFrame, ID: recordID(1), Text: "synthetic incoming"}
+	writes, reads := store.writes, store.reads
+	if _, _, err := c.NextAttempt(testKey(t, 3)); !errors.Is(err, pairing.ErrPeer) {
+		t.Fatal("third peer sent")
 	}
-	if _, err := conversation.Receive(testKey(t, 3), incoming); !errors.Is(err, pairing.ErrPeer) {
-		t.Fatal("third peer could insert history")
+	if _, err := c.Receive(testKey(t, 3), frame); !errors.Is(err, pairing.ErrPeer) {
+		t.Fatal("third peer received")
 	}
-	if err := conversation.Acknowledge(testKey(t, 3), ack); !errors.Is(err, pairing.ErrPeer) {
-		t.Fatal("third peer removed queued message")
+	if err := c.Acknowledge(testKey(t, 3), Frame{Version: ProtocolVersion, Type: AckFrame, ID: queued.ID}); !errors.Is(err, pairing.ErrPeer) {
+		t.Fatal("third peer ACKed")
 	}
-	if !bytes.Equal(before, store.data) {
-		t.Fatal("third-peer access mutated durable state")
+	if err := c.ResetRetries(testKey(t, 3)); !errors.Is(err, pairing.ErrPeer) {
+		t.Fatal("third peer rescheduled")
+	}
+	if store.writes != writes || store.reads != reads {
+		t.Fatal("third peer touched the repository")
 	}
 	contact.Revoke()
-	if _, err := conversation.Queue("after revocation"); !errors.Is(err, pairing.ErrPeer) {
-		t.Fatal("revoked contact queued new message")
+	if _, err := c.Queue("after revoke"); !errors.Is(err, pairing.ErrPeer) {
+		t.Fatal("revoked contact queued")
 	}
-	if _, _, err := conversation.NextAttempt(contact.Peer()); !errors.Is(err, pairing.ErrPeer) {
-		t.Fatal("revoked session could send")
+	if _, err := c.Page(0, 10); !errors.Is(err, pairing.ErrPeer) {
+		t.Fatal("revoked contact read history")
 	}
-	if _, err := conversation.Receive(contact.Peer(), incoming); !errors.Is(err, pairing.ErrPeer) {
-		t.Fatal("revoked session received message")
+	if err := c.DeleteLocal(queued.ID); !errors.Is(err, pairing.ErrPeer) {
+		t.Fatal("revoked contact deleted")
 	}
-	if err := conversation.Acknowledge(contact.Peer(), ack); !errors.Is(err, pairing.ErrPeer) {
-		t.Fatal("revoked session acknowledged message")
+	if err := c.ClearHistory(); !errors.Is(err, pairing.ErrPeer) {
+		t.Fatal("revoked contact cleared history")
+	}
+	if _, err := c.Usage(); !errors.Is(err, pairing.ErrPeer) {
+		t.Fatal("revoked contact obtained storage information")
+	}
+	if len(c.Messages()) != 0 || len(c.Outbox()) != 0 {
+		t.Fatal("revoked handle exposed stale snapshots")
 	}
 	if _, err := Open(store, contact, Options{}); !errors.Is(err, ErrContact) {
-		t.Fatal("revoked contact reopened conversation")
+		t.Fatal("revoked contact reopened")
 	}
 	if _, err := Open(store, nil, Options{}); !errors.Is(err, ErrContact) {
-		t.Fatal("pending/no contact opened conversation")
+		t.Fatal("pending contact opened")
 	}
 }
 
-func TestSaveFailuresReturnNoSuccessAndKeepMemoryUnchanged(t *testing.T) {
-	for _, operation := range []string{"queue", "send", "receive", "ack"} {
-		t.Run(operation, func(t *testing.T) {
-			store := &memoryStore{}
-			contact := testContact(t, 1, 2)
-			conversation := openTest(t, store, contact, Options{})
-			queued, _ := conversation.Queue("synthetic existing")
-			before, _ := json.Marshal(conversation.state)
-			store.fail = true
-			var err error
-			switch operation {
-			case "queue":
-				message, failure := conversation.Queue("must not report queued")
-				err = failure
-				if message.ID != "" {
-					t.Fatal("failed queue returned a usable ID")
-				}
-			case "send":
-				frame, due, failure := conversation.NextAttempt(contact.Peer())
-				err = failure
-				if due || frame.ID != "" {
-					t.Fatal("failed retry save handed frame to sender")
-				}
-			case "receive":
-				ack, failure := conversation.Receive(contact.Peer(), Frame{Version: ProtocolVersion, Type: MessageFrame, ID: syntheticID, Text: "must not acknowledge"})
-				err = failure
-				if ack.ID != "" {
-					t.Fatal("unsaved receive returned acknowledgement")
-				}
-			case "ack":
-				err = conversation.Acknowledge(contact.Peer(), Frame{Version: ProtocolVersion, Type: AckFrame, ID: queued.ID})
-			}
-			if !errors.Is(err, ErrStore) {
-				t.Fatalf("save failure not returned: %v", err)
-			}
-			after, _ := json.Marshal(conversation.state)
-			if !bytes.Equal(before, after) {
-				t.Fatal("save failure changed in-memory queue/history")
-			}
-			store.fail = false
-			if _, err := conversation.Queue("cannot continue uncertain writer"); !errors.Is(err, ErrStore) {
-				t.Fatal("writer resumed without reopening uncertain state")
-			}
-			reopened := openTest(t, store, contact, Options{})
-			if len(reopened.Outbox()) != 1 || len(reopened.Messages()) != 1 {
-				t.Fatal("reopen lost previously saved queued message")
-			}
-		})
-	}
-}
-
-func TestPostRenameSyncFailureRequiresReopenToReconcile(t *testing.T) {
-	store := &memoryStore{}
-	contact := testContact(t, 1, 2)
-	conversation := openTest(t, store, contact, Options{})
-	message, _ := conversation.Queue("synthetic uncertain ack")
-	store.fail, store.writeBeforeError = true, true
-	if err := conversation.Acknowledge(contact.Peer(), Frame{Version: ProtocolVersion, Type: AckFrame, ID: message.ID}); !errors.Is(err, ErrStore) {
-		t.Fatal("post-write durability failure ignored")
-	}
-	if len(conversation.Outbox()) != 1 {
-		t.Fatal("memory committed an uncertain save")
-	}
-	store.fail = false
-	reopened := openTest(t, store, contact, Options{})
-	if len(reopened.Outbox()) != 0 || !reopened.Messages()[0].Delivered {
-		t.Fatal("reopen did not reconcile actual stored state")
-	}
-}
-
-func TestRetriesPersistWithBoundsAndJitter(t *testing.T) {
-	store := &memoryStore{}
-	contact := testContact(t, 1, 2)
-	var elapsed atomic.Int64
-	base := time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC)
-	var spans []time.Duration
-	options := Options{
-		Now: func() time.Time { return base.Add(time.Duration(elapsed.Load())) },
-		Jitter: func(minimum, maximum time.Duration) (time.Duration, error) {
-			if minimum < RetryMin || maximum > RetryMax || minimum > maximum {
-				t.Fatal("unbounded retry jitter")
-			}
-			spans = append(spans, maximum-minimum)
-			return maximum, nil
-		},
-	}
-	conversation := openTest(t, store, contact, options)
-	message, _ := conversation.Queue("synthetic retry")
-	for attempt := uint32(1); attempt <= 16; attempt++ {
-		frame, due, err := conversation.NextAttempt(contact.Peer())
-		if err != nil || !due || frame.ID != message.ID {
-			t.Fatal("due retry not returned")
-		}
-		pending := conversation.Outbox()[0]
-		if pending.Count != attempt || !pending.NextAttempt.After(options.Now()) || pending.NextAttempt.Sub(options.Now()) > RetryMax {
-			t.Fatal("retry count/deadline unbounded")
-		}
-		conversation = openTest(t, store, contact, options)
-		if _, due, err := conversation.NextAttempt(contact.Peer()); due || err != nil {
-			t.Fatal("restart retried before persisted deadline")
-		}
-		elapsed.Store(int64(pending.NextAttempt.Sub(base)))
-	}
-	if spans[0] == 0 || spans[len(spans)-1] == 0 {
-		t.Fatal("retry schedule has no jitter range")
-	}
-	conversation.jitter = func(_, _ time.Duration) (time.Duration, error) { return 0, nil }
-	before := store.saves
-	if _, _, err := conversation.NextAttempt(contact.Peer()); !errors.Is(err, ErrRetry) || store.saves != before {
-		t.Fatal("invalid jitter bypassed bounded backoff")
-	}
-}
-
-func TestHistoryAndQueueAreBoundedWithoutEvictingDedup(t *testing.T) {
-	contact := testContact(t, 1, 2)
-	for _, byBytes := range []bool{false, true} {
-		t.Run(fmt.Sprint(byBytes), func(t *testing.T) {
-			store := &memoryStore{}
-			conversation := openTest(t, store, contact, Options{})
-			text, count := "x", MaxMessages
-			if byBytes {
-				text, count = strings.Repeat("<", MaxTextBytes), MaxStoredTextBytes/MaxTextBytes
-			}
-			for i := 0; i < count; i++ {
-				if _, err := conversation.Queue(text); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if _, err := conversation.Queue("one too many"); !errors.Is(err, ErrCapacity) {
-				t.Fatal("conversation grew past bounded capacity")
-			}
-			if len(store.data) > MaxSnapshotBytes {
-				t.Fatal("JSON escaping grew beyond encrypted snapshot limit")
-			}
-			if _, err := conversation.Receive(contact.Peer(), Frame{Version: ProtocolVersion, Type: MessageFrame, ID: syntheticID, Text: "full"}); !errors.Is(err, ErrCapacity) {
-				t.Fatal("inbound message bypassed shared quota")
-			}
-			_ = openTest(t, store, contact, Options{})
-		})
-	}
-}
-
-func TestFreshAuthenticatedSessionResetsPersistedRetryWithoutAcknowledgement(t *testing.T) {
+func TestRetryBackoffIsMemoryOnlyAndRebuildsReadyAfterReopen(t *testing.T) {
 	store := &memoryStore{}
 	contact := testContact(t, 1, 2)
 	clock := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
-	options := Options{Now: func() time.Time { return clock }, Jitter: func(_, maximum time.Duration) (time.Duration, error) { return maximum, nil }}
-	conversation := openTest(t, store, contact, options)
-	queued, _ := conversation.Queue("synthetic offline retry")
-	for index := 0; index < 12; index++ {
-		if _, due, err := conversation.NextAttempt(contact.Peer()); err != nil || !due {
-			t.Fatal("failed to build persisted retry schedule")
+	var spans []time.Duration
+	options := Options{Now: func() time.Time { return clock }, Jitter: func(minimum, maximum time.Duration) (time.Duration, error) {
+		if minimum < RetryMin || maximum > RetryMax || minimum > maximum {
+			t.Fatal("unbounded retry range")
 		}
-		if index < 11 {
-			clock = conversation.Outbox()[0].NextAttempt
+		spans = append(spans, maximum-minimum)
+		return maximum, nil
+	}}
+	c := openTest(t, store, contact, options)
+	queued, _ := c.Queue("synthetic retry")
+	writes := store.writes
+	for attempt := uint32(1); attempt <= 16; attempt++ {
+		frame, due, err := c.NextAttempt(contact.Peer())
+		if err != nil || !due || frame.ID != queued.ID || store.writes != writes {
+			t.Fatal("retry persisted scheduling or failed to send due record")
 		}
+		pending := c.Outbox()[0]
+		if pending.Count != attempt || !pending.NextAttempt.After(clock) || pending.NextAttempt.Sub(clock) > RetryMax {
+			t.Fatal("unbounded retry schedule")
+		}
+		if _, due, err := c.NextAttempt(contact.Peer()); err != nil || due {
+			t.Fatal("retry ignored its in-memory deadline")
+		}
+		clock = pending.NextAttempt
 	}
-	if conversation.Outbox()[0].NextAttempt.Sub(clock) != RetryMax {
-		t.Fatal("fixture did not reach maximum offline backoff")
+	if spans[0] == 0 || spans[len(spans)-1] == 0 {
+		t.Fatal("retry delay has no jitter range")
 	}
-	before := bytes.Clone(store.data)
-	if err := conversation.ResetRetries(testKey(t, 3)); err == nil || !bytes.Equal(before, store.data) {
-		t.Fatal("unapproved peer reset the outbox schedule")
+	c.jitter = func(_, _ time.Duration) (time.Duration, error) { return 0, nil }
+	if _, _, err := c.NextAttempt(contact.Peer()); !errors.Is(err, ErrRetry) || store.writes != writes {
+		t.Fatal("invalid jitter changed storage or scheduled output")
 	}
-	if err := conversation.ResetRetries(contact.Peer()); err != nil {
-		t.Fatal(err)
+	c = openTest(t, store, contact, options)
+	if c.Outbox()[0].Count != 0 || c.Outbox()[0].NextAttempt.After(clock) {
+		t.Fatal("reopen restored stale retry timestamps")
 	}
-	conversation = openTest(t, store, contact, options)
-	frame, due, err := conversation.NextAttempt(contact.Peer())
-	if err != nil || !due || frame.ID != queued.ID || conversation.Messages()[0].Delivered || len(conversation.Outbox()) != 1 {
-		t.Fatal("fresh authenticated session waited for old backoff or lost queued text")
+	if frame, due, err := c.NextAttempt(contact.Peer()); err != nil || !due || frame.ID != queued.ID || store.writes != writes {
+		t.Fatal("unlock did not rebuild ready encrypted outbox")
 	}
-	if _, due, err := conversation.NextAttempt(contact.Peer()); err != nil || due {
-		t.Fatal("session reset disabled bounded backoff within that session")
+	store.failOn = "queue"
+	if err := c.ResetRetries(contact.Peer()); err != nil || store.writes != writes {
+		t.Fatal("session retry reset attempted persistence")
 	}
-	store.fail = true
-	if err := conversation.ResetRetries(contact.Peer()); !errors.Is(err, ErrStore) {
-		t.Fatal("retry reset hid persistence failure")
+	if _, due, err := c.NextAttempt(contact.Peer()); err != nil || !due {
+		t.Fatal("fresh session retained old backoff")
 	}
 }
 
-func TestStoredIdentityAndStructureAreValidated(t *testing.T) {
+func TestRepositoryFailuresNeverReturnUnsavedSuccessAndRequireReopen(t *testing.T) {
+	for _, operation := range []string{"queue", "receive", "ack", "get", "page", "usage"} {
+		t.Run(operation, func(t *testing.T) {
+			store := &memoryStore{}
+			contact := testContact(t, 1, 2)
+			c := openTest(t, store, contact, Options{})
+			queued, _ := c.Queue("synthetic previously saved text")
+			store.failOn = operation
+			var err error
+			switch operation {
+			case "queue":
+				var item Message
+				item, err = c.Queue("must not report queued")
+				if item.ID != "" {
+					t.Fatal("failed queue returned usable ID")
+				}
+			case "receive":
+				var ack Frame
+				ack, err = c.Receive(contact.Peer(), Frame{Version: ProtocolVersion, Type: MessageFrame, ID: recordID(1), Text: "must not ACK"})
+				if ack.ID != "" {
+					t.Fatal("failed receive returned ACK")
+				}
+			case "ack":
+				err = c.Acknowledge(contact.Peer(), Frame{Version: ProtocolVersion, Type: AckFrame, ID: queued.ID})
+			case "get":
+				var frame Frame
+				var due bool
+				frame, due, err = c.NextAttempt(contact.Peer())
+				if due || frame.ID != "" {
+					t.Fatal("failed record authentication handed frame to sender")
+				}
+			case "page":
+				_, err = c.Page(0, 10)
+			case "usage":
+				_, err = c.Usage()
+			}
+			if !errors.Is(err, ErrStore) {
+				t.Fatalf("repository failure hidden: %v", err)
+			}
+			store.failOn = ""
+			if _, err := c.Queue("cannot continue uncertain handle"); !errors.Is(err, ErrStore) {
+				t.Fatal("uncertain repository resumed without reopening")
+			}
+			reopened := openTest(t, store, contact, Options{})
+			if len(reopened.Outbox()) != 1 || len(reopened.Messages()) != 1 || reopened.Messages()[0].Delivered {
+				t.Fatal("reopen lost previously committed state")
+			}
+		})
+	}
+}
+
+func TestUncertainAcknowledgementReconcilesCommittedRecordsOnReopen(t *testing.T) {
 	store := &memoryStore{}
 	contact := testContact(t, 1, 2)
-	conversation := openTest(t, store, contact, Options{})
-	message, _ := conversation.Queue("synthetic bound snapshot")
-	if _, err := Open(store, testContact(t, 1, 3), Options{}); !errors.Is(err, ErrCorrupt) {
-		t.Fatal("different approved peer obtained old conversation")
+	c := openTest(t, store, contact, Options{})
+	queued, _ := c.Queue("synthetic uncertain transaction")
+	store.failOn, store.failAfter = "ack", true
+	if err := c.Acknowledge(contact.Peer(), Frame{Version: ProtocolVersion, Type: AckFrame, ID: queued.ID}); !errors.Is(err, ErrStore) {
+		t.Fatal("uncertain commit reported success")
 	}
-	for _, mutate := range []func(*snapshot){
-		func(s *snapshot) { s.Version++ },
-		func(s *snapshot) { s.Local = testKey(t, 4) },
-		func(s *snapshot) { s.Messages = append(s.Messages, s.Messages[0]) },
-		func(s *snapshot) { s.Messages[0].Delivered = true },
-		func(s *snapshot) { s.Outbox = nil },
-		func(s *snapshot) { s.Outbox[0].ID = syntheticID },
-		func(s *snapshot) { s.Outbox[0].NextAttempt = time.Time{} },
-	} {
-		damaged := clone(conversation.state)
-		mutate(&damaged)
-		data, _ := json.Marshal(damaged)
-		if _, err := Open(&memoryStore{data: data}, contact, Options{}); !errors.Is(err, ErrCorrupt) {
-			t.Fatal("invalid durable state accepted")
-		}
+	if len(c.pending) != 1 {
+		t.Fatal("failed ACK removed in-memory retry before confirmed commit")
 	}
-	for _, data := range [][]byte{nil, []byte("{}"), []byte("null"), append([]byte(" "), store.data...), bytes.Repeat([]byte("x"), MaxSnapshotBytes+1)} {
-		if data == nil {
-			data = []byte{}
-		}
-		if _, err := Open(&memoryStore{data: data}, contact, Options{}); !errors.Is(err, ErrCorrupt) {
-			t.Fatal("malformed snapshot accepted or silently replaced")
-		}
+	if _, _, err := c.NextAttempt(contact.Peer()); !errors.Is(err, ErrStore) {
+		t.Fatal("uncertain handle kept transmitting")
 	}
-	if err := conversation.Acknowledge(contact.Peer(), Frame{Version: ProtocolVersion, Type: AckFrame, ID: syntheticID}); !errors.Is(err, ErrAck) {
-		t.Fatal("unknown ack accepted")
-	}
-	incoming := Frame{Version: ProtocolVersion, Type: MessageFrame, ID: message.ID, Text: "incoming collision"}
-	if _, err := conversation.Receive(contact.Peer(), incoming); !errors.Is(err, ErrConflict) {
-		t.Fatal("incoming collision overwrote outgoing message")
-	}
-	copyOfMessages := conversation.Messages()
-	copyOfMessages[0].Text = "changed copy"
-	if conversation.Messages()[0].Text != "synthetic bound snapshot" {
-		t.Fatal("caller mutated internal history")
+	store.failOn = ""
+	c = openTest(t, store, contact, Options{})
+	if len(c.Outbox()) != 0 || !c.Messages()[0].Delivered {
+		t.Fatal("reopen failed to reconcile committed ACK")
 	}
 }
 
-type testKeys struct{ value string }
-
-func (keys *testKeys) Get() (string, error) {
-	if keys.value == "" {
-		return "", keyring.ErrNotFound
-	}
-	return keys.value, nil
-}
-
-func (keys *testKeys) Set(value string) error { keys.value = value; return nil }
-
-func TestConversationSnapshotRoundTripsThroughEncryptedVault(t *testing.T) {
-	keys := &testKeys{}
-	directory := filepath.Join(t.TempDir(), "private-conversation")
-	vault, err := storage.Open(directory, keys)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestHistoryHasNoLifetimeCapAndDuplicateSurvivesPaging(t *testing.T) {
+	store := &memoryStore{}
 	contact := testContact(t, 1, 2)
-	conversation := openTest(t, vault, contact, Options{})
-	text := "synthetic text must never appear in a plaintext chat file"
-	message, err := conversation.Queue(text)
-	if err != nil {
+	c := openTest(t, store, contact, Options{})
+	for index := uint64(1); index <= 10001; index++ {
+		if _, err := c.Receive(contact.Peer(), Frame{Version: ProtocolVersion, Type: MessageFrame, ID: recordID(index), Text: "synthetic retained text"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(store.rows) != 10001 || !c.HasCapacity() {
+		t.Fatal("old lifetime message cap survived")
+	}
+	latest, err := c.Page(0, 100)
+	if err != nil || len(latest) != 100 || latest[0].Sequence != 9902 || latest[99].Sequence != 10001 {
+		t.Fatal("latest page is not bounded and chronological")
+	}
+	older, err := c.Page(latest[0].Sequence, 100)
+	if err != nil || len(older) != 100 || older[len(older)-1].Sequence != 9901 {
+		t.Fatal("exclusive page cursor skipped or repeated a row")
+	}
+	if len(c.Messages()) != 100 {
+		t.Fatal("compatibility snapshot leaked full history")
+	}
+	writes := store.writes
+	if _, err := c.Receive(contact.Peer(), Frame{Version: ProtocolVersion, Type: MessageFrame, ID: recordID(1), Text: "synthetic retained text"}); err != nil || store.writes != writes {
+		t.Fatal("old paged-out message lost deduplication evidence")
+	}
+	encoded, _ := json.Marshal(c.Messages())
+	if bytes.Contains(encoded, []byte("sequence")) || bytes.Contains(encoded, []byte("Sequence")) {
+		t.Fatal("internal sequence leaked into legacy message DTO")
+	}
+}
+
+func TestPageHasAggregateByteBoundAndUnbrokenCursor(t *testing.T) {
+	store := &memoryStore{}
+	contact := testContact(t, 1, 2)
+	c := openTest(t, store, contact, Options{})
+	for range 100 {
+		if _, err := c.Queue(strings.Repeat("x", MaxTextBytes)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := c.Page(0, 100)
+	if err != nil || len(page) != 64 {
+		t.Fatal("page exceeded aggregate text budget")
+	}
+	total := 0
+	for _, item := range page {
+		total += len(item.Text)
+	}
+	if total != MaxPageTextBytes {
+		t.Fatal("wrong aggregate page text budget")
+	}
+	older, err := c.Page(page[0].Sequence, 100)
+	if err != nil || len(older) != 36 || older[len(older)-1].Sequence+1 != page[0].Sequence {
+		t.Fatal("trimming a page skipped older history")
+	}
+	for _, limit := range []int{-1, 0, 101} {
+		if _, err := c.Page(0, limit); !errors.Is(err, ErrPage) {
+			t.Fatal("unbounded page admitted")
+		}
+	}
+}
+
+func TestQuotaFailureIsVisibleAndDuplicatesStillAcknowledge(t *testing.T) {
+	store := &memoryStore{quota: 133}
+	contact := testContact(t, 1, 2)
+	c := openTest(t, store, contact, Options{})
+	frame := Frame{Version: ProtocolVersion, Type: MessageFrame, ID: recordID(1), Text: "first"}
+	if _, err := c.Receive(contact.Peer(), frame); err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := os.ReadFile(filepath.Join(directory, "state.vault"))
-	if err != nil || bytes.Contains(sealed, []byte(text)) || bytes.Contains(sealed, []byte(message.ID)) || bytes.Contains(sealed, []byte(base64.RawStdEncoding.EncodeToString([]byte(text)))) {
-		t.Fatal("chat plaintext present in vault file")
+	if c.HasCapacity() {
+		t.Fatal("disk quota not reflected")
 	}
-	if err := vault.Close(); err != nil {
+	if _, err := c.Receive(contact.Peer(), frame); err != nil {
+		t.Fatal("saved duplicate was rejected at quota")
+	}
+	frame.ID = recordID(2)
+	if ack, err := c.Receive(contact.Peer(), frame); !errors.Is(err, ErrCapacity) || ack.ID != "" {
+		t.Fatal("full storage ACKed unsaved message")
+	}
+	if item, err := c.Queue("new"); !errors.Is(err, ErrCapacity) || item.ID != "" {
+		t.Fatal("full storage accepted outgoing text")
+	}
+	store.quota = 4096
+	if _, err := c.Queue("space available again"); err != nil {
+		t.Fatal("quota error poisoned otherwise valid repository")
+	}
+}
+
+func TestLocalDeleteAndClearKeepPendingDeliveryAndDeduplication(t *testing.T) {
+	store := &memoryStore{}
+	contact := testContact(t, 1, 2)
+	c := openTest(t, store, contact, Options{})
+	queued, _ := c.Queue("synthetic pending text")
+	frame := Frame{Version: ProtocolVersion, Type: MessageFrame, ID: recordID(1), Text: "synthetic received"}
+	if _, err := c.Receive(contact.Peer(), frame); err != nil {
 		t.Fatal(err)
 	}
-	vault, err = storage.Open(directory, keys)
-	if err != nil {
+	if err := c.DeleteLocal(queued.ID); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = vault.Close() })
-	conversation = openTest(t, vault, contact, Options{})
-	if len(conversation.Outbox()) != 1 || conversation.Messages()[0].ID != message.ID || conversation.Messages()[0].Text != text {
-		t.Fatal("encrypted reopen lost pending message")
+	if len(c.Messages()) != 1 || len(c.Outbox()) != 1 {
+		t.Fatal("local delete removed pending delivery or unrelated history")
 	}
-	if err := conversation.Acknowledge(contact.Peer(), Frame{Version: ProtocolVersion, Type: AckFrame, ID: message.ID}); err != nil {
-		t.Fatal(err)
+	if err := c.ClearHistory(); err != nil || len(c.Messages()) != 0 || len(c.Outbox()) != 1 {
+		t.Fatal("clear changed contact authority or removed outbox")
 	}
-	if err := vault.Close(); err != nil {
-		t.Fatal(err)
+	c = openTest(t, store, contact, Options{})
+	out, due, err := c.NextAttempt(contact.Peer())
+	if err != nil || !due || out.ID != queued.ID || out.Text != "synthetic pending text" {
+		t.Fatal("hidden pending body could not resume after restart")
 	}
-	vault, err = storage.Open(directory, keys)
-	if err != nil {
-		t.Fatal(err)
+	writes := store.writes
+	if _, err := c.Receive(contact.Peer(), frame); err != nil || store.writes != writes || len(c.Messages()) != 0 {
+		t.Fatal("clear allowed a lost ACK retry to redisplay old text")
 	}
-	conversation = openTest(t, vault, contact, Options{})
-	if len(conversation.Outbox()) != 0 || len(conversation.Messages()) != 1 || !conversation.Messages()[0].Delivered {
-		t.Fatal("authenticated acknowledgement was not durable in encrypted vault")
+	ack := Frame{Version: ProtocolVersion, Type: AckFrame, ID: queued.ID}
+	if err := c.Acknowledge(contact.Peer(), ack); err != nil || len(c.Outbox()) != 0 {
+		t.Fatal("hidden pending message failed ACK")
+	}
+	if err := c.Acknowledge(contact.Peer(), ack); err != nil {
+		t.Fatal("repeated ACK for locally hidden delivered record failed")
+	}
+	if _, err := c.Queue("same contact remains approved"); err != nil {
+		t.Fatal("clear revoked the contact")
+	}
+}
+
+func TestMalformedPersistedRecordsFailClosed(t *testing.T) {
+	for _, change := range []string{"id", "body", "direction", "delivered", "sequence"} {
+		t.Run(change, func(t *testing.T) {
+			store := &memoryStore{}
+			contact := testContact(t, 1, 2)
+			c := openTest(t, store, contact, Options{})
+			queued, _ := c.Queue("synthetic persisted body")
+			item := store.rows[queued.ID]
+			switch change {
+			case "id":
+				item.ID = recordID(44)
+			case "body":
+				item.Text = "spoof\u202e"
+			case "direction":
+				item.Direction = "unknown"
+			case "delivered":
+				item.Delivered = true
+			case "sequence":
+				item.Sequence = 0
+			}
+			store.rows[queued.ID] = item
+			if frame, due, err := c.NextAttempt(contact.Peer()); !errors.Is(err, ErrCorrupt) || due || frame.ID != "" {
+				t.Fatal("malformed outbox record entered a network frame")
+			}
+			if _, err := c.Queue("must stay failed"); !errors.Is(err, ErrStore) {
+				t.Fatal("corrupt repository continued")
+			}
+		})
+	}
+	for _, ids := range [][]string{{"../not-an-id"}, {recordID(1), recordID(1)}} {
+		if _, err := Open(&memoryStore{pendingOverride: ids}, testContact(t, 1, 2), Options{}); !errors.Is(err, ErrCorrupt) {
+			t.Fatal("invalid pending index admitted on open")
+		}
+	}
+	if _, err := Open(&memoryStore{failOn: "pending"}, testContact(t, 1, 2), Options{}); !errors.Is(err, ErrStore) {
+		t.Fatal("failed outbox recovery admitted a conversation")
+	}
+	var zero *Conversation
+	if _, err := zero.Queue("zero"); !errors.Is(err, ErrContact) {
+		t.Fatal("zero conversation queued")
 	}
 }
 
 type blockingStore struct {
-	base    memoryStore
-	block   atomic.Bool
-	entered chan struct{}
-	release chan struct{}
+	*memoryStore
+	entered, release chan struct{}
+	once             sync.Once
 }
 
-func (store *blockingStore) Load() ([]byte, error) { return store.base.Load() }
-func (store *blockingStore) Save(data []byte) error {
-	if store.block.Load() {
-		close(store.entered)
-		<-store.release
-	}
-	return store.base.Save(data)
+func (s *blockingStore) Queue(item Message) error {
+	s.once.Do(func() { close(s.entered) })
+	<-s.release
+	return s.memoryStore.Queue(item)
 }
 
 func TestRevocationWaitsForAdmittedDurableOperation(t *testing.T) {
-	store := &blockingStore{entered: make(chan struct{}), release: make(chan struct{})}
+	store := &blockingStore{memoryStore: &memoryStore{}, entered: make(chan struct{}), release: make(chan struct{})}
 	contact := testContact(t, 1, 2)
-	conversation := openTest(t, store, contact, Options{})
-	store.block.Store(true)
+	c := openTest(t, store, contact, Options{})
 	release := sync.OnceFunc(func() { close(store.release) })
 	defer release()
-	var wg sync.WaitGroup
-	wg.Add(1)
 	queued := make(chan error, 1)
-	go func() {
-		defer wg.Done()
-		_, err := conversation.Queue("synthetic admitted operation")
-		queued <- err
-	}()
+	go func() { _, err := c.Queue("synthetic admitted write"); queued <- err }()
 	<-store.entered
 	revoked := make(chan struct{})
 	go func() { contact.Revoke(); close(revoked) }()
 	select {
 	case <-revoked:
-		t.Fatal("revocation returned while admitted persistence was still pending")
+		t.Fatal("revocation passed an admitted durable operation")
 	case <-time.After(20 * time.Millisecond):
 	}
 	release()
-	wg.Wait()
 	if err := <-queued; err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case <-revoked:
 	case <-time.After(time.Second):
-		t.Fatal("authorization lock order deadlocked revocation")
+		t.Fatal("contact/repository lock order deadlocked")
 	}
-	if _, err := conversation.Queue("after revoke returns"); !errors.Is(err, pairing.ErrPeer) {
-		t.Fatal("operation admitted after revocation completed")
+	if _, err := c.Queue("after revoke"); !errors.Is(err, pairing.ErrPeer) {
+		t.Fatal("operation admitted after revocation")
 	}
 }
+
+var _ message.Repository = (*memoryStore)(nil)

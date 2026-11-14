@@ -21,18 +21,19 @@ func capacityID(value uint64) string {
 }
 
 func TestFullReceiverSendsAuthenticatedRefusalWithoutAcknowledgingOrEvicting(t *testing.T) {
-	m, server, client, conversation, _ := exchangeFixture(t)
-	for index := 1; index <= chat.MaxMessages; index++ {
-		_, err := conversation.Receive(m.record.Peer, chat.Frame{Version: chat.ProtocolVersion, Type: chat.MessageFrame, ID: capacityID(uint64(index)), Text: "synthetic retained history"})
-		if err != nil {
-			t.Fatal(err)
-		}
+	store := newMessageRepository(t)
+	m, server, client, conversation, _ := exchangeFixture(t, store)
+	if _, err := conversation.Receive(m.record.Peer, chat.Frame{Version: chat.ProtocolVersion, Type: chat.MessageFrame, ID: capacityID(1), Text: "synthetic retained history"}); err != nil {
+		t.Fatal(err)
 	}
+	// Inject quota exhaustion, independently of lifetime history length. The
+	// actual encrypted repository's quota/disk-full behavior has separate tests.
+	store.full = true
 	before := conversation.Messages()
 	result := make(chan error, 1)
 	go func() { result <- m.exchange(context.Background(), server, conversation) }()
 	consumeInitialProfile(t, client)
-	frame := chat.Frame{Version: chat.ProtocolVersion, Type: chat.MessageFrame, ID: capacityID(chat.MaxMessages + 1), Text: "synthetic refused text"}
+	frame := chat.Frame{Version: chat.ProtocolVersion, Type: chat.MessageFrame, ID: capacityID(2), Text: "synthetic refused text"}
 	if err := writePacket(client, packet{kind: dataPacket, frame: frame}); err != nil {
 		t.Fatal(err)
 	}
@@ -119,29 +120,28 @@ func TestCapacityStopsManagerRetriesAndPreservesHistory(t *testing.T) {
 				state = "peer-capacity-reached"
 			}
 			snapshot := m.Snapshot()
-			if snapshot.State != state || snapshot.CanSend || snapshot.CanConnect || len(snapshot.Messages) != 1 || snapshot.Messages[0].Delivered || profiles.Load() != 1 {
+			if snapshot.State != state || snapshot.CanSend || !snapshot.CanConnect || len(snapshot.Messages) != 1 || snapshot.Messages[0].Delivered || profiles.Load() != 1 {
 				t.Fatal("capacity failure lost history or remained silently usable")
 			}
 			if _, err := m.Send(before.ID, "not permitted"); err == nil {
 				t.Fatal("stopped capacity state accepted new queued text")
 			}
-			if _, err := m.Connect(before.ID); err == nil || m.record != before {
-				t.Fatal("capacity failure retried or changed saved contact")
+			if m.record != before {
+				t.Fatal("capacity failure changed saved contact")
 			}
 		})
 	}
 }
 
-func TestFullLocalHistoryIsVisibleAndCannotQueueMore(t *testing.T) {
+func TestFullLocalStorageIsVisibleAndCannotQueueMore(t *testing.T) {
 	m, store, _ := newBlockedManager(t)
 	store.armed = false
-	for index := 0; index < chat.MaxMessages; index++ {
-		if _, err := m.conversation.Queue("synthetic bounded history"); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := m.conversation.Queue("synthetic retained text at disk quota"); err != nil {
+		t.Fatal(err)
 	}
+	store.full = true
 	snapshot := m.Snapshot()
-	if snapshot.State != "capacity-reached" || snapshot.CanSend || !snapshot.CanConnect || len(snapshot.Messages) != chat.MaxMessages {
+	if snapshot.State != "capacity-reached" || snapshot.CanSend || !snapshot.CanConnect || len(snapshot.Messages) != 1 {
 		t.Fatal("full local history was hidden or new queueing remained enabled")
 	}
 }

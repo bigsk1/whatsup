@@ -1,5 +1,5 @@
-// Package storage protects a bounded local state snapshot with AES-256-GCM.
-// The wrapping key lives in the OS credential store, never beside the snapshot.
+// Package storage protects bounded local state with an OS-wrapped master key.
+// Legacy AES-256-GCM snapshots remain readable for authenticated migration.
 package storage
 
 import (
@@ -43,17 +43,25 @@ type OSKeyStore struct{}
 func (OSKeyStore) Get() (string, error)   { return keyring.Get("WhatsUp", "local-state-v1") }
 func (OSKeyStore) Set(value string) error { return keyring.Set("WhatsUp", "local-state-v1", value) }
 
-type Vault struct {
-	mu          sync.Mutex
-	directory   string
-	key         []byte
-	lock        *flock.Flock
-	closed      bool
-	application *ApplicationState
+// Vault is a thin capability wrapper. Copies share state and closure rather
+// than copying a mutex or exposing key buffers through value formatting.
+type Vault struct{ *vaultState }
+
+type vaultState struct {
+	mu              sync.Mutex
+	directory       string
+	key             []byte
+	lock            *flock.Flock
+	closed          bool
+	application     *ApplicationState
+	master          []byte
+	masterPersisted bool
+	legacy          bool
 }
 
-func (v *Vault) String() string   { return "[locked backend-only WhatsUp vault]" }
-func (v *Vault) GoString() string { return v.String() }
+func (Vault) String() string               { return "[locked backend-only WhatsUp vault]" }
+func (v Vault) GoString() string           { return v.String() }
+func (Vault) MarshalJSON() ([]byte, error) { return nil, ErrLocked }
 
 // DefaultDirectory keeps private state outside the binary and source tree.
 func DefaultDirectory() (string, error) {
@@ -117,6 +125,11 @@ func Open(directory string, keys KeyStore) (*Vault, error) {
 	if err := regular(lockPath); err != nil {
 		return nil, err
 	}
+	if _, err := os.Lstat(statePath); os.IsNotExist(err) && messageFilesExist(directory) {
+		// A surviving database must never acquire a newly generated master or
+		// OS credential merely because its root envelope was lost.
+		return nil, ErrCorrupt
+	}
 	lock := flock.New(lockPath, flock.SetPermissions(0600))
 	ok, err := lock.TryLock()
 	if err != nil {
@@ -154,10 +167,13 @@ func Open(directory string, keys KeyStore) (*Vault, error) {
 		clear(key)
 		return fail(ErrCredential)
 	}
-	return &Vault{directory: directory, key: key, lock: lock}, nil
+	return &Vault{vaultState: &vaultState{directory: directory, key: key, lock: lock}}, nil
 }
 
 func (v *Vault) aead() (cipher.AEAD, error) {
+	if v == nil || v.vaultState == nil || v.closed {
+		return nil, ErrLocked
+	}
 	block, err := aes.NewCipher(v.key)
 	if err != nil {
 		return nil, err
@@ -167,6 +183,9 @@ func (v *Vault) aead() (cipher.AEAD, error) {
 
 // Load authenticates the entire bounded snapshot before returning any plaintext.
 func (v *Vault) Load() ([]byte, error) {
+	if v == nil || v.vaultState == nil {
+		return nil, ErrLocked
+	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.closed {
@@ -179,21 +198,32 @@ func (v *Vault) Load() ([]byte, error) {
 }
 
 func (v *Vault) loadLocked() ([]byte, error) {
-	if v.closed {
+	if v == nil || v.vaultState == nil || v.closed {
 		return nil, ErrLocked
 	}
 	filename := filepath.Join(v.directory, "state.vault")
+	v.clearMasterLocked()
+	v.legacy = false
 	if err := regular(filename); err != nil {
 		return nil, err
 	}
 	f, err := os.Open(filename)
 	if err != nil {
+		if os.IsNotExist(err) && messageFilesExist(v.directory) {
+			return nil, ErrCorrupt
+		}
 		return nil, err
 	}
 	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, MaxStateBytes+128))
+	data, err := io.ReadAll(io.LimitReader(f, maxRootFileBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(data) > maxRootFileBytes {
+		return nil, ErrCorrupt
+	}
+	if bytes.HasPrefix(data, rootHeader) {
+		return v.loadRootLocked(data[len(rootHeader):])
 	}
 	aead, err := v.aead()
 	if err != nil {
@@ -207,12 +237,16 @@ func (v *Vault) loadLocked() ([]byte, error) {
 	if err != nil {
 		return nil, ErrCorrupt
 	}
+	v.legacy = true
 	return plain, nil
 }
 
 // Save syncs a ciphertext-only temporary file and atomically replaces the snapshot.
 // It provides no rollback protection against a malicious local backup or OS owner.
 func (v *Vault) Save(plain []byte) error {
+	if v == nil || v.vaultState == nil {
+		return ErrLocked
+	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.closed {
@@ -225,22 +259,16 @@ func (v *Vault) Save(plain []byte) error {
 }
 
 func (v *Vault) saveLocked(plain []byte) error {
-	if v.closed {
+	if v == nil || v.vaultState == nil || v.closed {
 		return ErrLocked
 	}
 	if len(plain) > MaxStateBytes {
 		return errors.New("local state exceeds its safety limit")
 	}
-	aead, err := v.aead()
+	sealed, err := v.sealRootLocked(plain)
 	if err != nil {
 		return err
 	}
-	nonce := make([]byte, aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return err
-	}
-	sealed := append(append([]byte{}, header...), nonce...)
-	sealed = aead.Seal(sealed, nonce, plain, header)
 	filename := filepath.Join(v.directory, "state.vault")
 	if err := regular(filename); err != nil {
 		return err
@@ -269,26 +297,40 @@ func (v *Vault) saveLocked(plain []byte) error {
 	if err := os.Rename(temp, filename); err != nil {
 		return err
 	}
-	return syncDirectory(v.directory)
+	if err := syncDirectory(v.directory); err != nil {
+		return err
+	}
+	v.masterPersisted = true
+	v.legacy = false
+	return nil
 }
 
 func (v *Vault) Close() error {
+	if v == nil || v.vaultState == nil {
+		return nil
+	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.closed && v.lock == nil {
 		return nil
 	}
 	v.closed = true
+	var applicationErr error
 	if v.application != nil {
+		applicationErr = v.application.closeMessageStoreLocked()
 		v.application.clearLocked()
 	}
 	clear(v.key)
 	v.key = nil
+	v.clearMasterLocked()
 	// If the OS refuses unlock, keep the handle so callers can retry. Access to
 	// plaintext stays closed regardless of the lock release result.
-	err := v.lock.Close()
-	if err == nil {
-		v.lock = nil
+	var err error
+	if v.lock != nil {
+		err = v.lock.Close()
+		if err == nil {
+			v.lock = nil
+		}
 	}
-	return err
+	return errors.Join(applicationErr, err)
 }

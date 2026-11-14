@@ -25,6 +25,8 @@ type Operation =
   | 'GetProfile'
   | 'ConnectContact'
   | 'ForgetContact'
+  | 'ClearHistory'
+  | 'DeleteMessage'
   | 'SendMessage';
 
 // These tests drive the actual app and generated Wails HTTP bindings using
@@ -44,6 +46,8 @@ for (const name of [
   'GetProfile',
   'ConnectContact',
   'ForgetContact',
+  'ClearHistory',
+  'DeleteMessage',
   'SendMessage',
 ] as const) {
   const match = generated.match(
@@ -170,6 +174,20 @@ async function syntheticMessaging(
           };
       state.conversation = result;
       await route.fulfill({ json: result });
+    } else if (operation === 'ClearHistory' || operation === 'DeleteMessage') {
+      const current = state.conversation as ConversationSnapshot;
+      state.conversation = {
+        ...current,
+        state: 'offline',
+        revision: current.revision + 1,
+        canConnect: true,
+        canSend: true,
+        messages:
+          operation === 'ClearHistory'
+            ? []
+            : current.messages.filter((item) => item.id !== args[1]),
+      };
+      await route.fulfill({ json: state.conversation });
     } else if (operation === 'ForgetContact') {
       if (state.forget) await state.forget();
       if (state.forgetFailure) {
@@ -217,6 +235,95 @@ async function syntheticMessaging(
   await page.addInitScript(injectRuntime);
   return { state, calls, errors, external };
 }
+
+test('clear history is confirmed, keeps the contact and recovers from storage full', async ({
+  page,
+}) => {
+  const { calls, errors, external } = await syntheticMessaging(
+    page,
+    approved({
+      state: 'capacity-reached',
+      canSend: false,
+      messages: [message()],
+    }),
+  );
+  await page.goto('/');
+  await page
+    .getByRole('button', { name: 'Clear history…', exact: true })
+    .click();
+  let dialog = page.getByRole('dialog', { name: 'Clear local history?' });
+  await expect(dialog).toContainText(
+    'Messages still queued for delivery continue sending until acknowledged.',
+  );
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  expect(calls.some((call) => call.operation === 'ClearHistory')).toBe(false);
+  await page
+    .getByRole('button', { name: 'Clear history…', exact: true })
+    .click();
+  dialog = page.getByRole('dialog', { name: 'Clear local history?' });
+  await dialog
+    .getByRole('button', { name: 'Clear history', exact: true })
+    .click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByRole('log', { name: 'Messages' })).not.toContainText(
+    incomingText,
+  );
+  await expect(
+    page.getByRole('textbox', { name: 'Message', exact: true }),
+  ).toBeEnabled();
+  expect(
+    calls
+      .filter((call) => call.operation === 'ClearHistory')
+      .map((call) => call.args),
+  ).toEqual([[contactID]]);
+  expect(
+    calls.some((call) =>
+      ['ForgetContact', 'LockStorage', 'ConnectContact'].includes(
+        call.operation,
+      ),
+    ),
+  ).toBe(false);
+  expect(errors).toEqual([]);
+  expect(external).toEqual([]);
+});
+
+test('deleting one local message preserves the other messages and selected contact', async ({
+  page,
+}) => {
+  const { calls, errors, external } = await syntheticMessaging(
+    page,
+    approved({
+      messages: [message(), message(nextID, 'Another synthetic message')],
+    }),
+  );
+  await page.goto('/');
+  await page
+    .getByRole('article', { name: 'Contact message' })
+    .filter({ hasText: incomingText })
+    .getByRole('button', { name: 'Delete local message', exact: true })
+    .click();
+  const dialog = page.getByRole('dialog', {
+    name: 'Delete this local message?',
+  });
+  await dialog
+    .getByRole('button', { name: 'Delete local message', exact: true })
+    .click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByRole('log', { name: 'Messages' })).not.toContainText(
+    incomingText,
+  );
+  await expect(page.getByRole('log', { name: 'Messages' })).toContainText(
+    'Another synthetic message',
+  );
+  expect(
+    calls
+      .filter((call) => call.operation === 'DeleteMessage')
+      .map((call) => call.args),
+  ).toEqual([[contactID, firstID]]);
+  expect(calls.some((call) => call.operation === 'ForgetContact')).toBe(false);
+  expect(errors).toEqual([]);
+  expect(external).toEqual([]);
+});
 
 for (const state of ['authentication-failed', 'update-required'] as const) {
   test(`${state} explains authentication without losing local history`, async ({
