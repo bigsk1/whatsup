@@ -54,6 +54,29 @@ func privateDirectory(t *testing.T) string {
 	return filepath.Join(t.TempDir(), "private")
 }
 
+func TestSurvivingPreferencesNeverMintReplacementOSCredential(t *testing.T) {
+	dir := privateDirectory(t)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "app-preferences.vault")
+	want := []byte("synthetic retained encrypted preference bytes")
+	if err := os.WriteFile(path, want, 0600); err != nil {
+		t.Fatal(err)
+	}
+	keys := &memoryKeys{}
+	if vault, err := Open(dir, keys); !errors.Is(err, ErrCredential) {
+		if vault != nil {
+			_ = vault.Close()
+		}
+		t.Fatal("surviving preferences allowed a new OS key")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, want) || keys.writes != 0 || keys.value != "" {
+		t.Fatal("surviving preferences or credential changed")
+	}
+}
+
 func TestEncryptedStateSurvivesReopenAndNeverWritesPlaintext(t *testing.T) {
 	dir := privateDirectory(t)
 	keys := &memoryKeys{}

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -16,7 +17,25 @@ func validRelaySelection(raw string) bool {
 		return false
 	}
 	u, err := url.Parse(raw)
-	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" && u.Opaque == "" && u.String() == raw
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || u.String() != raw {
+		return false
+	}
+	if port := u.Port(); port != "" {
+		number, err := strconv.Atoi(port)
+		if err != nil || number < 1 || number > 65535 || strconv.Itoa(number) != port {
+			return false
+		}
+	}
+	return strings.IndexFunc(raw, func(r rune) bool { return r < 33 || r > 126 }) < 0
+}
+
+// ValidateRelayServiceURL is syntactic only. It never resolves DNS or fetches a
+// map; transport validates public destinations only after explicit consent.
+func ValidateRelayServiceURL(raw string) error {
+	if !validRelaySelection(raw) {
+		return ErrInvalid
+	}
+	return nil
 }
 
 // RoutingCommitment hashes the exact explicitly accepted service and ongoing

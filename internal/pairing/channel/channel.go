@@ -77,6 +77,7 @@ type sessionState struct {
 	peer               identity.PublicKey
 	role               Role
 	invite             [16]byte
+	contextBinding     [32]byte
 	expires            time.Time
 	localDeadline      time.Time
 	binding            [32]byte
@@ -137,6 +138,13 @@ func (s *Session) InvitationID() [16]byte {
 		return [16]byte{}
 	}
 	return s.state.invite
+}
+
+func (s *Session) ContextBinding() [32]byte {
+	if s == nil || s.state == nil {
+		return [32]byte{}
+	}
+	return s.state.contextBinding
 }
 
 func (a *Approval) Local() identity.PublicKey { return (&Session{state: a.shared()}).Local() }
@@ -216,17 +224,17 @@ func (s *sessionState) operationDeadline() time.Time {
 // NewClient takes ownership of raw, including on failure, and pins the inviter's
 // complete identity from the invitation. The caller must authenticate the invite
 // bearer and atomically reserve it separately; a TLS connection is not approval.
-func NewClient(ctx context.Context, raw net.Conn, local *identity.Identity, expectedOwner identity.PublicKey, invitationID [16]byte, expiresAt time.Time) (*Session, error) {
-	return newSession(ctx, raw, local, expectedOwner, invitationID, expiresAt, Joiner)
+func NewClient(ctx context.Context, raw net.Conn, local *identity.Identity, expectedOwner identity.PublicKey, invitationID [16]byte, expiresAt time.Time, binding ...[32]byte) (*Session, error) {
+	return newSession(ctx, raw, local, expectedOwner, invitationID, expiresAt, Joiner, binding...)
 }
 
 // NewServer requires an Ed25519 client certificate and TLS proof of its private
 // key. That authenticated candidate remains pending and has no application API.
-func NewServer(ctx context.Context, raw net.Conn, local *identity.Identity, invitationID [16]byte, expiresAt time.Time) (*Session, error) {
-	return newSession(ctx, raw, local, identity.PublicKey{}, invitationID, expiresAt, Inviter)
+func NewServer(ctx context.Context, raw net.Conn, local *identity.Identity, invitationID [16]byte, expiresAt time.Time, binding ...[32]byte) (*Session, error) {
+	return newSession(ctx, raw, local, identity.PublicKey{}, invitationID, expiresAt, Inviter, binding...)
 }
 
-func newSession(ctx context.Context, raw net.Conn, local *identity.Identity, expected identity.PublicKey, invitationID [16]byte, expiresAt time.Time, role Role) (*Session, error) {
+func newSession(ctx context.Context, raw net.Conn, local *identity.Identity, expected identity.PublicKey, invitationID [16]byte, expiresAt time.Time, role Role, bindings ...[32]byte) (*Session, error) {
 	if raw == nil {
 		return nil, ErrInvalid
 	}
@@ -237,7 +245,7 @@ func newSession(ctx context.Context, raw net.Conn, local *identity.Identity, exp
 		}
 	}()
 	now := time.Now()
-	if ctx == nil || local == nil || !local.PublicKey().Valid() || invitationID == [16]byte{} || (role == Joiner && (!expected.Valid() || expected.Equal(local.PublicKey()))) || expiresAt.IsZero() || (role == Inviter && expiresAt.After(now.Add(MaxLifetime))) {
+	if len(bindings) > 1 || ctx == nil || local == nil || !local.PublicKey().Valid() || invitationID == [16]byte{} || (role == Joiner && (!expected.Valid() || expected.Equal(local.PublicKey()))) || expiresAt.IsZero() || (role == Inviter && expiresAt.After(now.Add(MaxLifetime))) {
 		return nil, ErrInvalid
 	}
 	if role == Inviter && !now.Before(expiresAt) {
@@ -254,8 +262,12 @@ func newSession(ctx context.Context, raw net.Conn, local *identity.Identity, exp
 	if err != nil {
 		return nil, ErrHandshake
 	}
-	state := &sessionState{raw: raw, local: local.PublicKey(), role: role, invite: invitationID, expires: expiresAt, localDeadline: localDeadline, phase: pending}
-	config := tlsConfig(certificate, state.local, expected, invitationID)
+	var contextBinding [32]byte
+	if len(bindings) == 1 {
+		contextBinding = bindings[0]
+	}
+	state := &sessionState{raw: raw, local: local.PublicKey(), role: role, invite: invitationID, contextBinding: contextBinding, expires: expiresAt, localDeadline: localDeadline, phase: pending}
+	config := tlsConfig(certificate, state.local, expected, invitationID, contextBinding)
 	verify := config.VerifyConnection
 	config.VerifyConnection = func(connection tls.ConnectionState) error {
 		err := verify(connection)
@@ -289,7 +301,7 @@ func newSession(ctx context.Context, raw net.Conn, local *identity.Identity, exp
 		return nil, ErrHandshake
 	}
 	connection := state.tls.ConnectionState()
-	state.peer, err = verifyPeer(connection, state.local, expected, invitationID, time.Now())
+	state.peer, err = verifyPeer(connection, state.local, expected, invitationID, time.Now(), contextBinding)
 	if err != nil || !connection.HandshakeComplete || connection.DidResume {
 		return nil, ErrHandshake
 	}
@@ -336,10 +348,18 @@ func contextEnded(ctx context.Context) bool {
 	return ok && !time.Now().Before(deadline)
 }
 
-func tlsConfig(certificate tls.Certificate, local, expected identity.PublicKey, invitationID [16]byte) *tls.Config {
+func invitationProtocol(invitationID [16]byte, bindings ...[32]byte) string {
+	alpn := protocol + "." + base64.RawURLEncoding.EncodeToString(invitationID[:])
+	if len(bindings) == 1 && bindings[0] != [32]byte{} {
+		alpn = "whatsup-pairing/2." + base64.RawURLEncoding.EncodeToString(invitationID[:]) + "." + base64.RawURLEncoding.EncodeToString(bindings[0][:])
+	}
+	return alpn
+}
+
+func tlsConfig(certificate tls.Certificate, local, expected identity.PublicKey, invitationID [16]byte, binding ...[32]byte) *tls.Config {
 	// The canonical invitation ID is public context, not the bearer secret. ALPN
 	// binds it into the TLS handshake and rejects reuse for another invitation.
-	alpn := protocol + "." + base64.RawURLEncoding.EncodeToString(invitationID[:])
+	alpn := invitationProtocol(invitationID, binding...)
 	return &tls.Config{
 		MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
 		Certificates: []tls.Certificate{certificate}, NextProtos: []string{alpn},
@@ -349,15 +369,15 @@ func tlsConfig(certificate tls.Certificate, local, expected identity.PublicKey, 
 		// verification below. It never permits an unverified peer connection.
 		InsecureSkipVerify: true,
 		VerifyConnection: func(state tls.ConnectionState) error {
-			_, err := verifyPeer(state, local, expected, invitationID, time.Now())
+			_, err := verifyPeer(state, local, expected, invitationID, time.Now(), binding...)
 			return err
 		},
 	}
 }
 
-func verifyPeer(state tls.ConnectionState, local, expected identity.PublicKey, invitationID [16]byte, now time.Time) (identity.PublicKey, error) {
+func verifyPeer(state tls.ConnectionState, local, expected identity.PublicKey, invitationID [16]byte, now time.Time, binding ...[32]byte) (identity.PublicKey, error) {
 	var peer identity.PublicKey
-	alpn := protocol + "." + base64.RawURLEncoding.EncodeToString(invitationID[:])
+	alpn := invitationProtocol(invitationID, binding...)
 	if state.Version != tls.VersionTLS13 || state.DidResume || state.NegotiatedProtocol != alpn || len(state.PeerCertificates) != 1 {
 		return peer, ErrHandshake
 	}

@@ -316,7 +316,7 @@ func (c *Coordinator) setState(a *attempt, state string) bool {
 }
 
 func (c *Coordinator) run(ctx context.Context, raw net.Conn, invite pairing.Invite, manager *pairing.Manager, role channel.Role, profiles ...*transport.RelayProfile) (runErr error) {
-	if len(profiles) > 1 || len(profiles) == 1 && !profiles[0].Ready() {
+	if len(profiles) > 1 || len(profiles) == 1 && !profiles[0].Ready() || invite.ServiceURL() != "" && (len(profiles) != 1 || !profiles[0].ReadyFor(invite.ServiceURL())) {
 		if raw != nil {
 			_ = raw.Close()
 		}
@@ -344,9 +344,9 @@ func (c *Coordinator) run(ctx context.Context, raw net.Conn, invite pairing.Invi
 	}()
 	var session *channel.Session
 	if role == channel.Inviter {
-		session, err = channel.NewServer(a.ctx, raw, c.local, invite.ChannelID(), invite.ExpiresAt())
+		session, err = channel.NewServer(a.ctx, raw, c.local, invite.ChannelID(), invite.ExpiresAt(), invite.ContextBinding())
 	} else {
-		session, err = channel.NewClient(a.ctx, raw, c.local, invite.Owner(), invite.ChannelID(), invite.ExpiresAt())
+		session, err = channel.NewClient(a.ctx, raw, c.local, invite.Owner(), invite.ChannelID(), invite.ExpiresAt(), invite.ContextBinding())
 	}
 	if err != nil || a.setSession(session) != nil {
 		return ErrProtocol

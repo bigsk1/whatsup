@@ -63,6 +63,10 @@ export function ForgetContact(contactID: string): $CancellablePromise<messaging$
     return $Call.ByID(1502447616, contactID);
 }
 
+export function GetAppPreferences(): $CancellablePromise<$models.AppPreferences> {
+    return $Call.ByID(4280908016);
+}
+
 export function GetContacts(): $CancellablePromise<messaging$0.ContactSummary[] | null> {
     return $Call.ByID(572605814);
 }
@@ -91,6 +95,14 @@ export function GetStatus(): $CancellablePromise<$models.Status> {
     return $Call.ByID(3129447825);
 }
 
+/**
+ * InspectInvitation is a local-only parse, independent of storage unlock. No
+ * resolver, HTTP client, transport factory or pairing controller is consulted.
+ */
+export function InspectInvitation(link: string): $CancellablePromise<$models.InvitationInspection> {
+    return $Call.ByID(331655896, link);
+}
+
 export function JoinInvitation(link: string, relayMapURL: string, allowRelayFallback: boolean): $CancellablePromise<pairflow$0.Snapshot> {
     return $Call.ByID(862877042, link, relayMapURL, allowRelayFallback);
 }
@@ -107,6 +119,10 @@ export function SendMessage(contactID: string, text: string): $CancellablePromis
     return $Call.ByID(2070448990, contactID, text);
 }
 
+export function SetAppPreferences(values: $models.AppPreferences): $CancellablePromise<$models.AppPreferences> {
+    return $Call.ByID(2345815276, values);
+}
+
 export function SetContactName(contactID: string, localName: string): $CancellablePromise<messaging$0.Snapshot> {
     return $Call.ByID(3486640966, contactID, localName);
 }
@@ -116,9 +132,10 @@ export function SetProfile(displayName: string, shareDisplayName: boolean): $Can
 }
 
 /**
- * UnlockStorage opens OS-protected local identity and approved local chat state.
- * It starts no listener or connection and emits no invitation. Offline queueing
- * is independent of the fresh authentication required by each live session.
+ * UnlockStorage opens OS-protected identity and approved local chat state. The
+ * native construction policy automatically connects saved approved contacts;
+ * component constructors remain offline unless that policy is explicitly set.
+ * Unlock never emits an invitation or grants a pending pairing chat authority.
  */
 export function UnlockStorage(): $CancellablePromise<$models.Status> {
     return $Call.ByID(4289999910);

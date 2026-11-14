@@ -40,7 +40,15 @@ const (
 	RuntimeWarning
 	RuntimeError
 	RuntimePanic
+	RelayFetchFailed
+	DialFailed
+	AuthenticationFailed
+	IdentityChanged
+	CapacityReached
+	TransferFailed
 )
+
+const FailureInterval = 30 * time.Second
 
 var (
 	ErrEvent       = errors.New("unknown local diagnostic event")
@@ -74,6 +82,18 @@ func eventName(event Event) (string, error) {
 		return "runtime_error", nil
 	case RuntimePanic:
 		return "runtime_panic", nil
+	case RelayFetchFailed:
+		return "relay_fetch_failed", nil
+	case DialFailed:
+		return "dial_failed", nil
+	case AuthenticationFailed:
+		return "authentication_failed", nil
+	case IdentityChanged:
+		return "identity_changed", nil
+	case CapacityReached:
+		return "capacity_reached", nil
+	case TransferFailed:
+		return "transfer_failed", nil
 	default:
 		return "", ErrEvent
 	}
@@ -92,15 +112,17 @@ type record struct {
 // directories and the local OS account remain trusted. Windows files inherit the
 // user's application-data ACL; Unix mode bits are not a Windows ACL sandbox.
 type Recorder struct {
-	mu        sync.Mutex
-	directory string
-	version   string
-	goVersion string
-	file      *os.File
-	lock      *flock.Flock
-	size      int64
-	closed    bool
-	failed    bool
+	mu          sync.Mutex
+	directory   string
+	version     string
+	goVersion   string
+	file        *os.File
+	lock        *flock.Flock
+	size        int64
+	closed      bool
+	failed      bool
+	lastFailure [TransferFailed + 1]time.Time
+	clock       func() time.Time
 }
 
 func (r *Recorder) String() string   { return "[local WhatsUp diagnostics recorder]" }
@@ -239,7 +261,14 @@ func (r *Recorder) Record(event Event) error {
 	if r.failed || r.file == nil {
 		return ErrWrite
 	}
-	data, err := json.Marshal(record{UTC: time.Now().UTC(), AppVersion: r.version, GoVersion: r.goVersion, Platform: runtime.GOOS, Arch: runtime.GOARCH, Event: name})
+	now := time.Now()
+	if r.clock != nil {
+		now = r.clock()
+	}
+	if failureEvent(event) && !r.lastFailure[event].IsZero() && now.Sub(r.lastFailure[event]) < FailureInterval {
+		return nil
+	}
+	data, err := json.Marshal(record{UTC: now.UTC(), AppVersion: r.version, GoVersion: r.goVersion, Platform: runtime.GOOS, Arch: runtime.GOARCH, Event: name})
 	if err != nil {
 		return ErrWrite
 	}
@@ -258,6 +287,9 @@ func (r *Recorder) Record(event Event) error {
 	if err := r.file.Sync(); err != nil {
 		r.failed = true
 		return ErrWrite
+	}
+	if failureEvent(event) {
+		r.lastFailure[event] = now
 	}
 	return nil
 }
@@ -310,6 +342,6 @@ func (r *Recorder) Close() error {
 
 // Handler discards raw slog messages and every attribute/group. It records only
 // generic warning/error events and never resolves a caller's slog.LogValuer.
-func (r *Recorder) Handler() slog.Handler { return &handler{recorder: r} }
+func (r *Recorder) Handler() slog.Handler { return &handler{record: r.Record} }
 
 func (r *Recorder) WailsLogger() *slog.Logger { return slog.New(r.Handler()) }

@@ -1,5 +1,9 @@
 import { hasDesktopBridge } from './backend';
 
+export const maximumInvitationBytes = 8192;
+export const maximumServiceURLBytes = 2048;
+const linkEncoder = new TextEncoder();
+
 export const pairingStates = [
   'unavailable',
   'idle',
@@ -108,7 +112,8 @@ export function validatePairingStatus(value: unknown): PairingStatus {
 export function validConnectionService(value: string): boolean {
   if (
     value.length === 0 ||
-    value.length > 2048 ||
+    value.length > maximumServiceURLBytes ||
+    linkEncoder.encode(value).length > maximumServiceURLBytes ||
     /[\s\u0000-\u001f\u007f]/.test(value)
   )
     return false;
@@ -129,7 +134,8 @@ export function validConnectionService(value: string): boolean {
 export function validInvitationLink(value: string): boolean {
   if (
     value.length === 0 ||
-    value.length > 2048 ||
+    value.length > maximumInvitationBytes ||
+    linkEncoder.encode(value).length > maximumInvitationBytes ||
     /[\s\u0000-\u001f\u007f]/.test(value)
   )
     return false;
@@ -138,7 +144,7 @@ export function validInvitationLink(value: string): boolean {
     return (
       url.protocol === 'whatsup:' &&
       url.hostname === 'pair' &&
-      url.pathname === '/v1' &&
+      ['/v1', '/v2'].includes(url.pathname) &&
       url.username === '' &&
       url.password === '' &&
       url.hash === '' &&
@@ -215,7 +221,7 @@ export async function createInvitation(
 ): Promise<InvitationShare> {
   if (!validConnectionService(relayMapURL) || allowRelayFallback !== true)
     throw new Error(
-      'Choose an HTTPS connection service and allow encrypted pairing relay.',
+      'Choose an HTTPS connection service and allow encrypted relay connections.',
     );
   try {
     return validateInvitationShare(

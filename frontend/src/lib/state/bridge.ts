@@ -45,7 +45,7 @@ function revision(value: unknown): value is number {
 export function validateSummary(value: unknown): ContactSummary {
   const record = object(value);
   if (
-    Object.keys(record).length !== 9 ||
+    Object.keys(record).length !== 10 ||
     !revision(record.unread) ||
     !validID(record.contactID)
   )
@@ -97,6 +97,7 @@ export function validatePage(value: unknown, contactID: string): MessagePage {
     canConnect: true,
     canSend: true,
     messages: record.messages,
+    path: 'Unknown',
   });
   return {
     contactID,

@@ -27,6 +27,7 @@
   import ForgetContactDialog from './lib/components/ForgetContactDialog.svelte';
   import HistoryDialog from './lib/components/HistoryDialog.svelte';
   import { createHistoryActions } from './lib/state/history';
+  import { createAppPreferences } from './lib/state/preferences';
   import { createSession } from './lib/state/session';
   import ContactList from './lib/components/ContactList.svelte';
   import {
@@ -48,6 +49,8 @@
   import { createProfile } from './lib/state/profile';
   import type { LocalProfile } from './lib/profile';
 
+  const appPreferences = createAppPreferences();
+  const appPreferencesState = appPreferences.state;
   const session = createSession();
   const sessionState = session.state;
   const status = $derived($sessionState.status);
@@ -124,8 +127,13 @@
 
   function settingsChanged(open: boolean) {
     settingsOpen = open;
-    contacts.setVisible(!document.hidden && !open);
-    if (open) void refreshLocalProfile();
+    contacts.setVisible(
+      $sessionState.windowVisible && !document.hidden && !open,
+    );
+    if (open) {
+      void refreshLocalProfile();
+      if (native) void appPreferences.load();
+    }
   }
 
   function openSettings() {
@@ -152,10 +160,6 @@
     )
       return false;
     return contacts.apply(value);
-  }
-
-  async function refreshConversation() {
-    if (conversationEnabled()) await contacts.start();
   }
 
   function startConversationEvents() {
@@ -274,10 +278,7 @@
     fingerprint = '',
   ) => pairings.decide(requestID, approve, fingerprint);
 
-  async function refresh(
-    method: StatusMethod = 'GetStatus',
-    connectAfterUnlock = false,
-  ) {
+  async function refresh(method: StatusMethod = 'GetStatus') {
     if (busy) return;
     if (method === 'LockStorage' || method === 'UnlockStorage') {
       clearPairing();
@@ -287,6 +288,7 @@
     notice = '';
     const result = await session.refresh(method);
     if (!mounted || result === null) return;
+    void appPreferences.load();
     if (result.storageState !== 'unlocked') {
       clearPairing();
       clearConversation();
@@ -295,18 +297,12 @@
     }
     void refreshLocalProfile();
     startPairingPolling();
-    if (method === 'UnlockStorage' && connectAfterUnlock) {
-      const epoch = conversationEpoch;
-      await refreshConversation();
-      if (epoch === conversationEpoch && conversationEnabled())
-        await connectConversation();
-    }
     startConversationEvents();
   }
 
   function storageAction() {
     const unlock = status.storageState !== 'unlocked';
-    void refresh(unlock ? 'UnlockStorage' : 'LockStorage', unlock);
+    void refresh(unlock ? 'UnlockStorage' : 'LockStorage');
   }
 
   function updatePreferences(value: Preferences) {
@@ -320,7 +316,17 @@
   onMount(() => {
     mounted = true;
     contacts.setVisible(!document.hidden);
-    const stopSession = session.mount(() => void refresh());
+    const stopSession = session.mount(() => void refresh(), {
+      storage: () => {
+        clearPairing();
+        clearConversation();
+        clearProfile();
+      },
+      visibility: (visible) => {
+        contacts.setVisible(visible && !document.hidden && !settingsOpen);
+        if (visible && conversationEnabled()) void contacts.reload();
+      },
+    });
     const media = window.matchMedia('(prefers-color-scheme: dark)');
     const updateSystemTheme = () => applyPreferences(preferences);
     media.addEventListener('change', updateSystemTheme);
@@ -333,7 +339,9 @@
     window.addEventListener('keydown', keyboard);
     const recoverContacts = () => {
       if (conversationEnabled()) {
-        contacts.setVisible(!document.hidden && !settingsOpen);
+        contacts.setVisible(
+          $sessionState.windowVisible && !document.hidden && !settingsOpen,
+        );
         void contacts.reload();
       }
     };
@@ -346,6 +354,7 @@
       clearConversation();
       clearProfile();
       stopSession();
+      appPreferences.stop();
       media.removeEventListener('change', updateSystemTheme);
       window.removeEventListener('keydown', keyboard);
       window.removeEventListener('focus', recoverContacts);
@@ -494,6 +503,9 @@
           </h2>
           <p>
             {hasContact ? connectionLabel : 'A private space. A familiar face.'}
+            {#if hasContact}<span aria-label="Conversation connection path">
+                · {conversation.path}</span
+              >{/if}
           </p>
         </div>
       </div>
@@ -523,8 +535,8 @@
           disabled={!native || busy}
           onclick={storageAction}
           >{status.storageState === 'unlocked'
-            ? 'Disconnect and lock'
-            : 'Unlock and connect'}</button
+            ? 'Go offline'
+            : 'Go online'}</button
         >
       </div>
       <button
@@ -743,7 +755,7 @@
           <p>
             {native && status.storageState === 'unlocked'
               ? 'Create or join a private invitation to approve your contact.'
-              : 'Choose Unlock and connect to reconnect or start a private invitation in the desktop app.'}
+              : 'Choose Go online to reconnect or start a private invitation in the desktop app.'}
           </p>
         </div>
         <div class="welcome-details">
@@ -842,6 +854,9 @@
   {preferences}
   {native}
   {busy}
+  appPreferences={$appPreferencesState}
+  onapppreferences={(value) => void appPreferences.save(value)}
+  onreloadapppreferences={() => void appPreferences.load()}
   onpreferences={updatePreferences}
   onstorage={storageAction}
   canForget={hasContact && status.storageState === 'unlocked'}
@@ -933,10 +948,11 @@
     <p class="muted small">
       Both devices need to be running to exchange messages. Your selected
       connection service learns your IP address and availability and may relay
-      encrypted traffic. Unlock and connect starts automatic retries to your
-      saved contact; Connect can retry a stopped connection. Opening the app
-      starts no network connection. Disconnect and lock stops messaging and
-      locks local data while keeping your saved contact and conversation.
+      encrypted traffic. In OS-only mode, launch opens local storage and
+      reconnects saved contacts automatically. Go online reconnects after you
+      have gone offline; Connect retries a stopped contact connection. Go
+      offline stops messaging and locks local data while keeping saved contacts
+      and history.
     </p>
     <p class="muted small">
       WhatsUp keeps redacted troubleshooting logs locally and has no analytics

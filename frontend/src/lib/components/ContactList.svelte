@@ -28,6 +28,9 @@
       <span class="contact-details">
         <strong>{contactLabel(contact)}</strong>
         <span>{connectionLabel(contact.state)}</span>
+        <span aria-label="Connection path"
+          >{contact.state === 'connected' ? contact.path : 'Unknown'}</span
+        >
         <code>{contact.peerFingerprint.slice(0, 12)}…</code>
       </span>
       {#if contact.unread > 0}

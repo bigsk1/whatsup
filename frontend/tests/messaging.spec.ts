@@ -1,3 +1,4 @@
+import { serveDefaultAppPreferences } from './contact-events';
 import {
   contactSummary,
   messagePage,
@@ -71,6 +72,7 @@ function approved(
 ): ConversationSnapshot {
   return {
     state: 'offline',
+    path: 'Unknown',
     revision: 1,
     contactID,
     peerFingerprint,
@@ -129,6 +131,7 @@ async function syntheticMessaging(
       external.push(request.url());
   });
   await page.route('**/wails/runtime', async (route) => {
+    if (await serveDefaultAppPreferences(route)) return;
     const body = route.request().postDataJSON();
     const operation = operations[body.args?.methodID];
     if (
@@ -141,7 +144,17 @@ async function syntheticMessaging(
     const args: unknown[] = body.args?.args ?? [];
     calls.push({ operation, args });
     if (['GetStatus', 'UnlockStorage', 'LockStorage'].includes(operation)) {
-      if (operation === 'UnlockStorage') state.storage = 'unlocked';
+      if (operation === 'UnlockStorage') {
+        state.storage = 'unlocked';
+        const current = state.conversation as ConversationSnapshot;
+        if (current.contactID)
+          state.conversation = {
+            ...current,
+            state: 'connecting',
+            canConnect: false,
+            revision: current.revision + 1,
+          };
+      }
       if (operation === 'LockStorage') {
         state.storage = 'locked';
         if (state.lock) await state.lock();
@@ -572,7 +585,7 @@ test('an authenticated acknowledgement updates one queued message and older poll
   expect(errors).toEqual([]);
 });
 
-test('Disconnect and lock clears messages and draft and rejects a send result arriving afterward', async ({
+test('Go offline clears messages and draft and rejects a send result arriving afterward', async ({
   page,
 }) => {
   const { state, calls, errors } = await syntheticMessaging(
@@ -597,9 +610,7 @@ test('Disconnect and lock clears messages and draft and rejects a send result ar
   await expect
     .poll(() => calls.some((call) => call.operation === 'SendMessage'))
     .toBe(true);
-  await page
-    .getByRole('button', { name: 'Disconnect and lock', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Go offline', exact: true }).click();
   await expect
     .poll(() => calls.some((call) => call.operation === 'LockStorage'))
     .toBe(true);
@@ -608,7 +619,7 @@ test('Disconnect and lock clears messages and draft and rejects a send result ar
   await expect(page.getByText(incomingText, { exact: true })).toHaveCount(0);
   releaseLock();
   await expect(
-    page.getByRole('button', { name: 'Unlock and connect', exact: true }),
+    page.getByRole('button', { name: 'Go online', exact: true }),
   ).toBeVisible();
   release();
   await expect(page.getByText(incomingText, { exact: true })).toHaveCount(0);
@@ -647,7 +658,7 @@ test('a failed queue save preserves the draft and displays only a fixed error', 
 });
 
 for (const entry of ['header', 'settings'] as const) {
-  test(`explicit Unlock and connect from ${entry} resumes the saved contact once`, async ({
+  test(`explicit Go online from ${entry} resumes the saved contact once`, async ({
     page,
   }) => {
     const { state, calls, errors } = await syntheticMessaging(page);
@@ -668,12 +679,11 @@ for (const entry of ['header', 'settings'] as const) {
         ? page.getByRole('region', { name: 'Settings', exact: true })
         : page.locator('.conversation-header');
     await surface
-      .getByRole('button', { name: 'Unlock and connect', exact: true })
+      .getByRole('button', { name: 'Go online', exact: true })
       .click();
     await expect
       .poll(
-        () =>
-          calls.filter((call) => call.operation === 'ConnectContact').length,
+        () => calls.filter((call) => call.operation === 'UnlockStorage').length,
       )
       .toBe(1);
     if (entry === 'settings')
@@ -692,7 +702,7 @@ for (const entry of ['header', 'settings'] as const) {
       calls.filter((call) => call.operation === 'UnlockStorage'),
     ).toHaveLength(1);
     expect(calls.filter((call) => call.operation === 'ConnectContact')).toEqual(
-      [{ operation: 'ConnectContact', args: [contactID] }],
+      [],
     );
     const firstUnlock = calls.findIndex(
       (call) => call.operation === 'UnlockStorage',
@@ -700,11 +710,7 @@ for (const entry of ['header', 'settings'] as const) {
     const firstConversation = calls.findIndex(
       (call) => call.operation === 'GetContacts',
     );
-    const firstConnect = calls.findIndex(
-      (call) => call.operation === 'ConnectContact',
-    );
     expect(firstConversation).toBeGreaterThan(firstUnlock);
-    expect(firstConnect).toBeGreaterThan(firstConversation);
     expect(errors).toEqual([]);
   });
 }
@@ -731,7 +737,7 @@ test('a contact arriving through an event hint never starts a new connection fro
   expect(errors).toEqual([]);
 });
 
-test('locking during Unlock and connect invalidates its delayed saved-contact response', async ({
+test('locking during Go online invalidates its delayed saved-contact response', async ({
   page,
 }) => {
   const { state, calls, errors } = await syntheticMessaging(page);
@@ -739,13 +745,9 @@ test('locking during Unlock and connect invalidates its delayed saved-contact re
   let release!: () => void;
   state.holdPoll = () => new Promise<void>((resolve) => (release = resolve));
   await page.goto('/');
-  await page
-    .getByRole('button', { name: 'Unlock and connect', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Go online', exact: true }).click();
   await expect.poll(() => state.pollHeld).toBe(true);
-  await page
-    .getByRole('button', { name: 'Disconnect and lock', exact: true })
-    .click();
+  await page.getByRole('button', { name: 'Go offline', exact: true }).click();
   await expect(
     page.getByText('Local storage locked', { exact: true }),
   ).toBeVisible();

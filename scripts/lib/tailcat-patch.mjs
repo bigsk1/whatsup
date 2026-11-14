@@ -38,10 +38,10 @@ export function verifyTailcatPatch(root, pins) {
     const manifestBytes = regularFile(path.join(root, 'config/tailcat-patch.json'), 64 << 10);
     const manifest = JSON.parse(manifestBytes.toString('utf8'));
     if (manifest.schemaVersion !== 1 || manifest.module !== moduleName || manifest.version !== moduleVersion
-        || manifest.upstreamRevision !== revision || manifest.patchVersion !== 1
+        || manifest.upstreamRevision !== revision || manifest.patchVersion !== 2
         || manifest.replacement !== replacementPath || pins?.[moduleName] !== moduleVersion
         || manifest.upstreamRepository !== 'https://github.com/tailscale/tailcat'
-        || JSON.stringify(manifest.purpose) !== JSON.stringify(['derp_application_stats_opt_out', 'disable_bearer_debug_logging'])
+        || JSON.stringify(manifest.purpose) !== JSON.stringify(['derp_application_stats_opt_out', 'disable_bearer_debug_logging', 'readonly_client_status'])
         || !Array.isArray(manifest.files) || manifest.files.length < 5 || manifest.files.length > 64) fail();
     const declared = new Map();
     for (const entry of manifest.files) {

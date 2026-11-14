@@ -35,6 +35,7 @@ export interface ConversationSnapshot {
   canConnect: boolean;
   canSend: boolean;
   messages: ConversationMessage[];
+  path: 'Unknown' | 'Direct' | 'Relayed';
 }
 
 export const unavailableConversation: ConversationSnapshot = Object.freeze({
@@ -47,6 +48,7 @@ export const unavailableConversation: ConversationSnapshot = Object.freeze({
   canConnect: false,
   canSend: false,
   messages: [],
+  path: 'Unknown',
 });
 
 const idPattern = /^[A-Za-z0-9_-]{21}[AQgw]$/;
@@ -132,6 +134,7 @@ export function validateConversation(value: unknown): ConversationSnapshot {
       'canConnect',
       'canSend',
       'messages',
+      'path',
     ]) ||
     !conversationStates.includes(record.state as ConversationState) ||
     !Number.isSafeInteger(record.revision) ||
@@ -144,6 +147,7 @@ export function validateConversation(value: unknown): ConversationSnapshot {
     !validDisplayName(record.localName) ||
     typeof record.canConnect !== 'boolean' ||
     typeof record.canSend !== 'boolean' ||
+    !['Unknown', 'Direct', 'Relayed'].includes(record.path as string) ||
     !Array.isArray(record.messages) ||
     record.messages.length > 100
   )
@@ -216,6 +220,10 @@ export function validateConversation(value: unknown): ConversationSnapshot {
     canConnect: record.canConnect,
     canSend: record.canSend,
     messages,
+    path:
+      record.state === 'connected'
+        ? (record.path as ConversationSnapshot['path'])
+        : 'Unknown',
   };
 }
 

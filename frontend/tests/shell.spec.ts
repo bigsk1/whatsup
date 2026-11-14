@@ -49,7 +49,7 @@ test('opens settings by keyboard, retains focus, and saves appearance only', asy
   const dialog = page.getByRole('region', { name: 'Settings', exact: true });
   await expect(dialog).toBeVisible();
   await expect(
-    dialog.getByRole('button', { name: 'Unlock and connect' }),
+    dialog.getByRole('button', { name: 'Go online' }),
   ).toBeDisabled();
   await dialog.getByRole('button', { name: 'Appearance', exact: true }).click();
   await page.getByRole('radio', { name: 'Light', exact: true }).check();

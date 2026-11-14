@@ -36,14 +36,14 @@ func authenticatedPair(t *testing.T, owner, candidate *identity.Identity, invite
 			accepted <- result{err: err}
 			return
 		}
-		session, err := channel.NewServer(ctx, connection, owner, invite.ChannelID(), invite.ExpiresAt())
+		session, err := channel.NewServer(ctx, connection, owner, invite.ChannelID(), invite.ExpiresAt(), invite.ContextBinding())
 		accepted <- result{session, err}
 	}()
 	connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined, err := channel.NewClient(ctx, connection, candidate, owner.PublicKey(), invite.ChannelID(), invite.ExpiresAt())
+	joined, err := channel.NewClient(ctx, connection, candidate, owner.PublicKey(), invite.ChannelID(), invite.ExpiresAt(), invite.ContextBinding())
 	if err != nil {
 		t.Fatal(err)
 	}

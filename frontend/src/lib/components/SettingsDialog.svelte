@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { groupedFingerprint } from '../state/fingerprint';
   import { tick } from 'svelte';
   import {
     ArrowLeft,
@@ -9,13 +10,15 @@
     Palette,
     ShieldCheck,
     UserRound,
+    Bell,
   } from '@lucide/svelte';
   import type { Status } from '../backend';
   import type { ConversationSnapshot } from '../messaging';
   import { validDisplayName, type LocalProfile } from '../profile';
   import type { Accent, Preferences, Theme } from '../themes/preferences';
+  import type { AppPreferences } from '../state/preferences';
 
-  type Page = 'profile' | 'contact' | 'appearance' | 'privacy';
+  type Page = 'profile' | 'contact' | 'appearance' | 'privacy' | 'app';
   let {
     status,
     preferences,
@@ -35,6 +38,9 @@
     contactSaving,
     contactNotice,
     onsavecontact,
+    appPreferences,
+    onapppreferences,
+    onreloadapppreferences,
   }: {
     status: Status;
     preferences: Preferences;
@@ -54,6 +60,14 @@
     contactSaving: boolean;
     contactNotice: string;
     onsavecontact: (contactID: string, name: string) => void;
+    appPreferences: {
+      value: AppPreferences;
+      loaded: boolean;
+      busy: boolean;
+      notice: string;
+    };
+    onapppreferences: (value: AppPreferences) => void;
+    onreloadapppreferences: () => void;
   } = $props();
   let open = $state(false);
   let selected = $state<Page>('profile');
@@ -74,6 +88,7 @@
     { id: 'profile', title: 'Profile', icon: UserRound },
     { id: 'contact', title: 'Contact', icon: ContactRound },
     { id: 'appearance', title: 'Appearance', icon: Palette },
+    { id: 'app', title: 'App behavior', icon: Bell },
     { id: 'privacy', title: 'Privacy & diagnostics', icon: ShieldCheck },
   ] as const;
   const pageTitle = $derived(pages.find((page) => page.id === selected)!.title);
@@ -279,7 +294,7 @@
                   <button
                     class="secondary-button compact"
                     disabled={!native || busy}
-                    onclick={onstorage}>Unlock and connect</button
+                    onclick={onstorage}>Go online</button
                   >
                 </div>{/if}
             </section>
@@ -301,7 +316,7 @@
                   id="identity-fingerprint"
                   class="fingerprint"
                   aria-label="Your identity fingerprint"
-                  >{status.identityFingerprint}</output
+                  >{groupedFingerprint(status.identityFingerprint)}</output
                 >{:else}<p class="muted small">
                   {native
                     ? 'Available after you unlock storage.'
@@ -367,7 +382,9 @@
                     <dt>Verified fingerprint</dt>
                     <dd>
                       <output class="fingerprint"
-                        >{conversation.peerFingerprint}</output
+                        >{groupedFingerprint(
+                          conversation.peerFingerprint,
+                        )}</output
                       >
                     </dd>
                   </div>
@@ -406,7 +423,7 @@
                 {#if native && !unlocked}<button
                     class="secondary-button compact"
                     disabled={busy}
-                    onclick={onstorage}>Unlock and connect</button
+                    onclick={onstorage}>Go online</button
                   >{:else}<button
                     class="secondary-button compact"
                     onclick={close}>Back to chats</button
@@ -486,6 +503,56 @@
                   >{/each}
               </fieldset>
             </section>
+          {:else if selected === 'app'}
+            <section
+              class="settings-card"
+              aria-labelledby="app-behavior-heading"
+            >
+              <h2 id="app-behavior-heading">App behavior</h2>
+              <p class="muted small">
+                These preferences stay on this device. In OS-only mode, launch
+                opens local storage and reconnects saved contacts.
+              </p>
+              {#key appPreferences.loaded}
+                {#each [{ key: 'closeToTray', label: 'Keep running when the window closes', help: 'Close to the tray. Choose Quit from the tray to exit.' }, { key: 'startAtLogin', label: 'Start WhatsUp when I sign in', help: 'Starts on this OS account only. This is off unless you enable it.' }, { key: 'notifications', label: 'Show new-message notifications', help: 'Notifications say only “New message” by default.' }, { key: 'notificationName', label: 'Include contact names in notifications', help: 'Allows names on the desktop and its notification history.' }, { key: 'notificationPreview', label: 'Include message previews in notifications', help: 'Allows message text on the desktop and its notification history.' }] as option}
+                  <label class="sharing-control">
+                    <input
+                      type="checkbox"
+                      checked={appPreferences.value[
+                        option.key as keyof AppPreferences
+                      ]}
+                      disabled={!native ||
+                        !appPreferences.loaded ||
+                        appPreferences.busy ||
+                        ((option.key === 'notificationName' ||
+                          option.key === 'notificationPreview') &&
+                          !appPreferences.value.notifications)}
+                      onchange={(event) =>
+                        onapppreferences({
+                          ...appPreferences.value,
+                          [option.key]: event.currentTarget.checked,
+                        })}
+                    />
+                    <span
+                      ><strong>{option.label}</strong><span class="muted small"
+                        >{option.help}</span
+                      ></span
+                    >
+                  </label>
+                {/each}
+              {/key}
+              {#if appPreferences.notice}<p
+                  role={appPreferences.loaded ? 'status' : 'alert'}
+                >
+                  {appPreferences.notice}
+                </p>{/if}
+              {#if native && !appPreferences.loaded}<button
+                  class="secondary-button compact"
+                  disabled={appPreferences.busy}
+                  onclick={onreloadapppreferences}
+                  >Reload app preferences</button
+                >{/if}
+            </section>
           {:else}
             <section class="settings-card" aria-labelledby="storage-heading">
               <div class="settings-card-heading">
@@ -513,8 +580,8 @@
                   >{busy
                     ? 'Please wait…'
                     : status.storageState === 'unlocked'
-                      ? 'Disconnect and lock'
-                      : 'Unlock and connect'}</button
+                      ? 'Go offline'
+                      : 'Go online'}</button
                 >
               </div>
               <p class="muted small field-help">
@@ -526,7 +593,7 @@
                   id="identity-fingerprint"
                   class="fingerprint"
                   aria-label="Your identity fingerprint"
-                  >{status.identityFingerprint}</output
+                  >{groupedFingerprint(status.identityFingerprint)}</output
                 >{/if}
             </section>
             <section

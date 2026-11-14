@@ -6,8 +6,10 @@ import (
 	"sync"
 
 	"whatsup/internal/chat"
+	"whatsup/internal/diagnostics"
 	"whatsup/internal/identity"
 	"whatsup/internal/storage"
+	"whatsup/internal/transport"
 )
 
 // Hint is an invalidation hint, never message content or runtime authority.
@@ -47,6 +49,7 @@ func (m *Manager) bumpLocked() {
 
 type ContactSummary struct {
 	State           string `json:"state"`
+	Path            string `json:"path"`
 	Revision        uint64 `json:"revision"`
 	ContactID       string `json:"contactID"`
 	PeerFingerprint string `json:"peerFingerprint"`
@@ -67,7 +70,7 @@ type MessagePage struct {
 
 func (m *Manager) Summary() ContactSummary {
 	if m == nil || m.managerState == nil {
-		return ContactSummary{State: "unavailable"}
+		return ContactSummary{State: "unavailable", Path: string(transport.PathUnknown)}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -77,7 +80,7 @@ func (m *Manager) Summary() ContactSummary {
 
 func (m *Manager) summaryLocked() ContactSummary {
 	s := m.snapshotLocked(false)
-	summary := ContactSummary{State: s.State, Revision: s.Revision, ContactID: s.ContactID, PeerFingerprint: s.PeerFingerprint, PeerDisplayName: s.PeerDisplayName, LocalName: s.LocalName, CanConnect: s.CanConnect, CanSend: s.CanSend}
+	summary := ContactSummary{State: s.State, Path: s.Path, Revision: s.Revision, ContactID: s.ContactID, PeerFingerprint: s.PeerFingerprint, PeerDisplayName: s.PeerDisplayName, LocalName: s.LocalName, CanConnect: s.CanConnect, CanSend: s.CanSend}
 	if !m.closed && m.conversation != nil && m.state != "failed" {
 		unread, err := m.conversation.UnreadCount()
 		if err != nil {
@@ -127,7 +130,7 @@ func (m *Manager) Page(id, cursor string, limit int) (MessagePage, error) {
 
 func (m *Manager) MarkRead(id, throughMessageID string) (ContactSummary, error) {
 	if m == nil || m.managerState == nil {
-		return ContactSummary{State: "unavailable"}, ErrUnavailable
+		return ContactSummary{State: "unavailable", Path: string(transport.PathUnknown)}, ErrUnavailable
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -144,6 +147,10 @@ func (m *Manager) MarkRead(id, throughMessageID string) (ContactSummary, error) 
 
 type RegistryOptions struct {
 	Revisions *Revisions
+	// These backend-only sinks must enqueue and return without acquiring the
+	// owning Service mutex. Incoming carries IDs only, after durable insertion.
+	OnIncoming  func(Incoming)
+	Diagnostics func(diagnostics.Event)
 	// OnChanged must enqueue without taking the owning Service mutex. Close
 	// joins this callback so it cannot outlive the runtime generation.
 	OnChanged func(Hint)
@@ -184,6 +191,7 @@ func NewRegistry(local *identity.Identity, app *storage.ApplicationState, option
 	if selected.Revisions == nil {
 		selected.Revisions = &Revisions{}
 	}
+	selected.Diagnostics = diagnostics.RateLimited(selected.Diagnostics)
 	r := &Registry{&registryState{local: local, application: app, options: selected, managers: map[string]*Manager{}, retired: map[string]bool{}, dirty: map[string]Hint{}, notify: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}}
 	go r.dispatch()
 	if _, err := r.Contacts(); err != nil {
@@ -240,7 +248,7 @@ func (r *Registry) ensureLocked(id string) (*Manager, error) {
 	if len(r.managers) >= storage.MaxContacts {
 		return nil, ErrUnavailable
 	}
-	m, err := NewContact(r.local, r.application, id, ContactOptions{Revisions: r.options.Revisions, OnChanged: r.enqueue, Factories: r.options.Factories})
+	m, err := NewContact(r.local, r.application, id, ContactOptions{Revisions: r.options.Revisions, OnChanged: r.enqueue, OnIncoming: r.options.OnIncoming, Diagnostics: r.options.Diagnostics, Factories: r.options.Factories})
 	if err != nil {
 		return nil, err
 	}
@@ -287,35 +295,35 @@ func (r *Registry) Contacts() ([]ContactSummary, error) {
 func (r *Registry) Snapshot(id string) Snapshot {
 	m, err := r.manager(id)
 	if err != nil {
-		return Snapshot{State: "unavailable", Messages: []chat.Message{}}
+		return Snapshot{State: "unavailable", Path: string(transport.PathUnknown), Messages: []chat.Message{}}
 	}
 	return m.Snapshot()
 }
 func (r *Registry) Connect(id string) (Snapshot, error) {
 	m, err := r.manager(id)
 	if err != nil {
-		return Snapshot{State: "unavailable", Messages: []chat.Message{}}, err
+		return Snapshot{State: "unavailable", Path: string(transport.PathUnknown), Messages: []chat.Message{}}, err
 	}
 	return m.Connect(id)
 }
 func (r *Registry) Send(id, text string) (Snapshot, error) {
 	m, err := r.manager(id)
 	if err != nil {
-		return Snapshot{State: "unavailable", Messages: []chat.Message{}}, err
+		return Snapshot{State: "unavailable", Path: string(transport.PathUnknown), Messages: []chat.Message{}}, err
 	}
 	return m.Send(id, text)
 }
 func (r *Registry) ClearHistory(id string) (Snapshot, error) {
 	m, err := r.manager(id)
 	if err != nil {
-		return Snapshot{State: "unavailable", Messages: []chat.Message{}}, err
+		return Snapshot{State: "unavailable", Path: string(transport.PathUnknown), Messages: []chat.Message{}}, err
 	}
 	return m.ClearHistory(id)
 }
 func (r *Registry) DeleteMessage(id, messageID string) (Snapshot, error) {
 	m, err := r.manager(id)
 	if err != nil {
-		return Snapshot{State: "unavailable", Messages: []chat.Message{}}, err
+		return Snapshot{State: "unavailable", Path: string(transport.PathUnknown), Messages: []chat.Message{}}, err
 	}
 	return m.DeleteMessage(id, messageID)
 }
@@ -329,7 +337,7 @@ func (r *Registry) Page(id, cursor string, limit int) (MessagePage, error) {
 func (r *Registry) MarkRead(id, throughMessageID string) (ContactSummary, error) {
 	m, err := r.manager(id)
 	if err != nil {
-		return ContactSummary{State: "unavailable"}, err
+		return ContactSummary{State: "unavailable", Path: string(transport.PathUnknown)}, err
 	}
 	return m.MarkRead(id, throughMessageID)
 }

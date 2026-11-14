@@ -7,6 +7,7 @@ import * as chat$0 from "../chat/models.js";
 
 export interface ContactSummary {
     "state": string;
+    "path": string;
     "revision": number;
     "contactID": string;
     "peerFingerprint": string;
@@ -35,6 +36,7 @@ export interface MessagePage {
 
 export interface Snapshot {
     "state": string;
+    "path": string;
     "revision": number;
     "contactID": string;
     "peerFingerprint": string;

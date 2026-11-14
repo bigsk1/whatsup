@@ -14,7 +14,7 @@ import (
 	"whatsup/internal/storage"
 )
 
-const Version = "0.0.7"
+const Version = "0.0.8"
 
 type Status struct {
 	Version              string `json:"version"`
@@ -28,19 +28,21 @@ type Status struct {
 }
 
 type Service struct {
-	mu          sync.Mutex
-	directory   string
-	keys        storage.KeyStore
-	vault       *storage.Vault
-	application *storage.ApplicationState
-	pairing     *pairflow.Coordinator
-	invitations *invitationControl
-	messages    *messaging.Registry
-	revisions   *messaging.Revisions
-	events      *contactEvents
-	fingerprint string
-	state       string
-	record      func(diagnostics.Event)
+	mu              sync.Mutex
+	directory       string
+	keys            storage.KeyStore
+	vault           *storage.Vault
+	application     *storage.ApplicationState
+	pairing         *pairflow.Coordinator
+	invitations     *invitationControl
+	messages        *messaging.Registry
+	revisions       *messaging.Revisions
+	events          *contactEvents
+	preferenceState *appPreferenceState
+	runtimeOptions  RuntimeOptions
+	fingerprint     string
+	state           string
+	record          func(diagnostics.Event)
 }
 
 func New(directory string, keys storage.KeyStore, listeners ...func(diagnostics.Event)) *Service {
@@ -85,8 +87,8 @@ func (s *Service) GetStatus() Status {
 // runtime generation. A late completion cannot select a replacement manager.
 // The callback never enters Service.mu: Lock/Forget hold that mutex while
 // joining the pairing run, and close messages before doing so.
-func makeControllers(local *identity.Identity, app *storage.ApplicationState, revisions *messaging.Revisions, notify func(messaging.Hint)) (*messaging.Registry, *pairflow.Coordinator, *invitationControl, error) {
-	messages, err := messaging.NewRegistry(local, app, messaging.RegistryOptions{Revisions: revisions, OnChanged: notify})
+func makeControllers(local *identity.Identity, app *storage.ApplicationState, revisions *messaging.Revisions, notify func(messaging.Hint), options RuntimeOptions, record func(diagnostics.Event)) (*messaging.Registry, *pairflow.Coordinator, *invitationControl, error) {
+	messages, err := messaging.NewRegistry(local, app, messaging.RegistryOptions{Revisions: revisions, OnChanged: notify, OnIncoming: options.OnIncoming, Diagnostics: record, Factories: options.Factories})
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -101,9 +103,10 @@ func makeControllers(local *identity.Identity, app *storage.ApplicationState, re
 	return messages, flow, newInvitationControl(local, flow), nil
 }
 
-// UnlockStorage opens OS-protected local identity and approved local chat state.
-// It starts no listener or connection and emits no invitation. Offline queueing
-// is independent of the fresh authentication required by each live session.
+// UnlockStorage opens OS-protected identity and approved local chat state. The
+// native construction policy automatically connects saved approved contacts;
+// component constructors remain offline unless that policy is explicitly set.
+// Unlock never emits an invitation or grants a pending pairing chat authority.
 func (s *Service) UnlockStorage() (Status, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -140,7 +143,7 @@ func (s *Service) UnlockStorage() (Status, error) {
 	if err != nil {
 		return fail()
 	}
-	messages, pairing, invitations, err := makeControllers(local, application, s.revisions, s.events.enqueue)
+	messages, pairing, invitations, err := makeControllers(local, application, s.revisions, s.events.enqueue, s.runtimeOptions, s.record)
 	if err != nil {
 		return fail()
 	}
@@ -152,6 +155,15 @@ func (s *Service) UnlockStorage() (Status, error) {
 	s.messages = messages
 	s.state = "unlocked"
 	s.record(diagnostics.StorageUnlocked)
+	if s.runtimeOptions.AutoConnect {
+		if contacts, err := messages.Contacts(); err == nil {
+			for _, contact := range contacts {
+				if contact.CanConnect {
+					_, _ = messages.Connect(contact.ContactID)
+				}
+			}
+		}
+	}
 	return s.status(), nil
 }
 
@@ -191,7 +203,7 @@ func (s *Service) LockStorage() Status {
 }
 
 func unavailableConversation() messaging.Snapshot {
-	return messaging.Snapshot{State: "unavailable", Messages: []chat.Message{}}
+	return messaging.Snapshot{State: "unavailable", Path: "Unknown", Messages: []chat.Message{}}
 }
 
 // GetConversation returns only the selected contact's bounded local history.
@@ -216,7 +228,7 @@ func (s *Service) firstConversationLocked() messaging.Snapshot {
 		return unavailableConversation()
 	}
 	if len(contacts) == 0 {
-		return messaging.Snapshot{State: "none", Messages: []chat.Message{}}
+		return messaging.Snapshot{State: "none", Path: "Unknown", Messages: []chat.Message{}}
 	}
 	return s.messages.Snapshot(contacts[0].ContactID)
 }
@@ -296,8 +308,9 @@ func (s *Service) ServiceShutdown() error {
 	// Event hooks can call back into the service. Join them only after LockStorage
 	// has released Service.mu, including on a failed shutdown.
 	s.events.close()
+	prefsErr := CloseAppPreferences(s)
 	if !locked {
 		return errors.New("Local storage lock could not be released")
 	}
-	return nil
+	return prefsErr
 }

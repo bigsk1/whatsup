@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"whatsup/internal/chat"
+	"whatsup/internal/diagnostics"
 	"whatsup/internal/identity"
 	"whatsup/internal/pairing"
 	"whatsup/internal/sessionauth"
@@ -26,6 +27,7 @@ var errPeerCapacity = errors.New("authenticated peer conversation capacity reach
 
 type Snapshot struct {
 	State           string         `json:"state"`
+	Path            string         `json:"path"`
 	Revision        uint64         `json:"revision"`
 	ContactID       string         `json:"contactID"`
 	PeerFingerprint string         `json:"peerFingerprint"`
@@ -65,6 +67,12 @@ type managerState struct {
 	targetID      string
 	revisions     *Revisions
 	onChanged     func(Hint)
+	onIncoming    func(Incoming)
+	diagnostics   func(diagnostics.Event)
+	path          transport.Path
+	pathAt        time.Time
+	pathTimer     *time.Timer
+	pathEpoch     uint64
 	closed        bool
 	running       bool
 	ctx           context.Context
@@ -109,14 +117,16 @@ func NewContact(local *identity.Identity, app *storage.ApplicationState, id stri
 }
 
 type ContactOptions struct {
-	Revisions *Revisions
-	OnChanged func(Hint)
-	Factories Factories
+	Revisions   *Revisions
+	OnChanged   func(Hint)
+	OnIncoming  func(Incoming)
+	Diagnostics func(diagnostics.Event)
+	Factories   Factories
 }
 
 func newManager(local *identity.Identity, app *storage.ApplicationState, id string, options ContactOptions) (*Manager, error) {
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &Manager{managerState: &managerState{local: local, application: app, targetID: id, revisions: options.Revisions, onChanged: options.OnChanged, state: "none", revision: 1, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1)}}
+	m := &Manager{managerState: &managerState{local: local, application: app, targetID: id, revisions: options.Revisions, onChanged: options.OnChanged, onIncoming: options.OnIncoming, diagnostics: diagnostics.RateLimited(options.Diagnostics), path: transport.PathUnknown, state: "none", revision: 1, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1)}}
 	m.factories = Factories{
 		Profile: transport.FetchRelayProfile,
 		Listen: func(ctx context.Context, record storage.PendingRecord, profile *transport.RelayProfile) (Listener, error) {
@@ -237,7 +247,7 @@ func (m *Manager) openConversationLocked(contact *pairing.Contact) error {
 }
 
 func (m *Manager) snapshotLocked(history ...bool) Snapshot {
-	result := Snapshot{State: m.state, Revision: m.revision, Messages: []chat.Message{}}
+	result := Snapshot{State: m.state, Path: string(m.pathLocked(time.Now())), Revision: m.revision, Messages: []chat.Message{}}
 	if m.closed {
 		result.State = "unavailable"
 		return result
@@ -282,7 +292,7 @@ func (m *Manager) snapshotLocked(history ...bool) Snapshot {
 
 func (m *Manager) Snapshot() Snapshot {
 	if m == nil || m.managerState == nil {
-		return Snapshot{State: "unavailable", Messages: []chat.Message{}}
+		return Snapshot{State: "unavailable", Path: string(transport.PathUnknown), Messages: []chat.Message{}}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -313,12 +323,14 @@ func (m *Manager) Send(id, text string) (Snapshot, error) {
 		return m.Snapshot(), ErrUnavailable
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	var report diagnostics.Event
+	defer func() { m.mu.Unlock(); m.report(report) }()
 	if m.refreshLocked() != nil || m.record.ID != id || m.conversation == nil || m.state == "failed" || capacityFailure(m.state) {
 		return m.snapshotLocked(), ErrUnavailable
 	}
 	if _, err := m.conversation.Queue(text); err != nil {
 		if errors.Is(err, chat.ErrCapacity) {
+			report = diagnostics.CapacityReached
 			m.state = "capacity-reached"
 			m.bumpLocked()
 		}
@@ -410,6 +422,9 @@ func (m *Manager) run() {
 			profile, err = m.factories.Profile(m.ctx, m.record.RelayServiceURL)
 			if err != nil {
 				profile = nil
+				if m.ctx.Err() == nil {
+					m.report(diagnostics.RelayFetchFailed)
+				}
 			}
 		}
 		if err == nil {
@@ -420,6 +435,8 @@ func (m *Manager) run() {
 				raw, err = m.factories.Dial(m.ctx, m.record, profile)
 				if err == nil {
 					err = m.session(raw)
+				} else if m.ctx.Err() == nil {
+					m.report(diagnostics.DialFailed)
 				}
 			}
 		}
@@ -427,6 +444,7 @@ func (m *Manager) run() {
 			return
 		}
 		if errors.Is(err, sessionauth.ErrIdentityChanged) {
+			m.report(diagnostics.IdentityChanged)
 			m.mu.Lock()
 			m.state = "identity-changed"
 			m.bumpLocked()
@@ -450,6 +468,7 @@ func (m *Manager) run() {
 			return
 		}
 		if errors.Is(err, chat.ErrCapacity) || errors.Is(err, errPeerCapacity) {
+			m.report(diagnostics.CapacityReached)
 			state := "capacity-reached"
 			if errors.Is(err, errPeerCapacity) {
 				state = "peer-capacity-reached"
@@ -476,6 +495,9 @@ func (m *Manager) run() {
 func (m *Manager) serve(profile *transport.RelayProfile) error {
 	listener, err := m.factories.Listen(m.ctx, m.record, profile)
 	if err != nil {
+		if m.ctx.Err() == nil {
+			m.report(diagnostics.DialFailed)
+		}
 		return err
 	}
 	m.mu.Lock()
@@ -518,13 +540,27 @@ func (m *Manager) session(raw net.Conn) error {
 	}
 	m.raw = raw
 	m.mu.Unlock()
-	defer func() { _ = raw.Close(); m.mu.Lock(); m.raw = nil; m.sessionActive = false; m.mu.Unlock() }()
+	defer func() {
+		_ = raw.Close()
+		m.mu.Lock()
+		m.raw = nil
+		m.sessionActive = false
+		m.clearPathLocked()
+		m.mu.Unlock()
+	}()
 	binding, err := storage.ContactBinding(m.record)
 	if err != nil {
 		return ErrUnavailable
 	}
 	session, err := sessionauth.Authenticate(ctx, raw, sessionauth.Options{Local: m.local, Peer: m.record.Peer, ContactID: m.record.ID, Association: binding, Server: m.record.Role == "inviter"})
 	if err != nil {
+		if m.ctx.Err() == nil {
+			if errors.Is(err, sessionauth.ErrIdentityChanged) {
+				m.report(diagnostics.IdentityChanged)
+			} else if !errors.Is(err, sessionauth.ErrIncompatible) {
+				m.report(diagnostics.AuthenticationFailed)
+			}
+		}
 		return err
 	}
 	defer session.Close()
@@ -572,6 +608,7 @@ func (m *Manager) Close() {
 	m.mu.Lock()
 	m.closed = true
 	m.state = "unavailable"
+	m.clearPathLocked()
 	m.bumpLocked()
 	raw, listener, contact := m.raw, m.listener, m.contact
 	m.mu.Unlock()

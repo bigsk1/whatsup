@@ -1,3 +1,5 @@
+import { groupedFingerprint } from '../src/lib/state/fingerprint';
+import { serveDefaultAppPreferences } from './contact-events';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
@@ -52,6 +54,7 @@ async function syntheticDesktop(page: Page, failFirstStatus = false) {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.route('**/wails/runtime', async (route) => {
+    if (await serveDefaultAppPreferences(route)) return;
     const request = route.request();
     const body = request.postDataJSON();
     if (body.args?.methodID === profileID) {
@@ -105,7 +108,7 @@ async function syntheticDesktop(page: Page, failFirstStatus = false) {
         ...unavailableStatus,
         storageState: operation === 'UnlockStorage' ? 'unlocked' : 'locked',
         identityFingerprint:
-          operation === 'UnlockStorage' ? 'SYNTHETIC-IDENTITY-FINGERPRINT' : '',
+          operation === 'UnlockStorage' ? 'a'.repeat(64) : '',
       },
     });
   });
@@ -129,7 +132,7 @@ for (const platform of ['windows', 'linux'] as const) {
       .getByRole('button', { name: 'Privacy & diagnostics', exact: true })
       .click();
     await expect(
-      dialog.getByRole('button', { name: 'Unlock and connect' }),
+      dialog.getByRole('button', { name: 'Go online' }),
     ).toBeDisabled();
 
     // An empty runtime object and an early/spurious event must grant no actions
@@ -139,19 +142,19 @@ for (const platform of ['windows', 'linux'] as const) {
       window.dispatchEvent(new Event('wails:runtime-config-ready'));
     });
     await expect(
-      dialog.getByRole('button', { name: 'Unlock and connect' }),
+      dialog.getByRole('button', { name: 'Go online' }),
     ).toBeDisabled();
     expect(calls).toEqual([]);
 
     await page.evaluate(injectRuntime, platform);
     await expect(
-      dialog.getByRole('button', { name: 'Unlock and connect' }),
+      dialog.getByRole('button', { name: 'Go online' }),
     ).toBeEnabled();
     await expect(
       dialog.getByText('Locked on this device', { exact: true }),
     ).toBeVisible();
     await expect(
-      dialog.getByRole('button', { name: 'Unlock and connect' }),
+      dialog.getByRole('button', { name: 'Go online' }),
     ).toBeEnabled();
     expect(calls).toEqual(['GetStatus']);
 
@@ -159,14 +162,14 @@ for (const platform of ['windows', 'linux'] as const) {
       for (let index = 0; index < 3; index++)
         window.dispatchEvent(new Event('wails:runtime-config-ready'));
     });
-    await dialog.getByRole('button', { name: 'Unlock and connect' }).click();
+    await dialog.getByRole('button', { name: 'Go online' }).click();
     await expect(
       dialog.getByText('Unlocked on this device', { exact: true }),
     ).toBeVisible();
     await expect(dialog.locator('#identity-fingerprint')).toHaveText(
-      'SYNTHETIC-IDENTITY-FINGERPRINT',
+      groupedFingerprint('a'.repeat(64)),
     );
-    await dialog.getByRole('button', { name: 'Disconnect and lock' }).click();
+    await dialog.getByRole('button', { name: 'Go offline' }).click();
     await expect(
       dialog.getByText('Locked on this device', { exact: true }),
     ).toBeVisible();

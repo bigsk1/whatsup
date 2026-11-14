@@ -1,4 +1,5 @@
 import { writable } from 'svelte/store';
+import { Events } from '@wailsio/runtime';
 import {
   hasDesktopBridge,
   requestStatus,
@@ -6,7 +7,15 @@ import {
   type StatusMethod,
 } from '../backend';
 
-export function createSession(request = requestStatus) {
+type Subscribe = (
+  name: string,
+  callback: (value: unknown) => void,
+) => () => void;
+export function createSession(
+  request = requestStatus,
+  subscribe: Subscribe = (name, callback) =>
+    Events.On(name, (event) => callback(event.data)),
+) {
   let native = false;
   let busy = false;
   let generation = 0;
@@ -15,14 +24,57 @@ export function createSession(request = requestStatus) {
     busy,
     status: { ...unavailableStatus },
     notice: '',
+    windowVisible: true,
   });
-  function mount(onready: () => void) {
+  function mount(
+    onready: () => void,
+    callbacks: {
+      storage?: () => void;
+      visibility?: (visible: boolean) => void;
+    } = {},
+  ) {
     const activate = () => {
       if (native || !hasDesktopBridge()) return;
       native = true;
       state.update((value) => ({ ...value, native }));
       onready();
     };
+    const stopStorage = subscribe('whatsup:storage-changed', (value) => {
+      if (
+        !native ||
+        !value ||
+        typeof value !== 'object' ||
+        Array.isArray(value)
+      )
+        return;
+      const record = value as Record<string, unknown>;
+      if (
+        Object.keys(record).length !== 1 ||
+        !['locked', 'unlocked', 'unavailable'].includes(record.state as string)
+      )
+        return;
+      // A native hint can retire permissions, never grant them. Fetch the full
+      // authoritative status before showing an identity or reading messages.
+      generation += 1;
+      busy = false;
+      state.update((current) => ({
+        ...current,
+        busy,
+        status: {
+          ...unavailableStatus,
+          storageState:
+            record.state === 'unavailable' ? 'unavailable' : 'locked',
+        },
+        notice: '',
+      }));
+      callbacks.storage?.();
+      onready();
+    });
+    const stopVisibility = subscribe('whatsup:window-visible', (value) => {
+      if (typeof value !== 'boolean') return;
+      state.update((current) => ({ ...current, windowVisible: value }));
+      callbacks.visibility?.(value);
+    });
     window.addEventListener('wails:runtime-config-ready', activate);
     activate();
     return () => {
@@ -30,7 +82,15 @@ export function createSession(request = requestStatus) {
       native = false;
       busy = false;
       window.removeEventListener('wails:runtime-config-ready', activate);
-      state.set({ native, busy, status: { ...unavailableStatus }, notice: '' });
+      stopStorage();
+      stopVisibility();
+      state.set({
+        native,
+        busy,
+        status: { ...unavailableStatus },
+        notice: '',
+        windowVisible: true,
+      });
     };
   }
   async function refresh(method: StatusMethod = 'GetStatus') {

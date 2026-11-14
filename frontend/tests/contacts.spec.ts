@@ -1,3 +1,4 @@
+import { serveDefaultAppPreferences } from './contact-events';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
@@ -44,6 +45,7 @@ function contact(
     localName,
     unread,
     state: 'offline',
+    path: 'Unknown',
     revision: 1,
     peerFingerprint: (contactID === first ? 'b' : 'c').repeat(64),
     peerDisplayName: '',
@@ -80,6 +82,7 @@ async function fixture(page: Page) {
     host._wails.environment = { OS: 'windows', Arch: 'amd64', Debug: false };
   });
   await page.route('**/wails/runtime', async (route) => {
+    if (await serveDefaultAppPreferences(route)) return;
     const body = route.request().postDataJSON();
     const method = operations.get(body.args?.methodID);
     if (!method) throw new Error('Unexpected contact fixture operation');
@@ -133,6 +136,7 @@ async function fixture(page: Page) {
       await route.fulfill({
         json: {
           state: 'none',
+          path: 'Unknown',
           revision: 2,
           contactID: '',
           peerFingerprint: '',

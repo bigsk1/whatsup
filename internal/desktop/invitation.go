@@ -62,6 +62,7 @@ type invitationControl struct {
 	closed          bool
 	wg              sync.WaitGroup
 	bootstrapFailed bool
+	legacyFixture   bool // trusted Go-only domain fixture; production is always v2
 	listen          func(context.Context, string, bool) (invitationListener, error)
 	dial            func(context.Context, address.Endpoint, string, bool) (net.Conn, error)
 }
@@ -183,7 +184,12 @@ func (c *invitationControl) create(url string, consent bool) (InvitationShare, e
 	job.mu.Lock()
 	job.manager = manager
 	job.mu.Unlock()
-	invite, err := manager.Create(string(endpoint.EncodeForTransport()), time.Until(deadline(job.ctx)))
+	var invite pairing.Invite
+	if c.legacyFixture {
+		invite, err = manager.Create(string(endpoint.EncodeForTransport()), time.Until(deadline(job.ctx)))
+	} else {
+		invite, err = manager.CreateWithService(string(endpoint.EncodeForTransport()), url, time.Until(deadline(job.ctx)))
+	}
 	if err != nil || job.ctx.Err() != nil {
 		return fail()
 	}
@@ -214,8 +220,11 @@ func deadline(ctx context.Context) time.Time {
 
 func (c *invitationControl) join(link, url string, consent bool) (pairflow.Snapshot, error) {
 	invite, err := pairing.ParseInvite(link)
-	if err != nil || invite.Owner().Equal(c.local.PublicKey()) {
+	if err != nil || invite.Owner().Equal(c.local.PublicKey()) || !c.legacyFixture && invite.ServiceURL() == "" {
 		return c.snapshot(), errors.New("This private invitation is invalid or belongs to this device")
+	}
+	if invite.ServiceURL() != "" && invite.ServiceURL() != url {
+		return c.snapshot(), errors.New("Approve the connection service carried by this invitation")
 	}
 	// Only the inviter's manager decides expiry. The joiner's wall clock can
 	// differ; its own deadline bounds this attempt without extending the invite.

@@ -7,12 +7,17 @@ import type { Events } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import type * as main$0 from "../../../../../whatsup/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import type * as messaging$0 from "../../../../../whatsup/internal/messaging/models.js";
 
 declare module "@wailsio/runtime" {
     namespace Events {
         interface CustomEvents {
             "whatsup:contact-changed": messaging$0.Hint;
+            "whatsup:storage-changed": main$0.NativeStorageHint;
+            "whatsup:window-visible": boolean;
         }
     }
 }

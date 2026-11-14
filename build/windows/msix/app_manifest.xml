@@ -10,7 +10,7 @@
   <Identity
     Name="local.whatsup.desktop"
     Publisher="CN="
-    Version="0.0.7.0"
+    Version="0.0.8.0"
     ProcessorArchitecture="x64" />
 
   <Properties>

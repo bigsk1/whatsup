@@ -1,3 +1,4 @@
+import { serveDefaultAppPreferences } from './contact-events';
 import {
   contactSummary,
   messagePage,
@@ -80,6 +81,7 @@ async function fixture(page: Page) {
       external.push(request.url());
   });
   await page.route('**/wails/runtime', async (route) => {
+    if (await serveDefaultAppPreferences(route)) return;
     const body = route.request().postDataJSON();
     const operation = operations[body.args?.methodID];
     if (body.object !== 0 || body.method !== 0 || !operation)
@@ -318,7 +320,7 @@ test('lock clears profile drafts and ignores a profile save completing afterward
     .getByRole('button', { name: 'Privacy & diagnostics', exact: true })
     .click();
   await workspace
-    .getByRole('button', { name: 'Disconnect and lock', exact: true })
+    .getByRole('button', { name: 'Go offline', exact: true })
     .click();
   await expect(
     workspace.getByText('Locked on this device', { exact: true }),
@@ -535,7 +537,7 @@ test('maximum-length names fit the chat header and settings without hiding conne
   ]) {
     await page.setViewportSize(viewport);
     await expect(page.locator('.conversation-header h2')).toHaveText(name);
-    for (const label of ['Connect', 'Forget contact…', 'Disconnect and lock'])
+    for (const label of ['Connect', 'Forget contact…', 'Go offline'])
       await expect(
         page
           .locator('.conversation-header')
@@ -611,7 +613,7 @@ test('locking clears a private contact-name search with the decrypted conversati
   await search.fill('Synthetic private nickname');
   await page
     .locator('.conversation-header')
-    .getByRole('button', { name: 'Disconnect and lock', exact: true })
+    .getByRole('button', { name: 'Go offline', exact: true })
     .click();
   await expect(search).toHaveValue('');
   await expect(

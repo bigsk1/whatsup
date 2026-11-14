@@ -95,7 +95,7 @@ func TestFiniteEventsAndIdempotentClose(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, invalid := range []Event{0, 9, 255} {
+	for _, invalid := range []Event{0, TransferFailed + 1, 255} {
 		if err := recorder.Record(invalid); !errors.Is(err, ErrEvent) {
 			t.Fatal("unknown event accepted")
 		}

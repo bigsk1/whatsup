@@ -137,6 +137,9 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 	defer retry.Stop()
 	heartbeat := time.NewTicker(heartbeatInterval)
 	defer heartbeat.Stop()
+	pathSamples := time.NewTicker(PathSampleInterval)
+	defer pathSamples.Stop()
+	m.samplePath()
 	var pendingNonce [16]byte
 	var pingAt time.Time
 	var sentRevision uint64
@@ -219,7 +222,7 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 				frame := got.packet.frame
 				switch frame.Type {
 				case chat.MessageFrame:
-					ack, err := conversation.Receive(m.record.Peer, frame)
+					ack, inserted, err := conversation.ReceiveCommitted(m.record.Peer, frame)
 					if errors.Is(err, chat.ErrCapacity) {
 						// Best-effort refusal over this exact authenticated session.
 						// Neither side acknowledges, evicts or loses the queued text.
@@ -230,6 +233,9 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 						return err
 					}
 					m.changed("connected")
+					if inserted {
+						m.notifyIncoming(frame.ID)
+					}
 					if writePacket(session, packet{kind: dataPacket, frame: ack}) != nil {
 						return errProtocol
 					}
@@ -252,6 +258,8 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 			if err := sendDue(); err != nil {
 				return err
 			}
+		case <-pathSamples.C:
+			m.samplePath()
 		case <-retry.C:
 			if !pingAt.IsZero() && time.Since(pingAt) > peerTimeout {
 				return errProtocol

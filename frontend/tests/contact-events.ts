@@ -1,5 +1,27 @@
-import type { Page } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import type { Page, Route } from '@playwright/test';
 import type { ConversationSnapshot } from '../src/lib/messaging';
+import { defaultAppPreferences } from '../src/lib/state/preferences';
+
+const generated = readFileSync(
+  new URL('../bindings/whatsup/internal/desktop/service.ts', import.meta.url),
+  'utf8',
+);
+const preferenceBinding = generated.match(
+  /export function GetAppPreferences\([\s\S]*?\$Call\.ByID\((\d+)/,
+);
+if (!preferenceBinding)
+  throw new Error('Missing generated app preferences binding');
+const preferencesID = Number(preferenceBinding[1]);
+
+export async function serveDefaultAppPreferences(
+  route: Route,
+): Promise<boolean> {
+  if (route.request().postDataJSON().args?.methodID !== preferencesID)
+    return false;
+  await route.fulfill({ json: defaultAppPreferences });
+  return true;
+}
 
 export function contactSummary(value: ConversationSnapshot) {
   const { messages: _messages, ...fields } = value;
@@ -32,6 +54,18 @@ export async function contactHint(
       });
     },
     { contactID, revision },
+  );
+}
+
+export async function nativeHint(page: Page, name: string, data: unknown) {
+  await page.evaluate(
+    ({ name, data }) => {
+      const host = window as Window & {
+        _wails?: { dispatchWailsEvent?: (event: unknown) => void };
+      };
+      host._wails?.dispatchWailsEvent?.({ name, data });
+    },
+    { name, data },
   );
 }
 

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const maxInvitationBytes = 2048
+const maxInvitationBytes = 8192
 
 var (
 	ErrReservation = errors.New("invitation reservation was not accepted")

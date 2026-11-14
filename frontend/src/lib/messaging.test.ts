@@ -13,6 +13,7 @@ const id = 'AgICAgICAgICAgICAgICAg';
 function approved(): ConversationSnapshot {
   return {
     state: 'offline',
+    path: 'Unknown',
     revision: 1,
     contactID,
     peerFingerprint: 'b'.repeat(64),

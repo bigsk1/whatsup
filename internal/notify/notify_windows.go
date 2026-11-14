@@ -1,0 +1,174 @@
+//go:build windows
+
+package notify
+
+import (
+	"context"
+	"errors"
+	"runtime"
+	"runtime/debug"
+	"strings"
+	"sync"
+	_ "unsafe"
+
+	"github.com/go-ole/go-ole"
+	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/services/notifications"
+	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
+)
+
+// The exact reviewed go-toast version owns a process-wide initialize flag.
+// Initialize it on this dedicated MTA thread before Wails eagerly registers the
+// COM activator. Calling CoInitializeEx first would make its first RoInitialize
+// return S_FALSE, which that version treats as a failed first Push.
+//
+//go:linkname initializeWindowsToast git.sr.ht/~jackmordaunt/go-toast/v2/wintoast.initialize
+func initializeWindowsToast() error
+
+//go:linkname toastActivationKey git.sr.ht/~jackmordaunt/go-toast/v2/wintoast.activationKey
+var toastActivationKey string
+
+//go:linkname toastAppDataMu git.sr.ht/~jackmordaunt/go-toast/v2/wintoast.appDataMu
+var toastAppDataMu sync.Mutex
+
+var toastOwner struct {
+	sync.Mutex
+	claimed bool
+}
+
+const defaultToastGUID = "{0F82E845-CB89-4039-BDBF-67CA33254C76}"
+
+func scopedToastActivation(appName string) error {
+	if len(appName) < 1 || len(appName) > 80 {
+		return ErrUnavailable
+	}
+	for _, r := range appName {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == ' ' || r == '-' || r == '_' || r == '.') {
+			return ErrUnavailable
+		}
+	}
+	appKey, _, err := registry.CreateKey(registry.CURRENT_USER, `Software\Classes\AppUserModelId\`+appName, registry.QUERY_VALUE|registry.SET_VALUE)
+	if err != nil {
+		return ErrUnavailable
+	}
+	defer appKey.Close()
+	guid, _, err := appKey.GetStringValue("CustomActivator")
+	if err == registry.ErrNotExist {
+		generated, err := windows.GenerateGUID()
+		if err != nil {
+			return ErrUnavailable
+		}
+		guid = generated.String()
+		if appKey.SetStringValue("CustomActivator", guid) != nil {
+			return ErrUnavailable
+		}
+	} else if err != nil {
+		return ErrUnavailable
+	}
+	parsed, err := windows.GUIDFromString(guid)
+	if err != nil || !strings.EqualFold(parsed.String(), guid) || strings.EqualFold(guid, defaultToastGUID) {
+		return ErrUnavailable
+	}
+	// The pinned upstream stores its default activation path before SetAppData
+	// selects an app GUID. Redirect it under that module's own mutex, before
+	// Wails creates the matching scoped LocalServer32. The shared default CLSID
+	// is neither read for configuration nor written as an activation target.
+	toastAppDataMu.Lock()
+	toastActivationKey = `Software\Classes\CLSID\` + guid + `\LocalServer32`
+	toastAppDataMu.Unlock()
+	return nil
+}
+
+func toastBuildApproved(info *debug.BuildInfo) bool {
+	if info == nil {
+		return false
+	}
+	for _, module := range info.Deps {
+		if module.Path == "git.sr.ht/~jackmordaunt/go-toast/v2" {
+			return module.Version == "v2.0.3" && module.Sum == "h1:N3IGoHHp9pb6mj1cbXbuaSXV/UMKwmbKLf53nQmtqMA=" && module.Replace == nil
+		}
+	}
+	return false
+}
+
+type windowsBackend struct {
+	service     *notifications.NotificationService
+	activate    func(string)
+	initialized bool
+	thread      bool
+}
+
+func newBackend(activate func(string)) backend { return &windowsBackend{activate: activate} }
+func (w *windowsBackend) start(ctx context.Context) error {
+	if ctx.Err() != nil {
+		return ErrUnavailable
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok || !toastBuildApproved(info) {
+		return ErrUnavailable
+	}
+	if application.Get() == nil {
+		return ErrUnavailable
+	}
+	toastOwner.Lock()
+	if toastOwner.claimed {
+		toastOwner.Unlock()
+		return ErrUnavailable
+	}
+	toastOwner.claimed = true
+	toastOwner.Unlock()
+	runtime.LockOSThread()
+	w.thread = true
+	if err := initializeWindowsToast(); err != nil {
+		var status *ole.OleError
+		if !errors.As(err, &status) || status.Code() != 1 {
+			return ErrUnavailable
+		}
+	}
+	w.initialized = true
+	if scopedToastActivation(application.Get().Config().Name) != nil {
+		return ErrUnavailable
+	}
+	w.service = notifications.New()
+	w.service.OnNotificationResponse(func(result notifications.NotificationResult) {
+		if result.Error != nil || result.Response.ActionIdentifier != notifications.DefaultActionIdentifier {
+			return
+		}
+		id, ok := result.Response.UserInfo["contactID"].(string)
+		if ok && canonicalID(id, true) && w.activate != nil {
+			w.activate(id)
+		}
+	})
+	if err := w.service.ServiceStartup(ctx, application.ServiceOptions{}); err != nil {
+		return ErrUnavailable
+	}
+	return nil
+}
+func (w *windowsBackend) send(ctx context.Context, notice Notice) error {
+	if ctx.Err() != nil || w.service == nil {
+		return ErrUnavailable
+	}
+	// Pinned Wails uses wintoast.Push with no PowerShell fallback. Do not call
+	// generic actions, schedules, categories, attachment or file APIs.
+	return w.service.SendNotification(notifications.NotificationOptions{ID: notice.ID, Title: notice.Title, Body: notice.Body, Data: map[string]interface{}{"contactID": notice.ContactID}})
+}
+func (w *windowsBackend) close() error {
+	var err error
+	if w.service != nil {
+		w.service.OnNotificationResponse(nil)
+		err = w.service.ServiceShutdown()
+	}
+	if w.initialized {
+		windows.NewLazySystemDLL("combase.dll").NewProc("RoUninitialize").Call()
+		w.initialized = false
+	}
+	if w.thread {
+		runtime.UnlockOSThread()
+		w.thread = false
+	}
+	if err != nil {
+		return ErrUnavailable
+	}
+	return nil
+}

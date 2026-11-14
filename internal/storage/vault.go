@@ -145,6 +145,11 @@ func Open(directory string, keys KeyStore) (*Vault, error) {
 		if _, statErr := os.Lstat(statePath); !os.IsNotExist(statErr) {
 			return fail(ErrCredential)
 		}
+		// Device preferences share only the OS wrapping credential. Surviving
+		// preference ciphertext must not acquire an unrelated replacement key.
+		if _, statErr := os.Lstat(filepath.Join(directory, "app-preferences.vault")); !os.IsNotExist(statErr) {
+			return fail(ErrCredential)
+		}
 		key := make([]byte, 32)
 		if _, err := rand.Read(key); err != nil {
 			return fail(err)

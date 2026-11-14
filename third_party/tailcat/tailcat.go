@@ -101,7 +101,7 @@ var Verbose = false
 
 // WhatsUpPrivacyPatchVersion identifies the narrowly reviewed local privacy
 // hook. The base revision and every module file are checked by the workflow.
-const WhatsUpPrivacyPatchVersion = 1
+const WhatsUpPrivacyPatchVersion = 2
 
 // DefaultDERPMapURL is the URL of the JSON-encoded [tailcfg.DERPMap]
 // that [ConnInfo.Expand] fetches when no alternate DERP map source is
@@ -2138,6 +2138,18 @@ func (c *Client) DERPRegion() *tailcfg.DERPRegion {
 		return nil
 	}
 	return c.ci.Region[0]
+}
+
+// Status returns a read-only snapshot of the existing WireGuard/DERP engine.
+// It never initializes keys, starts the engine, or performs network access.
+// Before successful startup it returns nil.
+func (c *Client) Status() *ipnstate.Status {
+	c.startMu.Lock()
+	defer c.startMu.Unlock()
+	if !c.started || c.lb == nil {
+		return nil
+	}
+	return c.lb.Status()
 }
 
 // Close shuts down the client, closing the WireGuard engine and DERP connections.

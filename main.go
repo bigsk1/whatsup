@@ -2,15 +2,17 @@ package main
 
 import (
 	"embed"
-	"flag"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sync/atomic"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"whatsup/internal/desktop"
 	"whatsup/internal/diagnostics"
+	"whatsup/internal/launch"
 	"whatsup/internal/messaging"
 	"whatsup/internal/storage"
 )
@@ -18,68 +20,68 @@ import (
 //go:embed all:frontend/dist
 var assets embed.FS
 
+//go:embed build/appicon.png
+var trayIcon []byte
+
 func main() {
-	softwareRendering := flag.Bool("software-rendering", false, "Use WebKit software rendering on Linux")
-	flag.Parse()
-	if flag.NArg() != 0 {
-		log.Fatal("WhatsUp does not accept positional launch arguments")
-	}
-	if *softwareRendering && runtime.GOOS != "linux" {
-		log.Fatal("Software rendering mode is available on Linux only")
+	options, err := launch.Parse(os.Args[1:], runtime.GOOS)
+	if err != nil {
+		log.Fatal("WhatsUp received unsupported launch arguments")
 	}
 	directory, err := storage.DefaultDirectory()
 	if err != nil {
 		log.Fatal("WhatsUp cannot locate a private local state directory")
 	}
-	localDiagnostics, err := diagnostics.Open(directory, desktop.Version)
-	if err != nil {
-		log.Fatal("WhatsUp cannot open private local diagnostics. Check whether another instance is running.")
-	}
-	defer localDiagnostics.Close()
+	var recorder atomic.Pointer[diagnostics.Recorder]
 	record := func(event diagnostics.Event) {
-		if err := localDiagnostics.Record(event); err != nil {
-			log.Print("WhatsUp could not write a local diagnostic event")
+		if current := recorder.Load(); current != nil {
+			if err := current.Record(event); err != nil {
+				log.Print("WhatsUp could not write a local diagnostic event")
+			}
 		}
 	}
-	record(diagnostics.Startup)
-	windows := application.WindowsOptions{}
-	if runtime.GOOS == "linux" {
-		if _, err := desktop.PrepareLinuxWebviewProfile(directory); err != nil {
-			record(diagnostics.RuntimeError)
-			log.Fatal("WhatsUp cannot verify its private WebKit data and cache profile")
+	closeRecorder := func() {
+		if current := recorder.Load(); current != nil {
+			_ = current.Close()
 		}
 	}
+	windows := application.WindowsOptions{DisableQuitOnLastWindowClosed: true}
 	if runtime.GOOS == "windows" {
-		profile, err := desktop.PrepareWebviewProfile(directory)
-		if err != nil {
-			record(diagnostics.RuntimeError)
-			log.Fatal("WhatsUp cannot create its private WebView profile")
-		}
-		windows.WebviewUserDataPath = profile
+		windows.WebviewUserDataPath = filepath.Join(directory, "webview")
 		// Preserve the pinned Wails default for this bundled-content renderer.
 		windows.DisabledFeatures = []string{"msSmartScreenProtection"}
 	}
 	application.RegisterEvent[messaging.Hint](desktop.ContactChangedEvent)
-	var eventApp atomic.Pointer[application.App]
-	service := desktop.NewWithEvents(directory, storage.OSKeyStore{}, record, func(hint messaging.Hint) {
-		if app := eventApp.Load(); app != nil {
-			app.Event.Emit(desktop.ContactChangedEvent, hint)
-		}
-	})
+	application.RegisterEvent[NativeStorageHint](nativeStorageChangedEvent)
+	application.RegisterEvent[bool](nativeWindowVisibleEvent)
+	var native atomic.Pointer[nativeHost]
+	var focusPending atomic.Bool
 	app := application.New(application.Options{
 		Name: "WhatsUp", Description: "Private one-to-one desktop messenger",
-		Windows:        windows,
-		Linux:          application.LinuxOptions{ProgramName: desktop.LinuxProgramName},
-		Services:       []application.Service{application.NewService(service)},
-		Logger:         localDiagnostics.WailsLogger(),
+		Windows: windows,
+		Linux:   application.LinuxOptions{ProgramName: desktop.LinuxProgramName, DisableQuitOnLastWindowClosed: true},
+		SingleInstance: &application.SingleInstanceOptions{UniqueID: "org.whatsup.desktop", ExitCode: 0, OnSecondInstanceLaunch: func(_ application.SecondInstanceData) {
+			// Second-launch data is never interpreted as an invite, path, URL or
+			// command. A launch can request only that the existing window be shown.
+			focusPending.Store(true)
+			if host := native.Load(); host != nil && focusPending.Swap(false) {
+				host.focus()
+			}
+		}},
+		Logger:         diagnostics.LoggerFor(record),
 		ErrorHandler:   func(error) { record(diagnostics.RuntimeError) },
 		WarningHandler: func(string) { record(diagnostics.RuntimeWarning) },
 		PanicHandler: func(*application.PanicDetails) {
 			record(diagnostics.RuntimePanic)
-			_ = localDiagnostics.Close()
+			closeRecorder()
 			log.Fatal("WhatsUp stopped after a runtime error. Local diagnostics contain a redacted event.")
 		},
-		PostShutdown: func() { record(diagnostics.Shutdown); _ = localDiagnostics.Close() },
+		OnShutdown: func() {
+			if host := native.Load(); host != nil {
+				host.stopTasks()
+			}
+		},
+		PostShutdown: func() { record(diagnostics.Shutdown); closeRecorder() },
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets), DisableLogging: true,
 			Middleware: func(next http.Handler) http.Handler {
@@ -91,20 +93,60 @@ func main() {
 			},
 		},
 	})
-	eventApp.Store(app)
+	// application.New performs single-instance handoff before any primary-only
+	// private file lock or OS credential is acquired.
+	localDiagnostics, err := diagnostics.Open(directory, desktop.Version)
+	if err != nil {
+		log.Fatal("WhatsUp cannot open private local diagnostics")
+	}
+	recorder.Store(localDiagnostics)
+	defer closeRecorder()
+	record(diagnostics.Startup)
+	if runtime.GOOS == "linux" {
+		if _, err := desktop.PrepareLinuxWebviewProfile(directory); err != nil {
+			record(diagnostics.RuntimeError)
+			log.Fatal("WhatsUp cannot verify its private WebKit data and cache profile")
+		}
+	} else if runtime.GOOS == "windows" {
+		if _, err := desktop.PrepareWebviewProfile(directory); err != nil {
+			record(diagnostics.RuntimeError)
+			log.Fatal("WhatsUp cannot create its private WebView profile")
+		}
+	}
+	service := desktop.NewWithEvents(directory, storage.OSKeyStore{}, record, func(hint messaging.Hint) { app.Event.Emit(desktop.ContactChangedEvent, hint) })
+	host, err := newNativeHost(app, service, record, options, trayIcon)
+	if err != nil {
+		record(diagnostics.RuntimeError)
+		log.Fatal("WhatsUp could not initialize its desktop controls")
+	}
+	if err := desktop.ConfigureRuntime(service, desktop.RuntimeOptions{AutoConnect: true, OnIncoming: host.enqueueIncoming}); err != nil {
+		log.Fatal("WhatsUp could not configure its desktop runtime")
+	}
+	if err := desktop.ConfigureAppPreferences(service, desktop.AppPreferenceRuntimeOptions{SetStartAtLogin: host.setStartAtLogin, OnChanged: host.preferencesChanged}); err != nil {
+		log.Fatal("WhatsUp could not authenticate its app preferences")
+	}
+	native.Store(host)
+	if focusPending.Swap(false) {
+		host.focus()
+	}
+	app.RegisterService(application.NewService(service))
+	app.RegisterService(application.NewService(&nativeLifecycle{host: host}))
 	linuxWindow := application.LinuxWindow{}
-	if *softwareRendering {
+	if options.SoftwareRendering {
 		linuxWindow.WebviewGpuPolicy = application.WebviewGpuPolicyNever
 	}
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
+	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title: "WhatsUp", Width: 1180, Height: 780, MinWidth: 760, MinHeight: 560,
 		BackgroundColour: application.NewRGB(12, 20, 23), URL: "/",
 		DevToolsEnabled: false, DefaultContextMenuDisabled: true,
 		Linux: linuxWindow,
 	})
+	host.attachWindow(window)
 	if err := app.Run(); err != nil {
 		record(diagnostics.RuntimeError)
-		_ = localDiagnostics.Close()
+		host.stopTasks()
+		_ = service.ServiceShutdown()
+		closeRecorder()
 		log.Fatal("WhatsUp desktop runtime failed")
 	}
 }

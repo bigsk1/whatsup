@@ -32,6 +32,7 @@ const contact = (
   unread = 0,
 ): ContactSummary => ({
   state: 'offline',
+  path: 'Unknown',
   contactID,
   revision,
   unread,
@@ -84,6 +85,7 @@ function fixture() {
     send: vi.fn(async (id) => snapshot(contact(id, 2), [message()])),
     forget: vi.fn(async () => ({
       state: 'none' as const,
+      path: 'Unknown' as const,
       revision: 2,
       contactID: '',
       peerFingerprint: '',

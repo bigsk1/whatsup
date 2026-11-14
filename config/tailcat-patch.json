@@ -4,11 +4,12 @@
   "version": "v0.7.1-0.20261105151022-e00cdde6ff78",
   "upstreamRepository": "https://github.com/tailscale/tailcat",
   "upstreamRevision": "e00cdde6ff787f801361ff85ed085775c775d4c5",
-  "patchVersion": 1,
+  "patchVersion": 2,
   "replacement": "./third_party/tailcat",
   "purpose": [
     "derp_application_stats_opt_out",
-    "disable_bearer_debug_logging"
+    "disable_bearer_debug_logging",
+    "readonly_client_status"
   ],
   "omittedUpstream": [
     "readme.go and README.md embedded only for the upstream CLI",
@@ -130,15 +131,15 @@
     },
     {
       "path": "tailcat.go",
-      "size": 87435,
+      "size": 87797,
       "upstreamSHA256": "49ccac135a2bf777cc5e1433e8ee9ba8fabc9fc637695eeb9b2d384bb217dbeb",
-      "sha256": "cbf247f25f9e61f24b6a9621522facb5e17d837d49732d399defda88f5c9a219"
+      "sha256": "e4039332a34c351f44f1833e05778972772be8c0a994fe3caddb8dfc52ff181e"
     },
     {
       "path": "whatsup_privacy_test.go",
-      "size": 1371,
+      "size": 1791,
       "upstreamSHA256": null,
-      "sha256": "1e5c8c802ffe3ccbc5790f4d92891025f9f614fd45c4b608ae1abbc34f6da652"
+      "sha256": "6290fe94f22fccad2192df05125a5476947004ca0cba0c0c44dea86eb2339a26"
     },
     {
       "path": "wire.go",

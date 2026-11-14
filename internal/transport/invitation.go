@@ -79,7 +79,7 @@ func invitationOptions(options InvitationOptions) error {
 	if err := ValidatePolicy(options.Policy, options.AllowRelayFallback); err != nil {
 		return err
 	}
-	if !networkPrivacyReady || !options.Profile.Ready() || invitationPrivacyPatch != 1 || feature.HookProxyFromEnvironment.GetOrNil() != nil || buildfeatures.HasPortMapper || buildfeatures.HasCaptivePortal {
+	if !networkPrivacyReady || !options.Profile.Ready() || invitationPrivacyPatch != 2 || feature.HookProxyFromEnvironment.GetOrNil() != nil || buildfeatures.HasPortMapper || buildfeatures.HasCaptivePortal {
 		return ErrRelayProfile
 	}
 	return nil

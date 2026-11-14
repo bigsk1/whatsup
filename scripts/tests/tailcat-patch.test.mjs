@@ -32,6 +32,7 @@ async function fixture(t, { link = false } = {}) {
 test('reviewed Tailcat replacement requires actual verified file inventory, not a forged approval', () => {
   const approval = verifyTailcatPatch(root, pins);
   assert.equal(isVerifiedTailcatPatch(approval), true);
+  assert.equal(approval.patchVersion, 2);
   assert.equal(isVerifiedTailcatPatch({ ...approval }), false);
   assert.equal(isVerifiedTailcatPatch(null), false);
   assertReviewedGoGraph(graph, pins, approval);
@@ -64,6 +65,8 @@ test('Tailcat verifier rejects traversal, mismatched provenance and unreviewed r
   for (const changed of [
     { ...original, upstreamRevision: 'a'.repeat(40) },
     { ...original, version: 'v9.9.9' },
+    { ...original, patchVersion: 1 },
+    { ...original, purpose: original.purpose.slice(0, 2) },
     { ...original, replacement: './third_party/tailcat/../elsewhere' },
     { ...original, files: [{ ...original.files[0], path: '../outside.go' }, ...original.files.slice(1)] },
     { ...original, files: [...original.files, original.files[0]] },

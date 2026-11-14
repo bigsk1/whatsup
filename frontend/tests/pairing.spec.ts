@@ -1,3 +1,5 @@
+import { serveDefaultAppPreferences } from './contact-events';
+import { groupedFingerprint } from '../src/lib/state/fingerprint';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
@@ -85,6 +87,7 @@ async function syntheticPairing(
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.route('**/wails/runtime', async (route) => {
+    if (await serveDefaultAppPreferences(route)) return;
     const body = route.request().postDataJSON();
     const operation = operations[body.args?.methodID];
     if (
@@ -168,9 +171,11 @@ test('shows only a reserved request, defaults to Deny and waits after approval',
   state.pairing = pending();
   const dialog = page.getByRole('dialog', { name: 'Pairing request' });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText(peerA, { exact: true })).toBeVisible();
   await expect(
-    dialog.getByText(localFingerprint, { exact: true }),
+    dialog.getByText(groupedFingerprint(peerA), { exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText(groupedFingerprint(localFingerprint), { exact: true }),
   ).toBeVisible();
   await expect(
     dialog.getByRole('button', { name: 'Deny', exact: true }),
@@ -205,10 +210,14 @@ test('Escape denies and a later reserved request can be denied with its button',
   await expect(
     page.getByRole('dialog', { name: 'Pairing request' }),
   ).toHaveCount(0);
-  await expect(page.getByText(peerA, { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByText(groupedFingerprint(peerA), { exact: true }),
+  ).toHaveCount(0);
   state.pairing = pending(requestB, peerB);
   const next = page.getByRole('dialog', { name: 'Pairing request' });
-  await expect(next.getByText(peerB, { exact: true })).toBeVisible();
+  await expect(
+    next.getByText(groupedFingerprint(peerB), { exact: true }),
+  ).toBeVisible();
   await next.getByRole('button', { name: 'Deny', exact: true }).click();
   await expect(next).toHaveCount(0);
   expect(
@@ -267,7 +276,9 @@ test('a delayed old approval response cannot replace a newer request', async ({
     .poll(() => calls.some((call) => call.operation === 'ApprovePairing'))
     .toBe(true);
   state.pairing = pending(requestB, peerB);
-  await expect(dialog.getByText(peerB, { exact: true })).toBeVisible();
+  await expect(
+    dialog.getByText(groupedFingerprint(peerB), { exact: true }),
+  ).toBeVisible();
   await expect(
     dialog.getByRole('button', { name: 'Approve', exact: true }),
   ).toBeEnabled();
@@ -278,7 +289,9 @@ test('a delayed old approval response cannot replace a newer request', async ({
   release();
   await oldResponse;
   await page.waitForTimeout(100);
-  await expect(dialog.getByText(peerB, { exact: true })).toBeVisible();
+  await expect(
+    dialog.getByText(groupedFingerprint(peerB), { exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByRole('dialog', { name: 'Waiting for the other person' }),
   ).toHaveCount(0);
@@ -317,7 +330,9 @@ test('Deny remains available during approval and a late response cannot restore 
   await expect(
     page.getByRole('dialog', { name: 'Waiting for the other person' }),
   ).toHaveCount(0);
-  await expect(page.getByText(peerA, { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByText(groupedFingerprint(peerA), { exact: true }),
+  ).toHaveCount(0);
   expect(calls.find((call) => call.operation === 'DenyPairing')?.args).toEqual([
     requestA,
   ]);
@@ -347,7 +362,7 @@ test('locking storage ignores an in-flight request and stops polling', async ({
   await settings
     .getByRole('button', { name: 'Privacy & diagnostics', exact: true })
     .click();
-  await settings.getByRole('button', { name: 'Disconnect and lock' }).click();
+  await settings.getByRole('button', { name: 'Go offline' }).click();
   await expect(
     settings.getByText('Locked on this device', { exact: true }),
   ).toBeVisible();
@@ -363,7 +378,7 @@ test('locking storage ignores an in-flight request and stops polling', async ({
   expect(
     calls.filter((call) => call.operation === 'GetPairingStatus'),
   ).toHaveLength(count);
-  await settings.getByRole('button', { name: 'Unlock and connect' }).click();
+  await settings.getByRole('button', { name: 'Go online' }).click();
   await expect(
     settings.getByText('Unlocked on this device', { exact: true }),
   ).toBeVisible();
@@ -414,7 +429,9 @@ test('expired requests remove the fingerprint and approval controls', async ({
   await expect(
     page.getByRole('dialog', { name: 'Pairing request' }),
   ).toHaveCount(0);
-  await expect(page.getByText(peerA, { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByText(groupedFingerprint(peerA), { exact: true }),
+  ).toHaveCount(0);
   expect(await page.evaluate(() => ({ ...localStorage }))).toEqual({});
   expect(errors).toEqual([]);
 });
@@ -436,7 +453,9 @@ test('completed pairing closes approval and reports approval without messaging r
   await expect(
     page.getByRole('dialog', { name: 'Pairing request' }),
   ).toHaveCount(0);
-  await expect(page.getByText(peerA, { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByText(groupedFingerprint(peerA), { exact: true }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole('button', { name: 'Send message unavailable' }),
   ).toBeDisabled();

@@ -6,8 +6,10 @@ package pairing
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"net/url"
 	"strconv"
@@ -21,7 +23,7 @@ import (
 
 const (
 	DefaultLifetime  = 10 * time.Minute
-	MaxLinkBytes     = 2048
+	MaxLinkBytes     = 8192
 	MaxEndpointBytes = address.MaxBytes
 )
 
@@ -56,6 +58,7 @@ type Invite struct {
 	owner    identity.PublicKey
 	endpoint address.Endpoint
 	expires  time.Time
+	service  string
 }
 
 func (i Invite) String() string             { return "[private WhatsUp invitation]" }
@@ -63,6 +66,22 @@ func (i Invite) GoString() string           { return i.String() }
 func (i Invite) Owner() identity.PublicKey  { return i.owner }
 func (i Invite) Endpoint() address.Endpoint { return i.endpoint }
 func (i Invite) ExpiresAt() time.Time       { return i.expires }
+func (i Invite) ServiceURL() string         { return i.service }
+
+// ContextBinding binds the v2 service selection and complete public invitation
+// context into TLS before either side presents a fingerprint for approval.
+// Legacy domain-only invitations explicitly retain their zero context.
+func (i Invite) ContextBinding() [32]byte {
+	if i.service == "" {
+		return [32]byte{}
+	}
+	wire := []byte("WhatsUp pairing invitation context v2\x00")
+	for _, value := range [][]byte{i.id[:], i.owner[:], []byte(i.endpoint.EncodeForTransport()), []byte(strconv.FormatInt(i.expires.Unix(), 10)), []byte(i.service)} {
+		wire = binary.BigEndian.AppendUint32(wire, uint32(len(value)))
+		wire = append(wire, value...)
+	}
+	return sha256.Sum256(wire)
+}
 
 // ChannelID binds the backend TLS channel to this exact invitation, including
 // when two invitations have the same owner and expiry. It is not a bearer secret
@@ -78,7 +97,12 @@ func (i Invite) Link() string {
 		"endpoint": {string(i.endpoint.EncodeForTransport())},
 		"expires":  {strconv.FormatInt(i.expires.Unix(), 10)},
 	}
-	return "whatsup://pair/v1?" + query.Encode()
+	version := "/v1"
+	if i.service != "" {
+		version = "/v2"
+		query.Set("service", i.service)
+	}
+	return "whatsup://pair" + version + "?" + query.Encode()
 }
 
 // ParseInvite performs bounded, canonical parsing, including the typed Tailcat
@@ -89,12 +113,22 @@ func ParseInvite(link string) (Invite, error) {
 		return invite, ErrInvalidInvite
 	}
 	u, err := url.Parse(link)
-	if err != nil || u.Scheme != "whatsup" || u.Host != "pair" || u.Path != "/v1" || u.User != nil || u.Fragment != "" || u.Opaque != "" || u.RawPath != "" || u.ForceQuery {
+	if err != nil || u.Scheme != "whatsup" || u.Host != "pair" || u.Path != "/v1" && u.Path != "/v2" || u.User != nil || u.Fragment != "" || u.Opaque != "" || u.RawPath != "" || u.ForceQuery {
 		return invite, ErrInvalidInvite
 	}
 	query, err := url.ParseQuery(u.RawQuery)
-	if err != nil || len(query) != 5 {
+	fields := 5
+	if u.Path == "/v2" {
+		fields++
+	}
+	if err != nil || len(query) != fields {
 		return invite, ErrInvalidInvite
+	}
+	if u.Path == "/v2" {
+		if len(query["service"]) != 1 || channel.ValidateRelayServiceURL(query.Get("service")) != nil {
+			return Invite{}, ErrInvalidInvite
+		}
+		invite.service = query.Get("service")
 	}
 	for _, key := range []string{"id", "secret", "owner", "endpoint", "expires"} {
 		if len(query[key]) != 1 || query.Get(key) == "" {
@@ -185,6 +219,17 @@ func NewManager(local identity.PublicKey, options Options) (*Manager, error) {
 }
 
 func (m *Manager) Create(endpoint string, lifetime time.Duration) (Invite, error) {
+	return m.create(endpoint, "", lifetime)
+}
+
+func (m *Manager) CreateWithService(endpoint, serviceURL string, lifetime time.Duration) (Invite, error) {
+	if channel.ValidateRelayServiceURL(serviceURL) != nil {
+		return Invite{}, ErrInvalidInvite
+	}
+	return m.create(endpoint, serviceURL, lifetime)
+}
+
+func (m *Manager) create(endpoint, serviceURL string, lifetime time.Duration) (Invite, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
@@ -204,7 +249,7 @@ func (m *Manager) Create(endpoint string, lifetime time.Duration) (Invite, error
 	if lifetime < time.Second || lifetime > DefaultLifetime || err != nil {
 		return Invite{}, ErrInvalidInvite
 	}
-	invite := Invite{owner: m.local, endpoint: parsedEndpoint, expires: m.now().Add(lifetime).UTC().Truncate(time.Second)}
+	invite := Invite{owner: m.local, endpoint: parsedEndpoint, expires: m.now().Add(lifetime).UTC().Truncate(time.Second), service: serviceURL}
 	if _, err := rand.Read(invite.id[:]); err != nil {
 		return Invite{}, err
 	}
@@ -254,7 +299,7 @@ func (m *Manager) ReserveAuthenticated(link string, session *channel.Session) (S
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if session == nil || session.Role() != channel.Inviter || !session.Local().Equal(m.local) || session.InvitationID() != invite.id || !session.ExpiresAt().Equal(invite.expires) {
+	if session == nil || session.Role() != channel.Inviter || !session.Local().Equal(m.local) || session.InvitationID() != invite.id || !session.ExpiresAt().Equal(invite.expires) || session.ContextBinding() != invite.ContextBinding() {
 		return Snapshot{}, ErrChannel
 	}
 	candidate := session.Peer()
@@ -287,7 +332,7 @@ func (m *Manager) reserveLocked(invite Invite, authenticatedCandidate identity.P
 	if !authenticatedCandidate.Valid() || authenticatedCandidate.Equal(m.local) {
 		return Snapshot{}, identity.ErrInvalidKey
 	}
-	if invite.id != m.invite.id || !invite.owner.Equal(m.local) || !invite.endpoint.Equal(m.invite.endpoint) || !invite.expires.Equal(m.invite.expires) || subtle.ConstantTimeCompare(invite.secret[:], m.invite.secret[:]) != 1 {
+	if invite.id != m.invite.id || !invite.owner.Equal(m.local) || !invite.endpoint.Equal(m.invite.endpoint) || !invite.expires.Equal(m.invite.expires) || invite.service != m.invite.service || subtle.ConstantTimeCompare(invite.secret[:], m.invite.secret[:]) != 1 {
 		return Snapshot{}, ErrInvalidInvite
 	}
 	m.candidate = authenticatedCandidate
@@ -405,6 +450,7 @@ func (m *Manager) finishLocked(state State) error {
 	m.state = state
 	clear(m.invite.secret[:])
 	m.invite.endpoint = address.Endpoint{}
+	m.invite.service = ""
 	m.candidate = identity.PublicKey{}
 	m.authenticatedChannel = nil
 	if m.close != nil {

@@ -26,8 +26,21 @@ func TestWhatsUpDERPApplicationStatisticsOptOut(t *testing.T) {
 			}
 		}
 	}
-	if WhatsUpPrivacyPatchVersion != 1 {
+	if WhatsUpPrivacyPatchVersion != 2 {
 		t.Fatal("privacy patch version changed without reviewing the guard")
+	}
+}
+
+func TestWhatsUpClientStatusDoesNotInitializeOrStart(t *testing.T) {
+	client := &Client{Server: "invalid status-only sentinel"}
+	for range 3 {
+		if client.Status() != nil || client.lb != nil || client.started || !client.key.IsZero() {
+			t.Fatal("read-only client status performed lazy initialization")
+		}
+	}
+	client.started = true
+	if client.Status() != nil {
+		t.Fatal("missing client backend produced status")
 	}
 }
 

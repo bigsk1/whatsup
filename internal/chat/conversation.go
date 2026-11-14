@@ -197,17 +197,26 @@ func (c *Conversation) NextAttempt(authenticatedPeer identity.PublicKey) (frame 
 // duplicate-check state are committed. A duplicate is checked before disk quota;
 // a lost ACK cannot turn a saved message into another history entry.
 func (c *Conversation) Receive(authenticatedPeer identity.PublicKey, frame Frame) (ack Frame, err error) {
+	ack, _, err = c.ReceiveCommitted(authenticatedPeer, frame)
+	return ack, err
+}
+
+// ReceiveCommitted reports a new message only after the repository's atomic
+// receive transaction succeeds. Duplicate retries still ACK, without notifying.
+func (c *Conversation) ReceiveCommitted(authenticatedPeer identity.PublicKey, frame Frame) (ack Frame, newMessage bool, err error) {
 	err = c.withPeer(authenticatedPeer, func() error {
 		if frame.Type != MessageFrame || frame.Validate() != nil {
 			return ErrFrame
 		}
-		if _, err := c.store.Receive(Message{ID: frame.ID, Direction: Incoming, Text: frame.Text, CreatedAt: c.now().UTC(), Delivered: true}); err != nil {
+		duplicate, err := c.store.Receive(Message{ID: frame.ID, Direction: Incoming, Text: frame.Text, CreatedAt: c.now().UTC(), Delivered: true})
+		if err != nil {
 			return c.repositoryError(err)
 		}
+		newMessage = !duplicate
 		ack = Frame{Version: ProtocolVersion, Type: AckFrame, ID: frame.ID}
 		return nil
 	})
-	return ack, err
+	return ack, newMessage, err
 }
 
 // Acknowledge atomically marks the record delivered and removes its encrypted

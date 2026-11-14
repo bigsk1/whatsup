@@ -1,3 +1,4 @@
+import { serveDefaultAppPreferences } from './contact-events';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
@@ -20,7 +21,8 @@ type Operation =
   | 'DenyPairing'
   | 'CreateInvitation'
   | 'JoinInvitation'
-  | 'CancelInvitation';
+  | 'CancelInvitation'
+  | 'InspectInvitation';
 
 const generated = readFileSync(
   new URL('../bindings/whatsup/internal/desktop/service.ts', import.meta.url),
@@ -41,6 +43,7 @@ for (const name of [
   'CreateInvitation',
   'JoinInvitation',
   'CancelInvitation',
+  'InspectInvitation',
 ] as const) {
   const match = generated.match(
     new RegExp(`export function ${name}\\([\\s\\S]*?\\$Call\\.ByID\\((\\d+)`),
@@ -54,7 +57,7 @@ const publicRelayMap = 'https://tailcat.dev/derpmap.json';
 // Deliberately synthetic bearer text. This exercises UI transport only and is
 // not a valid Go invitation or evidence of an actual public service connection.
 const privateLink =
-  'whatsup://pair/v1?id=synthetic&secret=SYNTHETIC-INVITATION-BEARER&owner=synthetic&endpoint=synthetic&expires=9999999999';
+  'whatsup://pair/v2?id=synthetic&secret=SYNTHETIC-INVITATION-BEARER&owner=synthetic&endpoint=synthetic&expires=9999999999';
 const reserved: PairingStatus = {
   state: 'awaiting-approval',
   requestID: 'A'.repeat(22),
@@ -89,6 +92,8 @@ async function syntheticInvitations(page: Page, storage = 'unlocked') {
     create: undefined as undefined | (() => Promise<InvitationShare>),
     join: undefined as undefined | (() => Promise<PairingStatus>),
     cancelFailure: false,
+    inspect: undefined as
+      undefined | (() => Promise<{ serviceURL: string; host: string }>),
     expiry: () => new Date(Date.now() + 600_000).toISOString(),
   };
   const calls: { operation: Operation; args: unknown[] }[] = [];
@@ -100,6 +105,7 @@ async function syntheticInvitations(page: Page, storage = 'unlocked') {
       external.push(request.url());
   });
   await page.route('**/wails/runtime', async (route) => {
+    if (await serveDefaultAppPreferences(route)) return;
     const body = route.request().postDataJSON();
     const operation = operations[body.args?.methodID];
     if (
@@ -137,6 +143,12 @@ async function syntheticInvitations(page: Page, storage = 'unlocked') {
       });
     } else if (operation === 'GetPairingStatus') {
       await route.fulfill({ json: state.pairing });
+    } else if (operation === 'InspectInvitation') {
+      await route.fulfill({
+        json: state.inspect
+          ? await state.inspect()
+          : { serviceURL: relayURL, host: new URL(relayURL).host },
+      });
     } else if (operation === 'CreateInvitation') {
       const result = state.create
         ? await state.create()
@@ -181,7 +193,12 @@ async function openDialog(page: Page) {
 }
 
 async function allowService(dialog: ReturnType<Page['getByRole']>) {
-  await dialog.getByLabel('Connection service HTTPS URL').fill(relayURL);
+  const serviceField = dialog.getByLabel('Connection service HTTPS URL');
+  if (await serviceField.count()) await serviceField.fill(relayURL);
+  else
+    await dialog
+      .getByRole('button', { name: 'Review invitation', exact: true })
+      .click();
   await dialog.getByRole('checkbox').check();
 }
 
@@ -270,15 +287,7 @@ test('the public Tailcat relay URL is copied only explicitly without selecting i
       () => (window as Window & { testClipboard?: string[] }).testClipboard,
     ),
   ).toEqual([]);
-  for (const mode of ['create', 'join'] as const) {
-    if (mode === 'join') {
-      await dialog
-        .getByRole('radio', { name: 'Paste invitation', exact: true })
-        .check();
-      await dialog
-        .getByLabel('Private invitation', { exact: true })
-        .fill(privateLink);
-    }
+  for (const mode of ['create'] as const) {
     await dialog
       .getByRole('button', { name: 'Copy relay URL', exact: true })
       .click();
@@ -291,10 +300,7 @@ test('the public Tailcat relay URL is copied only explicitly without selecting i
     await expect(dialog.getByRole('checkbox')).not.toBeChecked();
     await expect(
       dialog.getByRole('button', {
-        name:
-          mode === 'create'
-            ? 'Create private invitation'
-            : 'Open private invitation',
+        name: 'Create private invitation',
         exact: true,
       }),
     ).toBeDisabled();
@@ -303,7 +309,7 @@ test('the public Tailcat relay URL is copied only explicitly without selecting i
     await page.evaluate(
       () => (window as Window & { testClipboard?: string[] }).testClipboard,
     ),
-  ).toEqual([publicRelayMap, publicRelayMap]);
+  ).toEqual([publicRelayMap]);
   expect(
     calls.filter((call) =>
       ['CreateInvitation', 'JoinInvitation'].includes(call.operation),
@@ -433,12 +439,12 @@ test('locking storage clears a late-created bearer and prevents it reappearing a
   await settings
     .getByRole('button', { name: 'Privacy & diagnostics', exact: true })
     .click();
-  await settings.getByRole('button', { name: 'Disconnect and lock' }).click();
+  await settings.getByRole('button', { name: 'Go offline' }).click();
   await expect(
     settings.getByText('Locked on this device', { exact: true }),
   ).toBeVisible();
   release();
-  await settings.getByRole('button', { name: 'Unlock and connect' }).click();
+  await settings.getByRole('button', { name: 'Go online' }).click();
   await expect(
     page.getByRole('dialog', { name: 'Share your invitation' }),
   ).toHaveCount(0);
@@ -600,5 +606,142 @@ test('an asynchronously failed share clears its bearer immediately', async ({
     dialog.getByRole('button', { name: 'Copy invitation' }),
   ).toHaveCount(0);
   expect(await page.evaluate(() => ({ ...localStorage }))).toEqual({});
+  expect(errors).toEqual([]);
+});
+
+test('the relay preset fills only an empty creation field without consent or a connection', async ({
+  page,
+}) => {
+  const { calls, errors, external } = await syntheticInvitations(page);
+  await page.goto('/');
+  const dialog = await openDialog(page);
+  const preset = dialog.getByRole('button', {
+    name: 'Use Tailcat public relay',
+    exact: true,
+  });
+  const field = dialog.getByLabel('Connection service HTTPS URL');
+  await preset.click();
+  await expect(field).toHaveValue(publicRelayMap);
+  await expect(dialog.getByRole('checkbox')).not.toBeChecked();
+  await expect(preset).toBeDisabled();
+  await field.fill(relayURL);
+  await expect(preset).toBeDisabled();
+  await expect(field).toHaveValue(relayURL);
+  expect(
+    calls.some((call) =>
+      ['CreateInvitation', 'JoinInvitation'].includes(call.operation),
+    ),
+  ).toBe(false);
+  expect(external).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('the joining app reviews the carried service locally and requires fresh consent after a link edit', async ({
+  page,
+}) => {
+  const { calls, errors, external } = await syntheticInvitations(page);
+  await page.goto('/');
+  const dialog = await openDialog(page);
+  await dialog.getByRole('radio', { name: 'Paste invitation' }).check();
+  const input = dialog.getByLabel('Private invitation', { exact: true });
+  await input.fill(privateLink);
+  await expect(dialog.getByRole('checkbox')).toBeDisabled();
+  await dialog
+    .getByRole('button', { name: 'Review invitation', exact: true })
+    .click();
+  await expect(
+    dialog.getByText('This invitation uses relay.example.invalid. Allow?', {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(dialog.getByLabel('Invitation connection service')).toHaveText(
+    relayURL,
+  );
+  await expect(dialog.getByLabel('Connection service HTTPS URL')).toHaveCount(
+    0,
+  );
+  await expect(dialog.getByRole('checkbox')).not.toBeChecked();
+  expect(
+    calls.filter((call) => call.operation === 'InspectInvitation'),
+  ).toEqual([{ operation: 'InspectInvitation', args: [privateLink] }]);
+  expect(calls.some((call) => call.operation === 'JoinInvitation')).toBe(false);
+  await dialog.getByRole('checkbox').check();
+  await input.fill(privateLink + '&changed=1');
+  await expect(dialog.getByLabel('Invitation connection service')).toHaveCount(
+    0,
+  );
+  await expect(dialog.getByRole('checkbox')).not.toBeChecked();
+  await expect(
+    dialog.getByRole('button', { name: 'Open private invitation' }),
+  ).toBeDisabled();
+  expect(external).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('a late local inspection cannot restore a cancelled invitation or relay consent', async ({
+  page,
+}) => {
+  const { state, calls, errors } = await syntheticInvitations(page);
+  let release!: () => void;
+  state.inspect = () =>
+    new Promise((resolve) => {
+      release = () =>
+        resolve({ serviceURL: relayURL, host: new URL(relayURL).host });
+    });
+  await page.goto('/');
+  const dialog = await openDialog(page);
+  await dialog.getByRole('radio', { name: 'Paste invitation' }).check();
+  await dialog
+    .getByLabel('Private invitation', { exact: true })
+    .fill(privateLink);
+  await dialog
+    .getByRole('button', { name: 'Review invitation', exact: true })
+    .click();
+  await expect
+    .poll(() => calls.some((call) => call.operation === 'InspectInvitation'))
+    .toBe(true);
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  release();
+  const reopened = await openDialog(page);
+  await expect(reopened.getByLabel('Connection service HTTPS URL')).toHaveValue(
+    '',
+  );
+  await expect(reopened.getByRole('checkbox')).not.toBeChecked();
+  expect(calls.some((call) => call.operation === 'JoinInvitation')).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test('the paste field preserves an 8192-byte invitation while the service field stays capped at 2048', async ({
+  page,
+}) => {
+  const { calls, errors } = await syntheticInvitations(page);
+  await page.goto('/');
+  const dialog = await openDialog(page);
+  await expect(
+    dialog.getByLabel('Connection service HTTPS URL'),
+  ).toHaveAttribute('maxlength', '2048');
+  await expect(dialog.getByRole('checkbox')).toHaveAccessibleName(
+    'I allow this connection service to learn my IP address and availability and relay encrypted connections when needed.',
+  );
+  await dialog.getByRole('radio', { name: 'Paste invitation' }).check();
+  const prefix =
+    'whatsup://pair/v2?service=https%3A%2F%2Frelay.example.invalid%2Fmap.json&padding=';
+  const invitation = prefix + 'x'.repeat(8192 - prefix.length);
+  const field = dialog.getByLabel('Private invitation', { exact: true });
+  await expect(field).toHaveAttribute('maxlength', '8192');
+  await field.fill(invitation);
+  await expect(field).toHaveValue(invitation);
+  await dialog
+    .getByRole('button', { name: 'Review invitation', exact: true })
+    .click();
+  await expect
+    .poll(
+      () =>
+        calls.find((call) => call.operation === 'InspectInvitation')?.args[0],
+    )
+    .toBe(invitation);
+  await expect(dialog.getByRole('checkbox')).not.toBeChecked();
+  expect(calls.some((call) => call.operation === 'JoinInvitation')).toBe(false);
   expect(errors).toEqual([]);
 });

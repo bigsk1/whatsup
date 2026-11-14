@@ -284,7 +284,7 @@ func DialOngoing(ctx context.Context, record storage.PendingRecord, profile *Rel
 		return nil, ErrOngoingTransport
 	}
 	life, stopLife := context.WithCancel(ctx)
-	owned := &ongoingClientConn{Conn: conn, client: client, cancel: stopLife}
+	owned := &ongoingClientConn{Conn: conn, client: client, peer: material.peer, cancel: stopLife}
 	owned.mu.Lock()
 	owned.stop = context.AfterFunc(life, func() { _ = owned.Close() })
 	owned.mu.Unlock()
@@ -300,6 +300,8 @@ type ongoingClientConn struct {
 	client *tailcat.Client
 	once   sync.Once
 	mu     sync.Mutex
+	peer   key.NodePublic
+	closed bool
 	stop   func() bool
 	cancel context.CancelFunc
 }
@@ -310,6 +312,7 @@ func (c *ongoingClientConn) Close() error {
 	c.once.Do(func() {
 		c.cancel()
 		c.mu.Lock()
+		c.closed = true
 		stop := c.stop
 		c.mu.Unlock()
 		stop()

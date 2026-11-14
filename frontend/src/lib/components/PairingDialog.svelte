@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { groupedFingerprint } from '../state/fingerprint';
   import { ShieldCheck } from '@lucide/svelte';
   import { hasPairingIdentity, type PairingStatus } from '../pairing';
 
@@ -105,13 +106,13 @@
           >Their fingerprint</span
         >
         <code class="fingerprint" aria-labelledby="peer-fingerprint-label"
-          >{status.peerFingerprint}</code
+          >{groupedFingerprint(status.peerFingerprint)}</code
         >
         <span class="fingerprint-label" id="local-fingerprint-label"
           >Your fingerprint</span
         >
         <code class="fingerprint" aria-labelledby="local-fingerprint-label"
-          >{status.localFingerprint}</code
+          >{groupedFingerprint(status.localFingerprint)}</code
         >
       </div>
     {/if}

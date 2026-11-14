@@ -4,10 +4,12 @@
   import {
     validConnectionService,
     validInvitationLink,
+    maximumInvitationBytes,
+    maximumServiceURLBytes,
     type InvitationShare,
     type PairingStatus,
   } from '../pairing';
-
+  import { createInvitationForm, publicRelayMap } from '../state/invitation';
   let {
     enabled,
     pairing,
@@ -24,76 +26,48 @@
     suspended?: boolean;
   } = $props();
   let dialog = $state<HTMLDialogElement>();
-  let mode = $state<'create' | 'join'>('create');
-  let stage = $state<
-    'form' | 'starting' | 'share' | 'joining' | 'failed' | 'canceling'
-  >('form');
-  let relayURL = $state('');
-  let consent = $state(false);
-  let pastedLink = $state('');
-  let privateLink = $state('');
-  let expiresAt = $state('');
-  let error = $state('');
-  let copyNotice = $state('');
-  let relayCopyNotice = $state('');
-  const publicRelayMap = 'https://tailcat.dev/derpmap.json';
-  let operation = 0;
-  let expiryTimer: number | undefined;
-  let watchTerminal = $state(false);
-  let terminalBaseline: PairingStatus | undefined;
   let resumeAfterSettings = false;
-
-  function forget() {
-    resumeAfterSettings = false;
-    operation += 1;
-    if (expiryTimer !== undefined) window.clearTimeout(expiryTimer);
-    expiryTimer = undefined;
-    relayURL = '';
-    consent = false;
-    pastedLink = '';
-    privateLink = '';
-    expiresAt = '';
-    error = '';
-    copyNotice = '';
-    relayCopyNotice = '';
-    stage = 'form';
-    watchTerminal = false;
-    terminalBaseline = undefined;
-  }
-
+  const flow = createInvitationForm({
+    enabled: () => enabled,
+    pairing: () => pairing,
+    create: (url, consent) => oncreate(url, consent),
+    join: (link, url, consent) => onjoin(link, url, consent),
+    cancel: () => oncancel(),
+    close: () => dialog?.close(),
+  });
+  const formState = flow.state;
+  const {
+    mode,
+    stage,
+    relayURL,
+    consent,
+    pastedLink,
+    privateLink,
+    expiresAt,
+    error,
+    copyNotice,
+    relayCopyNotice,
+    inspection,
+    inspecting,
+  } = $derived($formState);
   export function show() {
     if (!enabled || !dialog) return;
-    forget();
-    mode = 'create';
+    flow.reset();
+    resumeAfterSettings = false;
     dialog.showModal();
   }
-
+  const start = () => flow.start();
+  const cancel = () => flow.cancel();
+  const copyLink = () => flow.copyLink();
+  const copyRelayURL = () => flow.copyRelayURL();
   $effect(() => {
     if (!dialog) return;
     if (!enabled || pairing.state === 'awaiting-approval') {
-      // Reservation hands the request to PairingDialog. Do not cancel its TLS
-      // channel merely because the explicit-share surface is being hidden.
-      forget();
+      flow.reset();
+      resumeAfterSettings = false;
       if (dialog.open) dialog.close();
-    } else if (
-      watchTerminal &&
-      pairing !== terminalBaseline &&
-      ['failed', 'expired', 'canceled', 'denied'].includes(pairing.state)
-    ) {
-      const ended = pairing.state;
-      forget();
-      stage = 'failed';
-      error =
-        ended === 'expired'
-          ? 'This invitation expired. Cancel this attempt, then use a new private invitation.'
-          : ended === 'failed'
-            ? 'The invitation connection failed. Cancel this attempt, then check the link and connection service before trying again.'
-            : 'This invitation was canceled or denied. Cancel this attempt before starting another invitation.';
-    }
+    } else flow.observe(pairing);
   });
-
-  onDestroy(forget);
-
   $effect(() => {
     if (!dialog) return;
     if (suspended) {
@@ -106,114 +80,14 @@
       if (enabled && pairing.state !== 'awaiting-approval') dialog.showModal();
     }
   });
-
-  async function start() {
-    if (!enabled || stage !== 'form') return;
-    const selectedURL = relayURL.trim();
-    const selectedLink = pastedLink.trim();
-    if (
-      !consent ||
-      !validConnectionService(selectedURL) ||
-      (mode === 'join' && !validInvitationLink(selectedLink))
-    ) {
-      error =
-        'Check the connection service, invitation and consent before continuing.';
-      return;
-    }
-    const selectedMode = mode;
-    const current = ++operation;
-    relayURL = '';
-    pastedLink = '';
-    consent = false;
-    error = '';
-    stage = selectedMode === 'create' ? 'starting' : 'joining';
-    try {
-      if (selectedMode === 'join') {
-        await onjoin(selectedLink, selectedURL, true);
-        if (current !== operation || !enabled) return;
-        terminalBaseline = pairing;
-        watchTerminal = true;
-        return;
-      }
-      const share = await oncreate(selectedURL, true);
-      if (current !== operation || !enabled) return;
-      privateLink = share.link;
-      expiresAt = share.expiresAt;
-      stage = 'share';
-      terminalBaseline = pairing;
-      watchTerminal = true;
-      expiryTimer = window.setTimeout(
-        () => void cancel(),
-        Math.min(
-          600_000,
-          Math.max(0, Date.parse(share.expiresAt) - Date.now()),
-        ),
-      );
-    } catch {
-      if (current !== operation || !enabled) return;
-      privateLink = '';
-      pastedLink = '';
-      stage = 'failed';
-      error =
-        selectedMode === 'create'
-          ? 'The invitation could not be created. Cancel this attempt, then check the connection service before trying again.'
-          : 'The invitation could not be opened. Cancel this attempt, then check the link and connection service before trying again.';
-    }
-  }
-
-  async function cancel() {
-    if (stage === 'canceling') return;
-    forget();
-    const current = operation;
-    stage = 'canceling';
-    try {
-      await oncancel();
-      if (current !== operation) return;
-      stage = 'form';
-      if (dialog?.open) dialog.close();
-    } catch {
-      if (current !== operation || !enabled) return;
-      stage = 'failed';
-      error =
-        'Cancellation could not be confirmed. Try Cancel again or close WhatsUp.';
-    }
-  }
-
-  async function copyLink() {
-    if (stage !== 'share' || privateLink === '') return;
-    const current = operation;
-    try {
-      // Clipboard writes happen only in response to this explicit button.
-      await navigator.clipboard.writeText(privateLink);
-      if (current === operation) copyNotice = 'Invitation copied.';
-    } catch {
-      if (current === operation)
-        copyNotice =
-          'Copy is unavailable. Select the private link and copy it.';
-    }
-  }
-
-  async function copyRelayURL() {
-    if (!enabled || stage !== 'form') return;
-    const current = operation;
-    try {
-      await navigator.clipboard.writeText(publicRelayMap);
-      if (current === operation && stage === 'form')
-        relayCopyNotice =
-          'Public relay URL copied. Paste it into the field if you want to use it.';
-    } catch {
-      if (current === operation && stage === 'form')
-        relayCopyNotice =
-          'Copy is unavailable. Select the public relay URL and copy it.';
-    }
-  }
-
+  onDestroy(flow.reset);
   const ready = $derived(
     enabled &&
       stage === 'form' &&
       consent &&
       validConnectionService(relayURL.trim()) &&
-      (mode === 'create' || validInvitationLink(pastedLink.trim())),
+      (mode === 'create' ||
+        (inspection !== null && validInvitationLink(pastedLink.trim()))),
   );
 </script>
 
@@ -243,10 +117,20 @@
       <fieldset class="invitation-modes">
         <legend class="sr-only">Invitation action</legend>
         <label
-          ><input type="radio" bind:group={mode} value="create" /> Create invitation</label
+          ><input
+            type="radio"
+            checked={mode === 'create'}
+            onchange={() => flow.setMode('create')}
+            value="create"
+          /> Create invitation</label
         >
         <label
-          ><input type="radio" bind:group={mode} value="join" /> Paste invitation</label
+          ><input
+            type="radio"
+            checked={mode === 'join'}
+            onchange={() => flow.setMode('join')}
+            value="join"
+          /> Paste invitation</label
         >
       </fieldset>
 
@@ -257,60 +141,90 @@
         <textarea
           id="pasted-invitation"
           class="invitation-input"
-          bind:value={pastedLink}
-          maxlength="2048"
+          value={pastedLink}
+          oninput={(event) => flow.setLink(event.currentTarget.value)}
+          maxlength={maximumInvitationBytes}
           rows="3"
           autocomplete="off"
           autocapitalize="off"
           spellcheck="false"
-          placeholder="whatsup://pair/v1?…"></textarea>
+          placeholder="whatsup://pair/v2?…"></textarea>
+        <button
+          type="button"
+          class="secondary-button compact"
+          disabled={inspecting || !validInvitationLink(pastedLink.trim())}
+          onclick={() => void flow.inspect()}
+          >{inspecting ? 'Reviewing…' : 'Review invitation'}</button
+        >
+        {#if inspection}<p class="service-help" role="status">
+            This invitation uses <strong>{inspection.host}</strong>. Allow?
+          </p>
+          <output aria-label="Invitation connection service"
+            >{inspection.serviceURL}</output
+          >{/if}
       {/if}
 
-      <label class="field-label" for="connection-service"
-        >Connection service HTTPS URL</label
-      >
-      <input
-        id="connection-service"
-        class="invitation-input"
-        type="url"
-        bind:value={relayURL}
-        oninput={() => (consent = false)}
-        maxlength="2048"
-        autocomplete="off"
-        autocapitalize="off"
-        spellcheck="false"
-        placeholder="https://relay.example.invalid/map.json"
-      />
-      <p class="muted small service-help">
-        Enter the relay map URL supplied by the operator of a service you trust.
-        Opening this dialog does not contact a service.
-      </p>
-      <div class="public-relay-reference">
-        <p class="muted small">Tailcat public relay map · best effort</p>
-        <div class="public-relay-copy">
-          <code>{publicRelayMap}</code>
-          <button
-            class="secondary-button compact"
-            onclick={() => void copyRelayURL()}
-            ><Copy size={14} /> Copy relay URL</button
-          >
-        </div>
-        <p class="muted small">
-          This public service is rate limited. Its operator sees your IP address
-          and availability when you connect. Copying this URL makes no
-          connection.
+      {#if mode === 'create'}
+        <label class="field-label" for="connection-service"
+          >Connection service HTTPS URL</label
+        >
+        <input
+          id="connection-service"
+          class="invitation-input"
+          type="url"
+          value={relayURL}
+          oninput={(event) => flow.setURL(event.currentTarget.value)}
+          maxlength={maximumServiceURLBytes}
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          placeholder="https://relay.example.invalid/map.json"
+        />
+        <p class="muted small service-help">
+          Enter the relay map URL supplied by the operator of a service you
+          trust. Opening this dialog does not contact a service.
         </p>
-        {#if relayCopyNotice}
-          <p class="muted small" role="status">{relayCopyNotice}</p>
-        {/if}
-      </div>
+        <button
+          type="button"
+          class="secondary-button compact"
+          disabled={relayURL.trim() !== ''}
+          onclick={() => flow.usePublicRelay()}>Use Tailcat public relay</button
+        >
+        <div class="public-relay-reference">
+          <p class="muted small">Tailcat public relay map · best effort</p>
+          <div class="public-relay-copy">
+            <code>{publicRelayMap}</code>
+            <button
+              class="secondary-button compact"
+              onclick={() => void copyRelayURL()}
+              ><Copy size={14} /> Copy relay URL</button
+            >
+          </div>
+          <p class="muted small">
+            This public service is rate limited. Its operator sees your IP
+            address and availability when you connect. Copying this URL makes no
+            connection.
+          </p>
+          {#if relayCopyNotice}
+            <p class="muted small" role="status">{relayCopyNotice}</p>
+          {/if}
+        </div>
+      {/if}
       <label class="relay-consent">
-        <input type="checkbox" bind:checked={consent} />
+        <input
+          type="checkbox"
+          checked={consent}
+          disabled={mode === 'join' && inspection === null}
+          onchange={(event) => flow.setConsent(event.currentTarget.checked)}
+        />
         <span>
           I allow this connection service to learn my IP address and
-          availability and relay encrypted pairing setup when needed.
+          availability and relay encrypted connections when needed.
         </span>
       </label>
+      <p class="muted small">
+        This choice applies to pairing and your ongoing encrypted connection.
+      </p>
       <p class="muted small">
         Strict direct-only pairing is unavailable. Nothing connects until you
         select a service, give consent and continue.

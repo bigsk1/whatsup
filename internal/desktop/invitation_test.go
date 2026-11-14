@@ -99,6 +99,7 @@ func unlockedInvitationService(t *testing.T) *Service {
 	if _, err := s.UnlockStorage(); err != nil {
 		t.Fatal(err)
 	}
+	s.invitations.legacyFixture = true
 	t.Cleanup(func() { _ = s.ServiceShutdown() })
 	return s
 }
