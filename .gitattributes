@@ -1,0 +1,5 @@
+# Preserve one text representation across Windows, WSL and Linux checkouts.
+# In particular, shell entry points must never be checked out with CRLF.
+* text=auto eol=lf
+*.png binary
+*.ico binary

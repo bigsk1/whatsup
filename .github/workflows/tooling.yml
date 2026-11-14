@@ -1,0 +1,38 @@
+name: Workflow tooling only
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tooling-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflow-tools:
+    name: Workflow tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: Frozen workflow install
+        run: npm ci --ignore-scripts
+      - name: Test workflow safety
+        run: npm test
+      - name: Check command syntax
+        run: node --check scripts/whatsup.mjs
+# This validates workflow tooling only. Component CI is separate; neither job
+# establishes live transport, native installer, signing, or release readiness.

@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "observedOn": "2026-11-13",
+  "observedTimezone": "America/Los_Angeles",
+  "minimumNode": "26.13.1",
+  "minimumGo": "1.27.4",
+  "wailsVersion": "v3.1.0",
+  "applicationReady": false,
+  "sourceReleaseObservations": {
+    "go": "1.27.4",
+    "wails": "v3.1.0",
+    "svelte": "5.57.3",
+    "vite": "8.3.8",
+    "tailwindcss": "4.3.5",
+    "node": "26.13.1"
+  },
+  "unresolved": [
+    "Mutual authenticated approval and durable contact activation integrated with the native app",
+    "Packet-boundary direct-only support and real direct/forced-relay/path-change tests",
+    "Reciprocal activation and transport credential persistence/restoration through the coordinated schema",
+    "Unpatched development dependency advisory GHSA-gcqx-w48m-w2h4 (deepmerge via Svelte Vite plugin)",
+    "Bounded file transfer, tray/notifications, backups, native installers, SBOM/signatures and updater verification"
+  ],
+  "govulncheckVersion": "v1.9.0",
+  "frontendMajorConstraints": {
+    "typescript": 6,
+    "@types/node": 26
+  },
+  "reviewedGoPins": {
+    "tailscale.com": "v1.105.0-pre.0.20261013225543-fb79793d99f5",
+    "github.com/tailscale/tailcat": "v0.7.1-0.20261105151022-e00cdde6ff78",
+    "github.com/tailscale/wireguard-go": "v0.0.0-20260928213353-e61b6b78110b"
+  },
+  "transportIntegrationVerified": false
+}

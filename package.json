@@ -1,0 +1,24 @@
+{
+  "name": "whatsup-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "WhatsUp private desktop messenger",
+  "engines": {
+    "node": ">=26.13.1 <27"
+  },
+  "scripts": {
+    "doctor": "node scripts/whatsup.mjs doctor",
+    "setup": "node scripts/whatsup.mjs setup",
+    "dev": "node scripts/whatsup.mjs dev",
+    "test": "node scripts/whatsup.mjs tooling-test",
+    "check": "node scripts/whatsup.mjs check",
+    "update": "node scripts/whatsup.mjs update",
+    "package": "node scripts/whatsup.mjs package",
+    "verify:release": "node scripts/whatsup.mjs verify-release",
+    "test:app": "node scripts/whatsup.mjs test-app",
+    "test:credentials": "node scripts/whatsup.mjs test-credentials",
+    "wsl": "node scripts/whatsup.mjs wsl",
+    "build": "node scripts/whatsup.mjs build"
+  }
+}

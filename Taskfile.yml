@@ -1,0 +1,29 @@
+version: '3'
+
+vars:
+  APP_NAME: whatsup
+  BIN_DIR: build/bin
+  GOOS: '{{.GOOS | default OS}}'
+
+includes:
+  common: ./build/Taskfile.yml
+  windows: ./build/windows/Taskfile.yml
+  linux: ./build/linux/Taskfile.yml
+
+tasks:
+  build:
+    summary: Build an unsigned native Windows or Linux development candidate
+    cmds:
+      - task: '{{.GOOS}}:build'
+  package:
+    summary: Native packaging, blocked until application and installer gates pass
+    cmds:
+      - node scripts/whatsup.mjs native-package
+  run:
+    summary: Run the native desktop candidate
+    cmds:
+      - node scripts/whatsup.mjs run-native
+  dev:
+    summary: Run the pinned native development loop
+    cmds:
+      - node scripts/whatsup.mjs dev

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=WhatsUp
+Comment=Private one-to-one desktop messenger
+Exec=/usr/bin/whatsup
+Terminal=false
+Type=Application
+Icon=whatsup
+Categories=Network;InstantMessaging;
+StartupWMClass=whatsup

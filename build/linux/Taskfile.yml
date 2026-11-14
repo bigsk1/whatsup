@@ -1,0 +1,16 @@
+version: '3'
+
+tasks:
+  build:
+    summary: Build Linux natively with GTK4 and WebKitGTK 6 dependencies
+    cmds:
+      - node scripts/whatsup.mjs native-build
+    env:
+      GOOS: linux
+      WHATSUP_DEV: '{{.DEV | default "false"}}'
+  package:
+    summary: Linux installer prerequisite gate
+    cmds:
+      - node scripts/whatsup.mjs native-package
+    env:
+      GOOS: linux

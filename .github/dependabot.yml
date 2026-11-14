@@ -1,0 +1,31 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: typescript
+        versions: ['>=7']
+      - dependency-name: '@types/node'
+        versions: ['>=27']
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+# Transport proposals must also update reviewedGoPins after source/API/security
+# review. The runner rejects a graph that silently differs from those pins.
+# Configuring update PRs does not itself enable repository vulnerability alerts;
+# enable dependency graph/Dependabot alerts in the eventual GitHub repository.

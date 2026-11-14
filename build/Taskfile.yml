@@ -1,0 +1,17 @@
+# Native Wails tasks delegate to the same Node workflow used by npm commands.
+# No alternate package managers, server builds, remote scripts, or floating tools.
+version: '3'
+
+tasks:
+  build:frontend:
+    summary: Build bundled frontend assets
+    cmds:
+      - node scripts/whatsup.mjs frontend-build
+  generate:bindings:
+    summary: Generate the minimal typed Wails bridge using the pinned CLI
+    cmds:
+      - node scripts/whatsup.mjs generate-bindings
+  dev:frontend:
+    summary: Run the loopback-only frontend development server
+    cmds:
+      - node scripts/whatsup.mjs frontend-dev

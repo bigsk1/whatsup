@@ -1,0 +1,49 @@
+name: Implemented components (not release validation)
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: components-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  components:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Disable Go local collection and telemetry upload
+        run: go telemetry off
+      - name: Linux native build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgtk-4-dev libwebkitgtk-6.0-dev build-essential pkg-config
+      - name: Install frozen graph and pinned tools
+        run: npm run setup
+      - name: Install the committed browser test runtime
+        run: node frontend/node_modules/@playwright/test/cli.js install --with-deps chromium
+      - name: Validate implemented scope and current advisories
+        run: npm run test:app
+      - name: Build native development candidate
+        run: npm run build
+
+# No remote repository exists yet. This job has not run on GitHub. A LOW
+# deepmerge advisory currently fails the audit gate; there is no exception.
+# Component CI does not authorize a messenger release or claim transport QA.

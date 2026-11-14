@@ -1,0 +1,16 @@
+version: '3'
+
+tasks:
+  build:
+    summary: Build Windows natively with frozen dependencies and readonly Go modules
+    cmds:
+      - node scripts/whatsup.mjs native-build
+    env:
+      GOOS: windows
+      WHATSUP_DEV: '{{.DEV | default "false"}}'
+  package:
+    summary: Windows installer prerequisite gate
+    cmds:
+      - node scripts/whatsup.mjs native-package
+    env:
+      GOOS: windows
