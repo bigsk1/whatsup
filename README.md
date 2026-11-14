@@ -2,7 +2,7 @@
 
 WhatsUp is a private, one-to-one desktop messenger for Windows and Linux.
 
-The current **0.0.6 preview** supports identity-verified pairing, text messages,
+The current **0.0.7 preview** supports identity-verified pairing, text messages,
 encrypted local history and queued messages, automatic reconnection, optional
 shared display names, and private contact names.
 

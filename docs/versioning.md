@@ -1,6 +1,6 @@
 # Versions and compatibility
 
-WhatsUp's current preview series uses versions such as **0.0.6**. A version
+WhatsUp's current preview series uses versions such as **0.0.7**. A version
 identifies an application revision; it does not certify security, completeness
 or release approval.
 
@@ -20,8 +20,8 @@ release signature.
 
 ## Device and data compatibility
 
-Use compatible versions on both devices. The 0.0.6 preview requires 0.0.6 on both
-sides for its updated messaging and shared-name connection.
+Use compatible versions on both devices. The 0.0.7 preview requires 0.0.7 on both
+sides for its updated messaging protocol.
 
 An application version is separate from the format of local encrypted data and
 the network protocol. A newer version may upgrade local data. An older executable
