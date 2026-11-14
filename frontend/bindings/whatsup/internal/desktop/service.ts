@@ -7,7 +7,27 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as pairflow$0 from "../pairflow/models.js";
+
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as $models from "./models.js";
+
+/**
+ * ApprovePairing confirms only the current reserved identity. It neither opens
+ * a listener nor returns credentials, contact authority or history access.
+ */
+export function ApprovePairing(requestID: string, peerFingerprint: string): $CancellablePromise<pairflow$0.Snapshot> {
+    return $Call.ByID(1516693078, requestID, peerFingerprint);
+}
+
+export function DenyPairing(requestID: string): $CancellablePromise<pairflow$0.Snapshot> {
+    return $Call.ByID(2165699649, requestID);
+}
+
+export function GetPairingStatus(): $CancellablePromise<pairflow$0.Snapshot> {
+    return $Call.ByID(4143459699);
+}
 
 export function GetStatus(): $CancellablePromise<$models.Status> {
     return $Call.ByID(3129447825);

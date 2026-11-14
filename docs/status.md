@@ -1,11 +1,13 @@
 # Implementation status
 
-Recorded 2026-11-13 (America/Los_Angeles).
+Recorded 2026-11-14 (America/Los_Angeles).
 
 ## Implemented
 
-- Native Wails v3 entry point and three generated typed bridge methods:
-  GetStatus, UnlockStorage, LockStorage. No identity/contact/vault objects,
+- Native Wails v3 entry point and six generated typed bridge methods:
+  GetStatus, UnlockStorage, LockStorage, GetPairingStatus, ApprovePairing and
+  DenyPairing. Only public status and reserved-request decisions cross the bridge.
+  No identity/contact/vault objects,
   secrets, general filesystem API or transport operations are bound.
 - Svelte 5/TypeScript/Tailwind interface with an empty conversation layout,
   search, keyboard-accessible settings/About dialogs, dark/light/system appearance
@@ -17,6 +19,27 @@ Recorded 2026-11-13 (America/Los_Angeles).
   Duplicate or premature events cannot create duplicate startup calls; an initial
   status failure preserves the desktop retry path. The listener is removed on
   component teardown. Plain browsers still have no desktop storage actions.
+- A backend-only TLS 1.3 pairing channel authenticates both Ed25519 identities
+  over a supplied connection, pins the invitation owner and exact invitation ID,
+  and requires reciprocal fingerprint confirmation. Its opaque live consent
+  capability grants no chat or transport activation. Authenticated invitation
+  reservation derives the candidate from that channel, retains bearer/expiry/
+  single-use checks and rejects legacy immediate approval/teardown. A typed
+  reservation ACK precedes fingerprint presentation on both sides. The coordinator
+  owns joint TLS/invitation cancellation and starts no listener or dialer.
+  See [pairing protocol](pairing-protocol.md).
+- Reserved requests drive a simple Approve/Deny confirmation dialog with both
+  full fingerprints. Deny has default focus, Escape denies, and stale request IDs
+  or async responses cannot approve/restore another request. Polling stops on
+  storage lock/unmount. No sample prompt or browser-persisted pairing state exists.
+  A restored pending setup has a nonmodal Discard notice, never an approval prompt.
+- After reserved mutual consent, the transport creates distinct node keys and
+  one inviter-generated shared PSK/contact ID. Typed session-bound exchange saves
+  encrypted pending records before prepared ACKs. Cancel joins in-flight saves
+  before removal; shutdown joins runs/actions before vault closure. Pending records
+  remain inert across reopen and grant no Contact, chat or transport authority.
+  Durable active completion/reconciliation and actual two-device pairing remain
+  unfinished. Initiate-pairing controls and Tailcat startup remain disabled.
 - Bounded local diagnostic recorder, warning/error/panic redaction, and private
   per-app WebView profiles on Windows and Linux. Linux startup prepares private
   data/cache roots and verifies the paths selected by the actual WebKit session;
@@ -30,11 +53,14 @@ Recorded 2026-11-13 (America/Los_Angeles).
 - OS-credential-protected encrypted application snapshot: explicit unlock, AES-256-GCM,
   random nonces, bounded authenticated reads, ciphertext-only temporary writes,
   file flush, process writer exclusion and fail-closed credential/corruption behavior.
-  Schema 2 coordinates identity, locally approved contact pins and per-contact
+  Schema 3 coordinates identity, locally approved contact pins and per-contact
   chat sections under one vault mutex. Scoped adapters prevent cross-section
   replacement; raw access and stale writes are rejected; uncertain saves poison
-  the coordinator until reopen. Schema 1 identity state migrates without changing
-  its seed. Pins cannot restore transport authority. See [storage design and limits](storage.md).
+  the coordinator until reopen. Exact schema 1/2 state migrates without changing
+  its seed, wrapping credential, pins or chat. A separate bounded pending section
+  validates credential associations but cannot restore transport authority.
+  Older 0.0.2 binaries reject migrated schema 3; installed apps and owner state
+  have not been changed. See [storage design and limits](storage.md).
 - Backend identity/invitation domain: Ed25519 fingerprints; canonical bounded private
   links; random expiring one-use invitations; atomic single-candidate reservation;
   full fingerprint approval; denial/replay/restart invalidation; synchronous listener
@@ -71,6 +97,8 @@ Recorded 2026-11-13 (America/Los_Angeles).
 - The owner recorded the first local main-branch commit, 27e4c48. No remote is
   configured. Repository text uses explicit LF endings; copied Wails build assets
   retain their upstream MIT notice. See [baseline notes](first-commit.md).
+  The owner authorized the subsequent local native integration checkpoint,
+  ef3e142. Later protocol work is a separate reviewable change.
 - The first application/test version is 0.0.1. Patch increments identify new
   delivered test revisions; rebuilds use separate timestamp/source build IDs.
   Minor and major changes are deliberate milestones. Native metadata and runtime
@@ -154,10 +182,10 @@ Recorded 2026-11-13 (America/Los_Angeles).
 
 ## Validation and advisory gates
 
-The review-fix batch completed the Windows and Linux component workflows.
-Functional gates pass on both platforms, including nine Go component/integration
-packages and Linux race testing. Both commands return nonzero solely for the
-documented frontend advisory. The Linux run verified source equality before and
+The native integration and subsequent pairing-channel batches completed the
+Windows and Linux component workflows. Functional gates pass on both platforms,
+including all twelve Go test packages and Linux race testing. Both commands return
+nonzero solely for the documented frontend advisory. The Linux run verified source equality before and
 after validation. Full product/release readiness remains blocked separately.
 
 - Twenty-five workflow safety tests cover runtime/dependency/tool-graph selection, review
@@ -165,6 +193,16 @@ after validation. Full product/release readiness remains blocked separately.
   safety. Node syntax checks pass.
 - Backend identity, invitation, chat, transport admission, desktop and storage tests
   pass on Windows. Windows has no configured C compiler and runs without -race.
+- The new pairing-channel suite passes on Windows and with the Linux race
+  detector. Real TLS tests reject wrong identities, invitation context, missing/
+  malformed/expired certificates, TLS downgrade, unilateral consent, denial,
+  duplicate decisions, malformed/replayed frames and cancellation. Expiry and
+  guarded-close tests cover capability invalidation. Real loopback TCP tests
+  prove authenticated reservation still has one winner, validates the bearer,
+  blocks premature activation and closes the session through its retirement hook.
+  An independent source review found a timer-publication race; the guarded fix
+  and other targeted corrections were verified before these component runs.
+  These tests do not exercise Tailcat, two devices or native pairing UI.
 - All implemented Go component/process tests and vet pass on Ubuntu with the race
   detector, including storage, desktop and local diagnostics. This is separate
   from actual peer transport QA.
@@ -196,8 +234,8 @@ after validation. Full product/release readiness remains blocked separately.
 - Local diagnostics tests pass on Windows and Ubuntu race testing: rotation bounds,
   process exclusion, private files, interrupted-write recovery, concurrency and
   adversarial slog data that must neither be retained nor evaluated.
-- Frontend formatting/types, seven unit tests, eleven Chromium E2E tests and production
-  Vite builds pass on Windows and Ubuntu. Agent Browser independently checked empty
+- Frontend formatting/types, seven unit tests, nineteen Chromium E2E tests and production
+  Vite builds are covered by the component workflow. Agent Browser previously checked empty
   and disabled states, settings, appearance changes and Escape handling.
 - The reported native startup bug was reproduced by a failing browser regression
   before the correction. Four new browser tests mount the actual Svelte app and
@@ -208,6 +246,22 @@ after validation. Full product/release readiness remains blocked separately.
   identity status is persisted in browser storage. These are lifecycle/bridge
   transport tests; real native credential and restart behavior is verified
   separately from these synthetic responses.
+- Eight new browser regressions exercise the confirmation dialog through the
+  actual generated bridge and Svelte app with synthetic responses: reserved prompt,
+  Approve/waiting, Deny/Escape, stale responses, lock/poll cancellation, malformed
+  DTOs, expiry and inert pending discard. The full component runs pass all 19
+  browser tests on Windows and Ubuntu, with zero frontend check warnings and
+  successful production frontend builds. Real TLS/loopback coordinator tests
+  pass on both, including the Linux race detector, and separately cover bearer ACK before
+  fingerprints, joint closure, one PSK/two nodes, encrypted save/reopen, stale
+  actions, rejected concurrent candidates, cancellation during save and shutdown
+  waiting for persistence. These are not native/two-device pairing evidence.
+- Pending schema tests pass for exact schema 2 migration preserving seed/key/
+  pins/chat, canonical credential associations, encrypted save/reopen, conflicts,
+  scope preservation, concurrency and uncertain pre/post-replacement failure.
+  An independent review caught the node-key binary prefix issue and a competing
+  candidate's manager-close hazard; both fixes have targeted regression evidence.
+  The native 0.0.2 executables and real owner state were not replaced or migrated.
 - Frozen npm run setup passes on both platforms, including exact Wails/scanner and
   Playwright browser installation. Npm lifecycle scripts remain disabled.
 - Initial Go scanning found an affected compression dependency and graph advisories.
@@ -257,13 +311,15 @@ after validation. Full product/release readiness remains blocked separately.
 
 ## Not implemented or verified
 
-- Reciprocal authenticated pairing, identity-to-WireGuard binding and durable
-  contact activation/revocation integrated with live sessions.
+- Native reciprocal pairing, identity-to-WireGuard binding, and durable contact
+  activation/revocation integrated with live sessions. The backend TLS/consent
+  channel is an implemented subcomponent, not a complete pairing flow.
 - A reviewed Tailcat hook/patch to suppress its optional DERP application-statistics
   label before live networking is bound. No transport starts in the current app.
-- Reciprocal activation/credential persistence and restore/revocation through the
-  coordinated schema. Identity/contact-pin/chat sections and schema 1 migration
-  exist; persisted pins alone grant no live authority. Chat remains unbound.
+- Completed activation, credential reconciliation/live restoration and revocation
+  through the coordinated schema. Pending credentials are saved/restored as inert
+  setup; neither pending data nor persisted pins grant live authority. Chat remains
+  unbound.
 - Real two-process/device direct and forced-relay delivery, network reconnect,
   lost acknowledgements, NAT/path changes or retransmission tests.
 - Strict direct-only packet enforcement. Never label direct-preferred as strict.
@@ -283,11 +339,12 @@ and frontend/src/app.css remain. No further cleanup action is required.
 
 ## Next integration sequence
 
-1. Review reciprocal authenticated approval and bind identity to dedicated invite/
-   contact transport keys. Persist activation before any history access.
-2. Persist reviewed activation/transport credentials in coordinated encrypted
-   state and connect its tested queue/deduplication/acknowledgement adapters to
-   authenticated sessions.
+1. Resolve invitation transport privacy/outbound relay controls before native
+   creation/link handling/dialing. The reserved confirmation and pending-storage
+   workflow is implemented, but no live invitation can reach it yet.
+2. Complete durable reciprocal activation and crash reconciliation before history
+   access, then connect the queue/deduplication/acknowledgement adapters to
+   authenticated sessions. Pending setup alone must never activate.
 3. Investigate supported upstream packet hooks or a reviewed minimal direct-only
    patch, retain discovery and prove zero relayed payload during failure-path tests.
 4. Add files/images, native background behavior, backup/update verification and QA.

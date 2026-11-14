@@ -152,11 +152,11 @@ The bridge also copies doctor-linux-x64.json and validation-linux-x64.json back
 to the Windows workspace's .local directory for review; check recordedAt before
 relying on a report.
 
-For native Ubuntu Desktop review, transfer the Linux development binary with its
-SHA-256 checksum through the VM's configured shared folder, verify the checksum,
-and copy it into the desktop user's own private directory before running it from
-their graphical session. Use a development candidate only for the implemented
-shell/storage review. Runtime libraries include libgtk-4-1 and libwebkitgtk-6.0-4;
+For native Ubuntu Desktop review, transfer the reviewed Linux bundle and its
+SHA-256 checksums through the VM's configured shared folder. Use the scoped
+development integration and launcher described in [native testing](native-testing.md);
+a raw per-user executable can fail the host's WebKit sandbox policy. Use a
+development candidate only for its documented scope. Runtime libraries include libgtk-4-1 and libwebkitgtk-6.0-4;
 local unlock also requires the user's working, unlocked Secret Service. An
 unavailable store remains locked without creating plaintext state. A host-side
 SSH connection is test infrastructure, not a service exposed by WhatsUp.
@@ -192,9 +192,44 @@ respective workspaces. npm run check/package remain blocked by broader readiness
 gates. Do not interpret a red readiness/advisory result as a successful release.
 
 Start with docs/status.md to see implemented behavior, evidence and the remaining
-integration sequence. The visible app currently supports appearance/settings and
-local identity storage, while pairing, send and attachment controls are disabled.
-Backend unit/domain tests do not make those visible messenger features usable.
+integration sequence. The installed 0.0.2 apps still provide appearance/settings
+and local identity storage; their executables are unchanged by the newer pairing
+source work. Backend tests do not make those installed apps usable messengers.
+
+## Pairing source and test scope
+
+The current source exposes six typed desktop methods: GetStatus, UnlockStorage,
+LockStorage, GetPairingStatus, ApprovePairing and DenyPairing. Pairing snapshots
+contain public request state, an opaque request ID, fingerprints and expiry.
+Approve/Deny act only on the current request. No invitation bearer, private key,
+PSK or generic transport operation crosses those methods.
+
+The confirmation popup requires an authenticated, backend-reserved request;
+fingerprints are not presented merely because a TLS handshake succeeded. There
+is no mock/sample trigger in the app. The native initiate-pairing controls remain
+disabled because Tailcat's privacy/start gate is still closed. Source-level popup
+support does not claim a complete two-device pairing route.
+
+Mutual consent saves encrypted pending setup only. Pending is not an active
+contact and cannot open chat or a tunnel. Reopening storage can show an inert
+incomplete-setup notice with Discard setup; it does not restore an invitation or
+repeat approval automatically. This UI is separate from eventual durable
+activation and transport integration.
+
+Use the existing `npm run test:app` and `npm run wsl -- test:app` commands. The
+browser suite now has 19 tests, including pairing interactions through actual
+generated bindings and synthetic Wails HTTP responses. Keep that evidence
+separate from real-TLS/coordinator backend tests and owner-driven native checks.
+The native owner checks recorded for 0.0.2 do not verify the newer confirmation
+popup, credential exchange or two-device behavior.
+
+No app-version bump or installed-binary refresh follows from these source tests.
+The new source does migrate schema 1/2 vaults to schema 3 when opened. Earlier
+0.0.2 binaries cannot read that newer schema, so an executable-only rollback is
+insufficient. Start migration QA with a disposable OS account/profile; establish
+a reviewed recovery plan for existing encrypted state and its matching OS
+credential before a future binary opens it. No automatic downgrade or
+backup/restore UI exists. See [the native migration handoff](native-testing.md#state-migration-before-a-newer-binary).
 
 ## Update discipline
 

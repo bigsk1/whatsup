@@ -10,6 +10,12 @@ chat sections. Live peer pairing and message delivery are still disabled.
 This is development software, not a usable or audited private messenger yet.
 See [current status](docs/status.md) and the [architecture](docs/architecture.md).
 
+Backend protocol work includes TLS 1.3 identity authentication, bearer reservation,
+mutual consent and encrypted pending credential exchange over supplied connections.
+A confirmation dialog is wired to reserved backend requests. Invitation creation
+and live networking remain disabled, and saved pending setup is not an active
+contact. See the [pairing protocol boundary](docs/pairing-protocol.md).
+
 ## Consistent development commands
 
 Run these from the project root, in PowerShell or a Linux shell:
@@ -58,6 +64,12 @@ Linux Secret Service. An unavailable credential store leaves it locked. Appearan
 preferences are the only data stored in frontend local storage. Unlocking does not
 start a listener or enable messaging. Native windows close normally; tray behavior
 is not implemented.
+
+The current source adds schema 3 for encrypted pending contact setup. It migrates
+schema 1/2 without changing identity or the wrapping credential, but older 0.0.2
+executables reject the migrated schema. Installed review apps remain unchanged;
+see the [native migration test guidance](docs/native-testing.md) before running a
+future build against existing state.
 
 Normal builds consume exact versions recorded in the manifests and lockfiles. Updating dependencies is a
 separate, explicit operation. See the [development and release workflow](docs/development.md).

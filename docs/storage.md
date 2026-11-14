@@ -31,7 +31,7 @@ and are not read as current state. The wrapping key and decoded buffers are clea
 where practical, but Go-managed copies and OS paging prevent guaranteed memory
 erasure. Locking does not undo data already exposed to a compromised endpoint.
 
-Schema 2 contains a private identity section and bounded contact sections, each
+Schema 3 contains a private identity section and bounded contact sections, each
 with an exact local/peer identity pin and its own chat snapshot. A single
 ApplicationState coordinator serializes every section's read-modify-durable-write
 through the vault mutex. A chat adapter cannot replace the identity or another
@@ -40,17 +40,40 @@ vault. Separate handles for the same chat scope reject stale writes; different
 contact scopes preserve each other's changes. Any uncertain durable save poisons
 the coordinator until close/reopen, including errors after file replacement.
 
-Existing canonical schema 1 identity snapshots migrate to schema 2 without
-changing their seed. Unsupported, malformed or noncanonical schemas are preserved
+Existing canonical schema 1 and schema 2 snapshots migrate to schema 3 without
+changing their seed, wrapping credential, pins or chat/outbox data. Unsupported,
+malformed or noncanonical schemas are preserved
 and rejected. The total plaintext bound remains 4 MiB, with at most 32 contact
 sections and bounded per-contact chat/history. Only the identity's public
-fingerprint crosses the Wails bridge after explicit unlock.
+fingerprint crosses the Wails bridge after explicit unlock; reserved pairing
+status additionally exposes the two public fingerprints and an ephemeral request ID.
+
+The separate pendingContacts section holds at most 32 inert records. Each binds
+the two identities, distinct node public keys, the local node private key, one
+shared random PSK and a contact ID. Canonical validation checks the local
+private/public association and vault identity; conflicting IDs or another pending
+bundle for the same peer are refused. Exact retries are idempotent. These records
+cannot implement ApprovedContact, create a contact pin or obtain a chat scope.
+Ordinary JSON serialization/formatting is blocked or redacted; a private storage
+alias alone is encoded inside the encrypted envelope.
+
+Cancellation joins an in-flight save before explicit removal, preventing a late
+save from resurrecting canceled setup. Remove itself is idempotent, without a
+persistent revocation tombstone. A lost ACK or shutdown can leave a valid but
+inert record; reopening presents incomplete setup with an explicit discard action,
+never a resumed invitation, consent proof or active transport.
+
+Migration is forward-only for retained 0.0.2 binaries: they reject schema 3.
+Selecting an older executable alone is not a storage rollback. Current tests use
+disposable vaults; installed review apps and the owner's existing state remain
+unchanged. See [native migration guidance](native-testing.md).
 
 Contact pins record local approval metadata. They cannot restore live contact
 authority, transport credentials or reciprocal authentication. The desktop uses
 the coordinator for identity storage; chat adapters are exercised by backend
-integration tests and remain unbound to the visible messenger. Durable activation,
-credential restoration/revocation, attachments, encrypted search, backup/export
+integration tests and remain unbound to the visible messenger. Pending credentials
+can be restored only as inert setup. Durable active completion, credential
+reconciliation/revocation, attachments, encrypted search, backup/export
 and rollback protection remain work.
 
 Tests cover ciphertext-only persistence, fresh nonces, tampering/truncation,

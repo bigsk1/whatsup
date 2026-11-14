@@ -5,11 +5,21 @@ messenger protocol and security integration are incomplete. Do not use it for
 sensitive communication or describe it as an audited messenger. Tailcat's
 production networking components do not establish the safety of this application.
 
-The current bridge exposes only status and local storage lock/unlock. It starts no
-network listener and exposes no pairing, message or file API. Strict direct-only
-remains unavailable. See [the local storage design](docs/storage.md) and
+The bridge exposes status, local storage lock/unlock, and decisions for an already
+reserved pairing request. It starts no network listener and exposes no invitation
+creation, dialing, message or file API. Strict direct-only remains unavailable.
+See [the local storage design](docs/storage.md) and
 [the transport source review](docs/transport-review.md) for implemented boundaries
 and evidence limits. Component tests do not establish safe live communication.
+
+The backend TLS pairing channel authenticates supplied connections and requires
+bearer reservation before either fingerprint prompt. Reciprocal consent permits
+one shared PSK/two node keys to be saved as encrypted pending setup. Pending data
+cannot create a Contact, start Tailcat or grant history access. Cancellation
+closes the session and joins pending writes before removal or vault lock.
+Authenticated reservations reject the legacy immediate-consumption approval
+path until durable active completion is integrated. See the
+[pairing protocol boundary](docs/pairing-protocol.md).
 
 Application/tool telemetry is disabled by default. Bounded, redacted operational
 diagnostics remain local for troubleshooting. The owner explicitly permits the

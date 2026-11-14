@@ -21,6 +21,7 @@
     X,
   } from '@lucide/svelte';
   import SettingsDialog from './lib/components/SettingsDialog.svelte';
+  import PairingDialog from './lib/components/PairingDialog.svelte';
   import {
     hasDesktopBridge,
     requestStatus,
@@ -28,6 +29,13 @@
     type Status,
     type StatusMethod,
   } from './lib/backend';
+  import {
+    approvePairing,
+    denyPairing,
+    requestPairingStatus,
+    unavailablePairing,
+    type PairingStatus,
+  } from './lib/pairing';
   import {
     applyPreferences,
     readPreferences,
@@ -43,21 +51,145 @@
   let search = $state('');
   let settings: SettingsDialog;
   let aboutDialog: HTMLDialogElement;
+  let pairing: PairingStatus = $state({ ...unavailablePairing });
+  let pairingNotice = $state('');
+  let actionRequest = $state('');
+  let actionKind = $state<'approve' | 'deny' | ''>('');
+  let mounted = false;
+  let pairingEpoch = 0;
+  let requestSequence = 0;
+  let acceptedSequence = 0;
+  let activePoll: number | undefined;
+  let activeAction = 0;
+  let pairingTimer: number | undefined;
+
+  function pairingEnabled() {
+    return mounted && native && !busy && status.storageState === 'unlocked';
+  }
+
+  function clearPairing() {
+    if (pairingTimer !== undefined) window.clearInterval(pairingTimer);
+    pairingTimer = undefined;
+    pairingEpoch += 1;
+    activePoll = undefined;
+    pairing = { ...unavailablePairing };
+    pairingNotice = '';
+    actionRequest = '';
+    actionKind = '';
+  }
+
+  function startPairingPolling() {
+    if (!pairingEnabled()) return;
+    void refreshPairing();
+    if (pairingTimer === undefined)
+      pairingTimer = window.setInterval(() => void refreshPairing(), 1000);
+  }
+
+  async function refreshPairing() {
+    if (!pairingEnabled() || activePoll !== undefined) return;
+    const epoch = pairingEpoch;
+    const sequence = ++requestSequence;
+    activePoll = sequence;
+    try {
+      const value = await requestPairingStatus();
+      if (
+        epoch === pairingEpoch &&
+        pairingEnabled() &&
+        sequence >= acceptedSequence
+      ) {
+        acceptedSequence = sequence;
+        if (
+          value.requestID !== pairing.requestID ||
+          value.state !== pairing.state
+        )
+          pairingNotice = '';
+        pairing = value;
+      }
+    } catch {
+      if (
+        epoch === pairingEpoch &&
+        pairingEnabled() &&
+        sequence >= acceptedSequence
+      ) {
+        acceptedSequence = sequence;
+        pairing = { ...unavailablePairing };
+        pairingNotice = '';
+      }
+    } finally {
+      if (activePoll === sequence) activePoll = undefined;
+    }
+  }
+
+  async function decidePairing(
+    selectedRequest: string,
+    approve: boolean,
+    fingerprint = '',
+  ) {
+    if (
+      !pairingEnabled() ||
+      selectedRequest !== pairing.requestID ||
+      selectedRequest === '' ||
+      (approve && pairing.state !== 'awaiting-approval') ||
+      (actionRequest === selectedRequest && (approve || actionKind === 'deny'))
+    )
+      return;
+    const epoch = pairingEpoch;
+    const sequence = ++requestSequence;
+    activeAction = sequence;
+    actionRequest = selectedRequest;
+    actionKind = approve ? 'approve' : 'deny';
+    pairingNotice = '';
+    try {
+      const value = approve
+        ? await approvePairing(selectedRequest, fingerprint)
+        : await denyPairing(selectedRequest);
+      if (
+        epoch === pairingEpoch &&
+        pairingEnabled() &&
+        pairing.requestID === selectedRequest &&
+        sequence >= acceptedSequence
+      ) {
+        acceptedSequence = sequence;
+        pairing = value;
+      }
+    } catch {
+      if (
+        epoch === pairingEpoch &&
+        pairingEnabled() &&
+        pairing.requestID === selectedRequest &&
+        sequence >= acceptedSequence
+      ) {
+        acceptedSequence = sequence;
+        pairingNotice = approve
+          ? 'Pairing approval could not be confirmed. Check the request before trying again.'
+          : 'Pairing cancellation could not be confirmed. Try again or lock storage to cancel.';
+      }
+    } finally {
+      if (activeAction === sequence) {
+        actionRequest = '';
+        actionKind = '';
+      }
+    }
+  }
 
   async function refresh(method: StatusMethod = 'GetStatus') {
     if (busy) return;
+    if (method === 'LockStorage') clearPairing();
     busy = true;
     notice = '';
     try {
       status = await requestStatus(method);
+      if (status.storageState !== 'unlocked') clearPairing();
     } catch {
       status = { ...unavailableStatus };
+      clearPairing();
       notice =
         method === 'UnlockStorage'
           ? 'Local storage could not be unlocked. Check that your OS credential store is available, then try again.'
           : 'The desktop could not report its status. Local actions are unavailable. Try again.';
     } finally {
       busy = false;
+      if (status.storageState === 'unlocked') startPairingPolling();
     }
   }
 
@@ -70,6 +202,7 @@
   }
 
   onMount(() => {
+    mounted = true;
     const activateDesktop = () => {
       if (native || !hasDesktopBridge()) return;
       native = true;
@@ -90,6 +223,8 @@
     };
     window.addEventListener('keydown', keyboard);
     return () => {
+      mounted = false;
+      clearPairing();
       window.removeEventListener('wails:runtime-config-ready', activateDesktop);
       media.removeEventListener('change', updateSystemTheme);
       window.removeEventListener('keydown', keyboard);
@@ -247,6 +382,23 @@
       </div>
     {/if}
 
+    {#if pairing.state === 'pending'}
+      <div class="notice" role="status">
+        <Shield size={18} />
+        <p>
+          {pairingNotice ||
+            'Contact setup is incomplete. No conversation is active. Discard this setup to use a new invitation.'}
+        </p>
+        <button
+          class="text-button"
+          disabled={actionRequest === pairing.requestID &&
+            actionKind === 'deny'}
+          onclick={() => void decidePairing(pairing.requestID, false)}
+          >Discard setup</button
+        >
+      </div>
+    {/if}
+
     <section class="welcome-space" aria-labelledby="welcome-heading">
       <div class="welcome-art" aria-hidden="true">
         <div class="orbit orbit-one"></div>
@@ -338,6 +490,16 @@
     refresh(
       status.storageState === 'unlocked' ? 'LockStorage' : 'UnlockStorage',
     )}
+/>
+
+<PairingDialog
+  status={pairing}
+  busy={actionRequest === pairing.requestID && actionKind !== ''}
+  denying={actionRequest === pairing.requestID && actionKind === 'deny'}
+  error={pairingNotice}
+  onapprove={(requestID, fingerprint) =>
+    void decidePairing(requestID, true, fingerprint)}
+  ondeny={(requestID) => void decidePairing(requestID, false)}
 />
 
 <dialog

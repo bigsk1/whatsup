@@ -11,6 +11,9 @@ The first test version is 0.0.1. Use patch increments for later delivered test
 revisions as needed; see [versioning](versioning.md). Do not increment minor/major
 versions for every edit or build.
 The current Linux startup-fix test revision is 0.0.2.
+The installed 0.0.2 executables have not been replaced by the newer pairing source
+work. No application-version increment was made for that work. A future native
+handoff must identify the selected source/build ID and repeat the relevant checks.
 
 The owner has verified native Windows unlock/restart identity continuity and the
 same Ubuntu Desktop 0.0.2 workflow after the scoped Linux integration setup, using
@@ -104,6 +107,53 @@ does keep its watcher running until stopped with Ctrl+C.
 Send pass/fail observations and the build ID. If something fails, leave the state
 and credential intact for diagnosis. Do not delete a vault or credential to make
 a restart check pass.
+
+## Pairing source and future native handoff
+
+The current source has six typed desktop methods: GetStatus, UnlockStorage,
+LockStorage, GetPairingStatus, ApprovePairing and DenyPairing. The additional
+methods expose a bounded public request snapshot and act on the current request
+ID; they do not expose invitation secrets, transport credentials or a network API.
+
+A confirmation popup appears only for a request the backend has authenticated
+and reserved. Both sides must have the reservation result before fingerprints
+are presented. There is no sample request or manual popup trigger. Native
+initiate-pairing controls remain disabled while Tailcat's privacy/start gate is
+closed, so opening the two installed apps cannot initiate this flow yet.
+
+When a future native transport handoff can deliver a reserved request, check that
+the popup shows the full peer fingerprint and defaults to Deny. Compare the
+fingerprint with the other person through a trusted channel before approving.
+Escape must deny; waiting for the other person's approval must not imply an
+active contact or allow messages. Mutual approval currently saves only inert,
+encrypted pending setup. It does not activate a contact or open a tunnel.
+
+After reopening storage, an incomplete saved setup has a nonmodal notice with
+Discard setup. It must not revive an invitation or automatically show another
+approval popup. Discard removes the pending setup; a fresh invitation is needed
+for another attempt. Lock, denial, expiry and shutdown must cancel the associated
+live pairing session. These are future native QA instructions, not recorded owner
+verification of the new popup.
+
+The browser suite has 19 tests, including confirmation and stale-response checks
+against synthetic Wails HTTP responses. Those tests are separate from backend
+tests using real TLS connections and the pairing coordinator. Neither establishes
+native window behavior or two-device Tailcat pairing. The owner-reported native
+checks above cover the retained 0.0.2 shell/storage binaries only.
+
+## State migration before a newer binary
+
+The new source migrates canonical schema 1/2 application state to schema 3,
+preserving identity and existing contact/chat sections while adding pending setup.
+The earlier installed 0.0.2 executables understand schema 2 and cannot read schema
+3. Selecting an older executable alone is therefore not a rollback after migration.
+
+Use a disposable OS account/profile for initial migration QA. Before a later
+binary opens existing state, establish a reviewed recovery plan for the compatible
+encrypted snapshot and its matching OS credential. Preserve the credential; do
+not delete or replace it to make an old binary start. There is no automatic schema
+downgrade or implemented backup/restore UI. Private recovery material stays out of
+Git and shared build artifacts.
 
 ## Troubleshooting evidence
 

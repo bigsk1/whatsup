@@ -11,6 +11,7 @@ Component layout (see docs/status.md for which parts are connected to the app):
 - `frontend/src/lib/components/`: contact sidebar, chat pane, composer, dialogs.
 - `frontend/src/lib/themes/`: dark/light themes and user-selected accent tokens.
 - `internal/pairing/`: invitations, approval, and single-use state transitions.
+- `internal/pairflow/`: reserved request lifetime, user decisions and inert pending persistence.
 - `internal/identity/`: long-lived identity and approved contact key bindings.
 - `internal/chat/`: framing, acknowledgements, deduplication, and local outbox.
 - `internal/transfer/`: bounded, approved attachment transfers.
@@ -20,14 +21,21 @@ Component layout (see docs/status.md for which parts are connected to the app):
 
 The root `AGENTS.md`, this contract, and `docs/status.md` are the handover points.
 
-The current desktop bridge exposes only GetStatus, UnlockStorage and LockStorage.
-Only public status DTOs cross it. Identity state can be encrypted locally; invitation,
-contact, transport and chat domain components are deliberately not bound until
-reciprocal transport authentication and coordinated persistence are integrated.
+The desktop bridge exposes GetStatus, UnlockStorage, LockStorage, GetPairingStatus,
+ApprovePairing and DenyPairing. Only bounded public status/decision DTOs cross it.
+Invitation creation, dialing, contact activation, transport and chat domain objects
+remain unbound while the remaining integration gates are closed.
 No runtime listener starts in this implementation. A locally approved Contact
 object alone does not establish a mutual, authenticated live session.
 
 ## One-to-one pairing
+
+The authenticated channel uses standard TLS 1.3 with the existing Ed25519
+identities and exact invitation context. The coordinator requires reservation ACK
+before fingerprints, explicit decisions on both sides, and encrypted pending
+credential writes before prepared ACKs. It operates on supplied connections in
+backend tests; invitation initiation, durable activation and live transport remain
+closed. See [implemented protocol and next integration](pairing-protocol.md).
 
 An invitation has a cryptographically random secret, expiry, protocol version,
 ephemeral transport address, and identity binding. Encode it in a private app

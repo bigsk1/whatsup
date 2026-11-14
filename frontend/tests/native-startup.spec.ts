@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
+import { unavailablePairing } from '../src/lib/pairing';
 
 type Platform = 'windows' | 'linux';
 type Operation = 'GetStatus' | 'UnlockStorage' | 'LockStorage';
@@ -11,6 +13,13 @@ const operations: Record<number, Operation> = {
   4289999910: 'UnlockStorage',
   18574999: 'LockStorage',
 };
+const pairingBinding = readFileSync(
+  new URL('../bindings/whatsup/internal/desktop/service.ts', import.meta.url),
+  'utf8',
+).match(/export function GetPairingStatus\([\s\S]*?\$Call\.ByID\((\d+)/);
+if (!pairingBinding)
+  throw new Error('Missing generated pairing status binding');
+const pairingStatusID = Number(pairingBinding[1]);
 
 function injectRuntime(platform: Platform) {
   const host = window as Window & {
@@ -32,6 +41,18 @@ async function syntheticDesktop(page: Page, failFirstStatus = false) {
   await page.route('**/wails/runtime', async (route) => {
     const request = route.request();
     const body = request.postDataJSON();
+    // Pairing polling is separate from these storage/lifecycle assertions.
+    if (
+      request.method() === 'POST' &&
+      body.object === 0 &&
+      body.method === 0 &&
+      body.args?.methodID === pairingStatusID
+    ) {
+      await route.fulfill({
+        json: { ...unavailablePairing, state: 'idle' },
+      });
+      return;
+    }
     const operation = operations[body.args?.methodID];
     if (
       request.method() !== 'POST' ||

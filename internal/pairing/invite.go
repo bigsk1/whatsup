@@ -1,7 +1,7 @@
-// Package pairing implements local invitation state and identity authorization.
-// It does not implement a network handshake. Reserve requires the candidate key
-// from an authenticated transport, and a contact must not be activated until
-// mutual approval and encrypted durable storage succeed.
+// Package pairing implements invitation state and local identity authorization.
+// Its channel subpackage authenticates supplied connections using TLS 1.3.
+// Neither package starts a listener or activates a durable contact. Mutual
+// approval, contact-key exchange and durable activation remain separate steps.
 package pairing
 
 import (
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"whatsup/internal/identity"
+	"whatsup/internal/pairing/channel"
 	"whatsup/internal/transport/address"
 )
 
@@ -32,6 +33,8 @@ var (
 	ErrFingerprint   = errors.New("candidate fingerprint does not match")
 	ErrListenerClose = errors.New("invitation listener could not be closed")
 	ErrClosed        = errors.New("pairing manager closed")
+	ErrChannel       = errors.New("a matching authenticated invitation channel is required")
+	ErrActivation    = errors.New("authenticated pairing awaits durable contact activation")
 )
 
 type State string
@@ -60,6 +63,11 @@ func (i Invite) GoString() string           { return i.String() }
 func (i Invite) Owner() identity.PublicKey  { return i.owner }
 func (i Invite) Endpoint() address.Endpoint { return i.endpoint }
 func (i Invite) ExpiresAt() time.Time       { return i.expires }
+
+// ChannelID binds the backend TLS channel to this exact invitation, including
+// when two invitations have the same owner and expiry. It is not a bearer secret
+// and is not an identity, credential or invitation export for the frontend.
+func (i Invite) ChannelID() [16]byte { return i.id }
 
 // Link returns the private bearer deep link only for the explicit share action.
 func (i Invite) Link() string {
@@ -158,6 +166,10 @@ type Manager struct {
 	timer     *time.Timer
 	closed    bool
 	closeErr  error
+	// This marks a cryptographically authenticated reservation, not durable
+	// activation. The channel stays owned by its caller and must be closed on
+	// cancellation/shutdown alongside this manager. It is never a Wails binding.
+	authenticatedChannel *channel.Session
 }
 
 func NewManager(local identity.PublicKey, options Options) (*Manager, error) {
@@ -199,6 +211,7 @@ func (m *Manager) Create(endpoint string, lifetime time.Duration) (Invite, error
 	}
 	m.invite = invite
 	m.candidate = identity.PublicKey{}
+	m.authenticatedChannel = nil
 	m.state = Created
 	inviteID := invite.id
 	m.timer = time.AfterFunc(invite.expires.Sub(m.now()), func() {
@@ -223,6 +236,37 @@ func (m *Manager) Reserve(link string, authenticatedCandidate identity.PublicKey
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.reserveLocked(invite, authenticatedCandidate)
+}
+
+// ReserveAuthenticated derives the candidate from an actual TLS handshake rather
+// than accepting a claimed key. It binds the inviter, exact invitation ID, expiry
+// and role before atomic redemption. This creates pending state only, with no
+// chat/history/transport authority. The session guard is released before taking
+// the manager mutex: invitation retirement hooks can close underlying transport.
+// A concurrent channel close can only burn a pending invite, never activate it.
+func (m *Manager) ReserveAuthenticated(link string, session *channel.Session) (Snapshot, error) {
+	invite, err := ParseInvite(link)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if session == nil || session.Role() != channel.Inviter || !session.Local().Equal(m.local) || session.InvitationID() != invite.id || !session.ExpiresAt().Equal(invite.expires) {
+		return Snapshot{}, ErrChannel
+	}
+	candidate := session.Peer()
+	if err := session.WithPendingPeer(func() error { return nil }); err != nil {
+		return Snapshot{}, ErrChannel
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	snapshot, err := m.reserveLocked(invite, candidate)
+	if err == nil {
+		m.authenticatedChannel = session
+	}
+	return snapshot, err
+}
+
+func (m *Manager) reserveLocked(invite Invite, authenticatedCandidate identity.PublicKey) (Snapshot, error) {
 	if m.closed {
 		return Snapshot{}, ErrClosed
 	}
@@ -262,6 +306,13 @@ func (m *Manager) Approve(candidateFingerprint string) (*Contact, error) {
 	}
 	if m.state != Pending {
 		return nil, ErrUnavailable
+	}
+	// The legacy domain-only path consumes the invite immediately. That would
+	// tear down a real invitation channel before contact credentials and durable
+	// completion can be exchanged. Keep authenticated reservations closed until
+	// that orchestration exists; a mutual-consent proof alone cannot activate.
+	if m.authenticatedChannel != nil {
+		return nil, ErrActivation
 	}
 	fingerprint := m.candidate.Fingerprint()
 	if len(candidateFingerprint) != len(fingerprint) || subtle.ConstantTimeCompare([]byte(candidateFingerprint), []byte(fingerprint)) != 1 {
@@ -344,6 +395,7 @@ func (m *Manager) finishLocked(state State) error {
 	clear(m.invite.secret[:])
 	m.invite.endpoint = address.Endpoint{}
 	m.candidate = identity.PublicKey{}
+	m.authenticatedChannel = nil
 	if m.close != nil {
 		if err := m.close(); err != nil {
 			m.closeErr = ErrListenerClose

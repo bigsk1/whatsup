@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	ApplicationSchemaVersion = 2
+	ApplicationSchemaVersion = 3
 	MaxContacts              = 32
 	maxChatBytes             = 2 << 20
 	maxChatMessages          = 256
@@ -47,6 +47,15 @@ type contactSection struct {
 }
 
 type applicationEnvelope struct {
+	Version         int                 `json:"version"`
+	Identity        identitySection     `json:"identity"`
+	Contacts        []contactSection    `json:"contacts"`
+	PendingContacts []pendingRecordDisk `json:"pendingContacts"`
+}
+
+// The canonical schema-2 shape must stay exact during migration. Adding a
+// section to it before validation would accept unknown or ambiguous old state.
+type applicationEnvelopeV2 struct {
 	Version  int              `json:"version"`
 	Identity identitySection  `json:"identity"`
 	Contacts []contactSection `json:"contacts"`
@@ -90,7 +99,7 @@ func (a ApplicationState) String() string   { return "[private WhatsUp applicati
 func (a ApplicationState) GoString() string { return a.String() }
 
 // OpenApplication creates a new identity only when no vault snapshot exists.
-// Schema 1 identity snapshots migrate without changing the seed. Unsupported,
+// Schema 1/2 snapshots migrate without changing the seed or existing chat. Unsupported,
 // duplicate-field, noncanonical, or malformed state is preserved and rejected.
 func OpenApplication(vault *Vault) (*ApplicationState, error) {
 	if vault == nil {
@@ -117,7 +126,7 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 			return nil, generateErr
 		}
 		seed := local.Seed()
-		a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: identitySection{Version: 1, Seed: bytes.Clone(seed[:])}, Contacts: []contactSection{}}
+		a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: identitySection{Version: 1, Seed: bytes.Clone(seed[:])}, Contacts: []contactSection{}, PendingContacts: []pendingRecordDisk{}}
 		clear(seed[:])
 		write = true
 	} else if err != nil {
@@ -140,7 +149,18 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 				clear(old.Seed)
 				return nil, ErrState
 			}
-			a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: identitySection{Version: 1, Seed: old.Seed}, Contacts: []contactSection{}}
+			a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: identitySection{Version: 1, Seed: old.Seed}, Contacts: []contactSection{}, PendingContacts: []pendingRecordDisk{}}
+			write = true
+		case 2:
+			var old applicationEnvelopeV2
+			if decodeCanonical(payload, &old) != nil {
+				clear(old.Identity.Seed)
+				for index := range old.Contacts {
+					clear(old.Contacts[index].Chat)
+				}
+				return nil, ErrState
+			}
+			a.state = applicationEnvelope{Version: ApplicationSchemaVersion, Identity: old.Identity, Contacts: old.Contacts, PendingContacts: []pendingRecordDisk{}}
 			write = true
 		case ApplicationSchemaVersion:
 			if decodeCanonical(payload, &a.state) != nil {
@@ -320,6 +340,7 @@ func (a *ApplicationState) findContactLocked(local, peer identity.PublicKey) int
 func (a *ApplicationState) cloneLocked() applicationEnvelope {
 	next := a.state
 	next.Contacts = append([]contactSection{}, a.state.Contacts...)
+	next.PendingContacts = append([]pendingRecordDisk{}, a.state.PendingContacts...)
 	return next
 }
 
@@ -348,11 +369,12 @@ func (a *ApplicationState) clearLocked() {
 	for index := range a.state.Contacts {
 		clear(a.state.Contacts[index].Chat)
 	}
+	clear(a.state.PendingContacts)
 	a.state = applicationEnvelope{}
 }
 
 func validateEnvelope(state applicationEnvelope) error {
-	if state.Version != ApplicationSchemaVersion || state.Identity.Version != 1 || len(state.Identity.Seed) != 32 || state.Contacts == nil || len(state.Contacts) > MaxContacts {
+	if state.Version != ApplicationSchemaVersion || state.Identity.Version != 1 || len(state.Identity.Seed) != 32 || state.Contacts == nil || len(state.Contacts) > MaxContacts || state.PendingContacts == nil || len(state.PendingContacts) > MaxPendingContacts {
 		return ErrState
 	}
 	local, err := identity.FromSeed(state.Identity.Seed)
@@ -368,6 +390,9 @@ func validateEnvelope(state applicationEnvelope) error {
 		if len(contact.Chat) != 0 && validateChat(contact.Chat, contact.Local, contact.Peer) != nil {
 			return ErrState
 		}
+	}
+	if err := validatePendingContacts(state.PendingContacts, local.PublicKey()); err != nil {
+		return ErrState
 	}
 	return nil
 }

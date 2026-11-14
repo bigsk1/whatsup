@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"whatsup/internal/diagnostics"
+	"whatsup/internal/pairflow"
 	"whatsup/internal/storage"
 )
 
@@ -29,6 +30,7 @@ type Service struct {
 	keys        storage.KeyStore
 	vault       *storage.Vault
 	application *storage.ApplicationState
+	pairing     *pairflow.Coordinator
 	fingerprint string
 	state       string
 	record      func(diagnostics.Event)
@@ -90,9 +92,14 @@ func (s *Service) UnlockStorage() (Status, error) {
 	if err != nil {
 		return fail()
 	}
+	pairing, err := pairflow.New(local, application)
+	if err != nil {
+		return fail()
+	}
 	s.fingerprint = local.PublicKey().Fingerprint()
 	s.vault = vault
 	s.application = application
+	s.pairing = pairing
 	s.state = "unlocked"
 	s.record(diagnostics.StorageUnlocked)
 	return s.status(), nil
@@ -101,6 +108,14 @@ func (s *Service) UnlockStorage() (Status, error) {
 func (s *Service) LockStorage() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.pairing != nil {
+		// Join every pairing/persistence callback before closing the vault. This
+		// also closes its owned TLS session and retires any invitation transport.
+		if s.pairing.Close() != nil {
+			s.record(diagnostics.RuntimeError)
+		}
+		s.pairing = nil
+	}
 	if s.vault != nil {
 		if err := s.vault.Close(); err != nil {
 			s.fingerprint = ""
@@ -115,6 +130,43 @@ func (s *Service) LockStorage() Status {
 	s.state = "locked"
 	s.record(diagnostics.StorageLocked)
 	return s.status()
+}
+
+func (s *Service) GetPairingStatus() pairflow.Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != "unlocked" || s.pairing == nil {
+		return pairflow.Snapshot{State: "unavailable"}
+	}
+	return s.pairing.Snapshot()
+}
+
+// ApprovePairing confirms only the current reserved identity. It neither opens
+// a listener nor returns credentials, contact authority or history access.
+func (s *Service) ApprovePairing(requestID, peerFingerprint string) (pairflow.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != "unlocked" || s.pairing == nil {
+		return pairflow.Snapshot{State: "unavailable"}, errors.New("Unlock local storage before reviewing pairing")
+	}
+	status, err := s.pairing.Approve(requestID, peerFingerprint)
+	if err != nil {
+		return status, errors.New("This pairing request is no longer available")
+	}
+	return status, nil
+}
+
+func (s *Service) DenyPairing(requestID string) (pairflow.Snapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state != "unlocked" || s.pairing == nil {
+		return pairflow.Snapshot{State: "unavailable"}, errors.New("Unlock local storage before reviewing pairing")
+	}
+	status, err := s.pairing.Deny(requestID)
+	if err != nil {
+		return status, errors.New("Pairing could not be canceled. Lock storage and preserve existing state before retrying.")
+	}
+	return status, nil
 }
 
 // ServiceShutdown is Wails lifecycle-only and excluded from generated bindings.
