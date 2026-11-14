@@ -148,6 +148,31 @@ async function expectAnchorsUnmoved(
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
 }
 
+async function reachAttachmentControl(
+  page: Page,
+  pane: Locator,
+  control: Locator,
+) {
+  const bounds = await box(pane);
+  // Wheel over the pane padding, away from its separately scrollable file
+  // list. Font wrapping can put each control on a different scroll position.
+  await page.mouse.move(bounds.x + 8, bounds.y + 8);
+  for (let step = 0; step < 12; step++) {
+    const target = await box(control);
+    if (
+      target.y >= bounds.y &&
+      target.y + target.height <= bounds.y + bounds.height
+    )
+      break;
+    const before = await pane.evaluate((element) => element.scrollTop);
+    await page.mouse.wheel(0, target.y < bounds.y ? -48 : 48);
+    await expect
+      .poll(() => pane.evaluate((element) => element.scrollTop))
+      .not.toBe(before);
+  }
+  await expect(control).toBeInViewport({ ratio: 1 });
+}
+
 for (const { label, width, height, os } of [
   { label: 'Windows desktop', width: 1168, height: 773, os: 'windows' },
   { label: 'Ubuntu desktop', width: 1024, height: 720, os: 'linux' },
@@ -216,14 +241,26 @@ for (const { label, width, height, os } of [
       historyPosition,
     );
 
-    // The file chooser and receiver permission remain reachable through the
-    // attachment pane's own scroll, even in the 500px-high window.
+    // Each control must be reachable through ordinary pane scrolling. They
+    // need not fit simultaneously in the compact window on every system font.
     await attachments.evaluate((element) => {
       element.scrollTop = 0;
     });
-    await expect(
+    for (const control of [
       attachments.getByRole('button', { name: 'Choose file…', exact: true }),
-    ).toBeInViewport({ ratio: 1 });
+      attachments.getByRole('button', { name: 'Paste image', exact: true }),
+      attachments.getByRole('checkbox', {
+        name: 'Send as file (keep original bytes)',
+        exact: true,
+      }),
+      attachments.locator('.image-permission'),
+    ]) {
+      await reachAttachmentControl(page, attachments, control);
+      await expectAnchorsUnmoved(page, original);
+      expect(await history.evaluate((element) => element.scrollTop)).toBe(
+        historyPosition,
+      );
+    }
     await expect(
       attachments.getByRole('checkbox', {
         name: 'Automatically accept images up to 25 MB from this contact',

@@ -385,14 +385,29 @@ test('recovery export and authenticated import use native dialogs and opaque han
 test('a late security-summary response preserves the current passphrase form without echoing or persisting it', async ({
   page,
 }) => {
-  const { state } = await desktop(page, false);
+  const { state, calls } = await desktop(page, false);
   await page.goto('/');
   await securityPage(page);
+  const exportButton = page.getByRole('button', {
+    name: 'Export recovery copy…',
+    exact: true,
+  });
+  // Let initial Settings hydration finish before holding the new summary load
+  // caused by opening the passphrase form. Otherwise the hold can disable the
+  // very button needed to start this regression.
+  await expect(exportButton).toBeEnabled();
+  const initialSummaryCalls = calls.filter(
+    (call) => call.operation === 'GetStorageSecurity',
+  ).length;
   let release!: () => void;
   state.holdSecurity = new Promise<void>((resolve) => (release = resolve));
-  await page
-    .getByRole('button', { name: 'Export recovery copy…', exact: true })
-    .click();
+  await exportButton.click();
+  await expect
+    .poll(
+      () =>
+        calls.filter((call) => call.operation === 'GetStorageSecurity').length,
+    )
+    .toBeGreaterThan(initialSummaryCalls);
   const dialog = page.getByRole('dialog', {
     name: 'Export an encrypted recovery copy',
   });
