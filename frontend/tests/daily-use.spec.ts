@@ -1,3 +1,4 @@
+import { serveDefaultNotificationActivation } from './contact-events';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
@@ -75,6 +76,7 @@ async function fixture(page: Page) {
     host._wails.environment = { OS: 'windows', Arch: 'amd64', Debug: false };
   });
   await page.route('**/wails/runtime', async (route) => {
+    if (await serveDefaultNotificationActivation(route)) return;
     if (await serveDefaultRelayChange(route)) return;
     const request = route.request().postDataJSON();
     const operation = operations.get(request.args?.methodID);
@@ -185,6 +187,12 @@ for (const viewport of [
         exact: true,
       }),
     ).toBeChecked();
+    await expect(
+      card.getByRole('checkbox', {
+        name: 'Show new-message notifications',
+        exact: true,
+      }),
+    ).toBeEnabled();
     let previousBottom = -Infinity;
     let controlRight = 0;
     for (const row of await rows.all()) {
@@ -192,13 +200,28 @@ for (const viewport of [
       const title = row.locator('strong');
       const help = row.locator('small');
       const control = row.getByRole('checkbox');
-      const rowBox = (await row.boundingBox())!;
-      const titleBox = (await title.boundingBox())!;
-      const helpBox = (await help.boundingBox())!;
-      const controlBox = (await control.boundingBox())!;
-      const contentTop = await settings
-        .locator('.settings-scroll')
-        .evaluate((element) => element.scrollTop);
+      await expect(title).toBeVisible();
+      await expect(help).toBeVisible();
+      // Capture one layout frame: async locator measurements can straddle
+      // a Settings rerender/scroll and return a detached title's empty box.
+      const { rowBox, titleBox, helpBox, controlBox, contentTop } =
+        await row.evaluate((element) => {
+          const box = (node: Element | null) => {
+            if (!node || !node.isConnected)
+              throw new Error('Preference row detached before measurement');
+            const { x, y, width, height } = node.getBoundingClientRect();
+            return { x, y, width, height };
+          };
+          const scroll = element.closest('.settings-scroll');
+          if (!scroll) throw new Error('Missing settings scroll container');
+          return {
+            rowBox: box(element),
+            titleBox: box(element.querySelector('strong')),
+            helpBox: box(element.querySelector('small')),
+            controlBox: box(element.querySelector('input')),
+            contentTop: scroll.scrollTop,
+          };
+        });
       expect(rowBox.y + contentTop).toBeGreaterThanOrEqual(previousBottom - 1);
       previousBottom = rowBox.y + rowBox.height + contentTop;
       expect(helpBox.y).toBeGreaterThanOrEqual(

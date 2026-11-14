@@ -57,12 +57,7 @@ export async function serveDefaultRelayChange(route: Route): Promise<boolean> {
 export async function serveDefaultAppPreferences(
   route: Route,
 ): Promise<boolean> {
-  if (
-    route.request().postDataJSON().args?.methodID === notificationActivationID
-  ) {
-    await route.fulfill({ json: '' });
-    return true;
-  }
+  if (await serveDefaultNotificationActivation(route)) return true;
   if (await serveDefaultRelayChange(route)) return true;
   if (route.request().postDataJSON().args?.methodID === securityID) {
     await route.fulfill({
@@ -142,4 +137,15 @@ export function eventBackedState<T extends { conversation: unknown }>(
       return true;
     },
   });
+}
+
+export async function serveDefaultNotificationActivation(
+  route: Route,
+): Promise<boolean> {
+  if (
+    route.request().postDataJSON().args?.methodID !== notificationActivationID
+  )
+    return false;
+  await route.fulfill({ json: '' });
+  return true;
 }

@@ -1,3 +1,4 @@
+import { serveDefaultNotificationActivation } from './contact-events';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
@@ -93,6 +94,7 @@ async function desktop(
     host._wails.environment = { OS: 'windows', Arch: 'amd64', Debug: false };
   });
   await page.route('**/wails/runtime', async (route) => {
+    if (await serveDefaultNotificationActivation(route)) return;
     const body = route.request().postDataJSON(),
       name = methods.get(body.args?.methodID),
       args: unknown[] = body.args?.args ?? [];
