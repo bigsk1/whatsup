@@ -192,9 +192,11 @@ test('preference failures show a fixed error and require reload before more chan
   await settings
     .getByRole('button', { name: 'App behavior', exact: true })
     .click();
+  // A rejected save restores the unchecked value immediately. Click triggers
+  // that attempt without check() waiting for a checked postcondition.
   await settings
     .getByLabel('Start WhatsUp when I sign in', { exact: false })
-    .check();
+    .click();
   await expect(settings.getByRole('alert')).toContainText(
     'App preferences could not be saved.',
   );
