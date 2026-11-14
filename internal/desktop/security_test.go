@@ -3,6 +3,7 @@ package desktop
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -56,6 +57,93 @@ func TestDesktopPassphraseKeepsIdentityAndRequiresBothFactorsAfterRestart(t *tes
 	s.LockStorage()
 	if got, err := s.UnlockStorage(); err != nil || got.IdentityFingerprint != first.IdentityFingerprint || s.keys.(*testKeys).key != wrapping {
 		t.Fatal("OS-only restart changed identity or OS wrapping credential", err)
+	}
+}
+
+func TestWrongCurrentPassphraseKeepsUnlockedConversationAndProtection(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "disable", true: "change"}[enabled], func(t *testing.T) {
+			s := securityTestService(t, SecurityRuntimeOptions{})
+			if _, err := s.UnlockStorage(); err != nil {
+				t.Fatal(err)
+			}
+			prepareDesktopForgetContact(t, s)
+			if _, err := s.ConfigurePassphrase("", securityTestSecret, true); err != nil {
+				t.Fatal(err)
+			}
+			before := s.GetStatus()
+			conversation := s.GetConversation()
+			vault, application, messages := s.vault, s.application, s.messages
+			ciphertext, err := os.ReadFile(filepath.Join(s.directory, "state.vault"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			next := ""
+			if enabled {
+				next = "different synthetic passphrase"
+			}
+			for _, wrong := range []string{"wrong synthetic passphrase", "", "short"} {
+				got, err := s.ConfigurePassphrase(wrong, next, enabled)
+				if err == nil || got.StorageState != "unlocked" || !got.RequiresPassphrase || got.IdentityFingerprint != before.IdentityFingerprint {
+					t.Fatal("wrong current secret changed local access or protection")
+				}
+				if s.vault != vault || s.application != application || s.messages != messages || s.GetStorageSecurity().Busy {
+					t.Fatal("validation error retired runtime handles or retained a busy operation")
+				}
+				after := s.GetConversation()
+				if after.ContactID != conversation.ContactID || len(after.Messages) != len(conversation.Messages) || after.Messages[0] != conversation.Messages[0] {
+					t.Fatal("validation error changed the queued conversation")
+				}
+				stored, err := os.ReadFile(filepath.Join(s.directory, "state.vault"))
+				if err != nil || !bytes.Equal(stored, ciphertext) {
+					t.Fatal("validation error wrote protected state")
+				}
+			}
+			if got, err := s.ConfigurePassphrase(securityTestSecret, next, enabled); err != nil || got.StorageState != "unlocked" || got.RequiresPassphrase != enabled {
+				t.Fatal("correct current secret could not retry normally", err)
+			}
+		})
+	}
+}
+
+func TestPassphraseChangeStillClosesStorageOnCorruptRoot(t *testing.T) {
+	s := securityTestService(t, SecurityRuntimeOptions{})
+	if _, err := s.UnlockStorage(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ConfigurePassphrase("", securityTestSecret, true); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(s.directory, "state.vault")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep the root's syntax and wrapping slots valid, but break authentication
+	// of the encrypted application payload after correct factor verification.
+	offset := bytes.IndexByte(data, '{')
+	var root map[string]json.RawMessage
+	if offset < 0 || json.Unmarshal(data[offset:], &root) != nil {
+		t.Fatal("invalid synthetic root")
+	}
+	var payload map[string][]byte
+	if json.Unmarshal(root["payload"], &payload) != nil {
+		t.Fatal("invalid synthetic payload")
+	}
+	for _, value := range payload {
+		if len(value) > 24 {
+			before, _ := json.Marshal(value)
+			value[len(value)-1] ^= 1
+			after, _ := json.Marshal(value)
+			data = bytes.Replace(data, before, after, 1)
+		}
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ConfigurePassphrase(securityTestSecret, "", false)
+	if err == nil || got.StorageState == "unlocked" || s.application != nil || s.vault != nil || s.messages != nil {
+		t.Fatal("root authentication failure was treated as an ordinary validation error")
 	}
 }
 

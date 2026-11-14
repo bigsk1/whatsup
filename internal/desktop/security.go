@@ -170,6 +170,11 @@ func (s *Service) ConfigurePassphrase(currentSecret, newSecret string, enabled b
 		return status, errSecurity
 	}
 	s.finishSecurityLocked(op)
+	if errors.Is(err, storage.ErrPassphrase) {
+		status := s.status()
+		s.mu.Unlock()
+		return status, errors.New("The current passphrase is incorrect. Check it and try again.")
+	}
 	if err != nil {
 		s.record(diagnostics.StorageUnavailable)
 		status := s.lockStorageLocked()

@@ -68,6 +68,10 @@ type Engine struct {
 	output            chan Outbound
 	failures          chan Failure
 	closeOnce         sync.Once
+	readMu            sync.Mutex
+	readCancels       map[string]context.CancelFunc
+	blockedReads      map[string]int
+	blockedAllReads   int
 	epoch             uint64
 	session           context.Context
 	guard             func() error
@@ -93,7 +97,7 @@ func New(repo Repository, options Options) (*Engine, error) {
 		return nil, ErrUnavailable
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	e := &Engine{repo: repo, options: options, ctx: ctx, cancel: cancel, done: make(chan struct{}), events: make(chan event, 32), output: make(chan Outbound, 1), failures: make(chan Failure, 2), jobs: map[string]*sendJob{}, peerOffers: map[string]Offer{}, peerPaused: map[string]bool{}, finalized: make(chan finalResult, 1), offerTokens: 32, offerAt: time.Now()}
+	e := &Engine{repo: repo, options: options, ctx: ctx, cancel: cancel, done: make(chan struct{}), events: make(chan event, 32), output: make(chan Outbound, 1), failures: make(chan Failure, 2), jobs: map[string]*sendJob{}, peerOffers: map[string]Offer{}, peerPaused: map[string]bool{}, finalized: make(chan finalResult, 1), offerTokens: 32, offerAt: time.Now(), readCancels: map[string]context.CancelFunc{}, blockedReads: map[string]int{}}
 	go e.run()
 	return e, nil
 }
@@ -167,6 +171,8 @@ func (e *Engine) Close() {
 	if e == nil {
 		return
 	}
+	unblock := e.blockSources("")
+	defer unblock()
 	e.closeOnce.Do(e.cancel)
 	<-e.done
 }
@@ -191,7 +197,9 @@ func (e *Engine) emit(f Frame) error {
 	if !e.live() {
 		return nil
 	}
-	if f.Validate() != nil || len(e.pending) >= 32 {
+	// Controls are small; clearing the bounded offer set may need one terminal
+	// response per offer. Chunk data still has only one output slot.
+	if f.Validate() != nil || len(e.pending) >= MaxOffers+MaxActive+4 {
 		return ErrProtocol
 	}
 	e.pending = append(e.pending, f)
@@ -209,7 +217,16 @@ func checkpoint(offer Offer, next uint32) bool {
 	return next <= offer.Chunks() && (next%UnitChunks == 0 || next == offer.Chunks())
 }
 func (e *Engine) closeReader(job *sendJob) {
-	if job != nil && job.reader != nil {
+	if job == nil {
+		return
+	}
+	e.readMu.Lock()
+	if cancel := e.readCancels[job.record.Offer.ID]; cancel != nil {
+		cancel()
+		delete(e.readCancels, job.record.Offer.ID)
+	}
+	e.readMu.Unlock()
+	if job.reader != nil {
 		_ = job.reader.Close()
 		job.reader = nil
 	}
@@ -434,10 +451,14 @@ func (e *Engine) nextChunk() (Frame, bool, error) {
 		if job.reader == nil {
 			var reader io.ReadSeekCloser
 			var err error
+			readContext, allowed := e.sourceContext(id)
+			if !allowed {
+				return Frame{}, false, nil
+			}
 			if source, ok := e.repo.(OutgoingRepository); ok {
-				reader, err = source.OpenOutgoing(e.session, id)
+				reader, err = source.OpenOutgoing(readContext, id)
 			} else {
-				reader, err = e.repo.Open(e.session, id)
+				reader, err = e.repo.Open(readContext, id)
 			}
 			if err != nil {
 				return Frame{}, false, e.fileFailure(job.record.Offer, err)

@@ -293,6 +293,7 @@ test('clear history is confirmed, keeps the contact and recovers from storage fu
   await expect(dialog).toContainText(
     'Messages still queued for delivery continue sending until acknowledged.',
   );
+  await expect(dialog).toContainText('Unfinished attachments are cancelled.');
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
   expect(calls.some((call) => call.operation === 'ClearHistory')).toBe(false);
   await page
@@ -323,6 +324,36 @@ test('clear history is confirmed, keeps the contact and recovers from storage fu
   ).toBe(false);
   expect(errors).toEqual([]);
   expect(external).toEqual([]);
+});
+
+test('exhausted route handover explains the problem and permits explicit retry', async ({
+  page,
+}) => {
+  const { calls, errors } = await syntheticMessaging(
+    page,
+    approved({
+      state: 'route-unavailable',
+      canConnect: true,
+      canSend: true,
+      messages: [message()],
+    }),
+  );
+  await page.goto('/');
+  await expect(page.getByRole('alert')).toContainText(
+    'The approved connection route could not be reached.',
+  );
+  await expect(page.getByRole('log', { name: 'Messages' })).toContainText(
+    incomingText,
+  );
+  await page.getByRole('button', { name: 'Connect', exact: true }).click();
+  await expect
+    .poll(() =>
+      calls
+        .filter((call) => call.operation === 'ConnectContact')
+        .map((call) => call.args),
+    )
+    .toEqual([[contactID]]);
+  expect(errors).toEqual([]);
 });
 
 test('deleting one local message preserves the other messages and selected contact', async ({

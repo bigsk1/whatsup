@@ -45,9 +45,8 @@ func (s *Scope) Open(ctx context.Context, id string) (io.ReadSeekCloser, error) 
 	return s.readerLocked(ctx, entry, false)
 }
 
-// OpenOutgoing is retained only by the authenticated transfer runtime. Clearing
-// history revokes normal media/save readers without deleting an unacknowledged
-// outgoing source that still has to reach its receiver.
+// OpenOutgoing is retained only by the authenticated transfer runtime. Terminal
+// withdrawal or Clear history revokes these reads as well as preview/save reads.
 func (s *Scope) OpenOutgoing(ctx context.Context, id string) (io.ReadSeekCloser, error) {
 	if s == nil || s.scopeState == nil || ctx == nil {
 		return nil, ErrUnavailable

@@ -734,6 +734,12 @@
             Update both apps to compatible builds, then choose Connect. Your
             saved contact and queued messages are retained.
           </p>
+        {:else if conversation.state === 'route-unavailable'}
+          <p class="connection-notice" role="alert">
+            The approved connection route could not be reached. Check the
+            connection service and choose Connect to retry. Your queued messages
+            and saved contact are retained.
+          </p>
         {:else if conversation.state === 'authentication-failed'}
           <p class="connection-notice" role="alert">
             The saved contact could not authenticate. Check that both apps use

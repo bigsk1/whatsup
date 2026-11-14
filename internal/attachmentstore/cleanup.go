@@ -6,8 +6,8 @@ import (
 	"whatsup/internal/transfer"
 )
 
-// Remove hides a local card. Pending approved transfers retain their encrypted
-// data until authenticated completion, preserving retransmission and ACK state.
+// Remove hides a local card and permanently withdraws unfinished work. Terminal
+// encrypted metadata retains the offer ID/hash so a replay cannot resurrect it.
 func (s *Scope) Remove(id string) error {
 	if s == nil || s.scopeState == nil {
 		return ErrUnavailable
@@ -19,7 +19,7 @@ func (s *Scope) Remove(id string) error {
 	}
 	_, err := s.meta.Change(id, func(e *Entry) error {
 		e.Hidden = true
-		if e.Record.State == transfer.Draft || e.Record.State == transfer.Offered {
+		if e.Record.State != transfer.Complete {
 			e.Record.State = transfer.Declined
 			e.Approved = false
 			e.ImageOnly = false
@@ -30,6 +30,10 @@ func (s *Scope) Remove(id string) error {
 		return nil
 	})
 	s.cancelReadersLocked(id)
+	if p := s.pending[id]; p != nil {
+		clear(p.data)
+		delete(s.pending, id)
+	}
 	if err != nil {
 		return err
 	}
@@ -49,6 +53,10 @@ func (s *Scope) CollectGarbage() error {
 	}
 	for r := range s.readers {
 		r.cancel()
+	}
+	for id, p := range s.pending {
+		clear(p.data)
+		delete(s.pending, id)
 	}
 	var cursor uint64
 	for {
@@ -80,10 +88,11 @@ func (s *Scope) recover() error {
 			return err
 		}
 		for _, e := range entries {
-			if e.Record.State == transfer.Draft && !e.Ready {
+			if e.Record.State == transfer.Draft && !e.Ready || e.Hidden && (e.Active() || e.Record.State == transfer.Draft || e.Record.State == transfer.Offered) {
 				_, err = s.meta.Change(e.Record.Offer.ID, func(e *Entry) error {
 					e.Record.State = transfer.Declined
 					e.Hidden = true
+					e.Approved, e.ImageOnly = false, false
 					e.Garbage = e.ObjectID != ""
 					return nil
 				})

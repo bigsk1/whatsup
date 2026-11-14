@@ -301,7 +301,7 @@ func (x *relayExchange) receive(f controlFrame) error {
 		requestID := base64.RawURLEncoding.EncodeToString(f.body[40:])
 		plan, err := m.application.ConnectionPlan(m.record.ID)
 		if err != nil {
-			return errRoutesChanged
+			return routeFailure(err)
 		}
 		for _, candidate := range plan.Candidates {
 			if candidate.Epoch() == epoch && candidate.Association() == association && candidate.RequestID() == requestID && candidate.Validate() == nil {

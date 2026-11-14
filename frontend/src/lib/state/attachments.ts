@@ -204,6 +204,9 @@ const bridge: AttachmentBridge = {
       case 'cancel':
         await native.CancelAttachment(id, file);
         break;
+      case 'withdraw':
+        await native.WithdrawAttachment(id, file);
+        break;
       case 'resume':
         await native.ResumeAttachment(id, file);
         break;

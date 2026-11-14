@@ -69,6 +69,8 @@ export function connectionLabel(state: ConversationSnapshot['state']): string {
         connecting: 'Connecting…',
         'identity-changed': 'Identity could not be verified',
         'update-required': 'Compatible app update needed',
+        'route-unavailable':
+          'Approved connection route unavailable — choose Connect to retry',
         'authentication-failed': 'Authentication needs attention',
         failed: 'Connection unavailable',
         'capacity-reached': 'Local message storage full',

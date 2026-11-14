@@ -242,6 +242,15 @@
                 class="text-button"
                 disabled={busy}
                 onclick={() => ondecision(item, 'cancel')}
+                >Pause transfer</button
+              >
+            {/if}
+            {#if item.state !== 'complete' && item.state !== 'declined' && item.state !== 'failed' && !(item.state === 'offered' && item.direction === 'incoming')}
+              <button
+                type="button"
+                class="text-button"
+                disabled={busy}
+                onclick={() => ondecision(item, 'withdraw')}
                 >Cancel transfer</button
               >
             {/if}

@@ -276,3 +276,7 @@ export function UnlockStorage(): $CancellablePromise<$models.Status> {
 export function UnlockWithPassphrase(secret: string): $CancellablePromise<$models.Status> {
     return $Call.ByID(786214657, secret);
 }
+
+export function WithdrawAttachment(id: string, attachment: string): $CancellablePromise<void> {
+    return $Call.ByID(1504183538, id, attachment);
+}

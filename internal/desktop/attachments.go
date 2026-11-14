@@ -660,6 +660,8 @@ func (s *Service) attachmentDecision(id, attachment, action string) error {
 		err = s.messages.DeclineTransfer(id, attachment)
 	case "cancel":
 		err = s.messages.CancelTransfer(id, attachment)
+	case "withdraw":
+		err = s.messages.WithdrawTransfer(id, attachment)
 	case "resume":
 		err = s.messages.ResumeTransfer(id, attachment)
 	default:
@@ -682,6 +684,9 @@ func (s *Service) DeclineAttachment(id, attachment string) error {
 }
 func (s *Service) CancelAttachment(id, attachment string) error {
 	return s.attachmentDecision(id, attachment, "cancel")
+}
+func (s *Service) WithdrawAttachment(id, attachment string) error {
+	return s.attachmentDecision(id, attachment, "withdraw")
 }
 func (s *Service) ResumeAttachment(id, attachment string) error {
 	return s.attachmentDecision(id, attachment, "resume")

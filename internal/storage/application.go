@@ -374,6 +374,14 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 		_ = a.closeMessageStoreLocked()
 		return nil, err
 	}
+	// Repair managed roots missed by older versions only after authenticated
+	// migrations/recovery have finished validating their exact backup hashes.
+	if err := a.finishManagedCopiesLocked(); err != nil {
+		a.failed = true
+		_ = a.closeAttachmentStoreLocked()
+		_ = a.closeMessageStoreLocked()
+		return nil, err
+	}
 	return a, nil
 }
 

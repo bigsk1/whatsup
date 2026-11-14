@@ -410,12 +410,17 @@ func (s *Scope) hideAttachments(ctx context.Context, tx *sql.Tx, id string) erro
 			return nil
 		}
 		for _, entry := range batch {
-			if entry.Hidden || id != "" && entry.Record.Offer.ID != id {
+			if id != "" && entry.Record.Offer.ID != id {
+				continue
+			}
+			// Also retire hidden work left by older Clear history versions.
+			// A hidden queued/paused transfer must never retain a slot or send.
+			if entry.Hidden && !entry.Active() && entry.Record.State != transfer.Offered && entry.Record.State != transfer.Draft {
 				continue
 			}
 			entry.Hidden = true
 			entry.Revision++
-			if entry.Record.State == transfer.Offered || entry.Record.State == "draft" {
+			if entry.Record.State != transfer.Complete {
 				entry.Record.State = transfer.Declined
 				entry.Approved = false
 				entry.ImageOnly = false

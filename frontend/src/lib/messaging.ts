@@ -11,6 +11,7 @@ export const conversationStates = [
   'identity-changed',
   'authentication-failed',
   'update-required',
+  'route-unavailable',
   'capacity-reached',
   'peer-capacity-reached',
   'peer-removed',

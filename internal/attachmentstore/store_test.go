@@ -374,15 +374,15 @@ func TestQuotaClearHistoryAndImageOnlyApproval(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, err := f.scope.Get(o.ID)
-	if err != nil || !r.Hidden || r.State != transfer.Queued {
-		t.Fatal("clear lost pending send")
+	if err != nil || !r.Hidden || r.State != transfer.Declined {
+		t.Fatal("clear retained pending send")
 	}
-	if err := f.scope.MarkDelivered(o.ID); err != nil {
-		t.Fatal(err)
+	if err := f.scope.MarkDelivered(o.ID); !errors.Is(err, transfer.ErrUnavailable) {
+		t.Fatal("late completion revived a cleared transfer", err)
 	}
 	entry, err := f.raw.Attachments().Get(o.ID)
-	if err != nil || entry.ObjectID != "" || entry.Record.State != transfer.Complete {
-		t.Fatal("hidden delivered bytes not reclaimed")
+	if err != nil || entry.ObjectID != "" || entry.Record.State != transfer.Declined {
+		t.Fatal("cancelled bytes not reclaimed")
 	}
 	page, _, _, err := f.scope.History(0, 32)
 	if err != nil || len(page) != 0 {

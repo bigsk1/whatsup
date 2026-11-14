@@ -1,106 +1,129 @@
 # Privacy and local diagnostics
 
 WhatsUp has no application analytics or remote crash reporting. Troubleshooting
-diagnostics stay on the device and are never uploaded automatically.
+diagnostics stay on the device with no automatic upload.
 
-## Names, messages and invitations
+## Local data and protection
 
-Device identity, contact credentials, display names, private contact names,
-message history and queued messages are stored encrypted locally. Windows
-Credential Manager or Linux Secret Service protects the local encryption key.
+Device identity, contact credentials, display/private names, history, queued
+messages and attachment data are encrypted locally. Windows Credential Manager
+or Linux Secret Service protects the local wrapping credential. An optional app
+passphrase adds a required factor; both modes still require the OS provider.
+OS-only launch automatically opens storage and reconnects saved contacts.
+Passphrase-protected launch prompts for the passphrase.
 
-**Share my display name** starts off. Enabling it and saving sends the display
-name only to the approved contact over the authenticated connection, after
-identity approval. It is not added to invitation links or diagnostic logs.
-A private contact name never leaves your device.
+**Go offline** stops connections, closes storage and clears decrypted UI state.
+Saved data remains encrypted. Lock the OS session when leaving the computer.
+The app runs with your account's privileges; it is not an OS sandbox.
 
-Turning sharing off clears the received shared label when the peer is connected.
-It cannot erase information already copied elsewhere or remove the peer's own
-private nickname.
+**Share my display name** starts off. Shared names travel only to approved peers
+inside authenticated connections, after pairing. They do not enter invitations
+or diagnostics. A private contact nickname stays local. Disabling sharing clears
+the peer's shared label when connected, but cannot erase independent copies.
 
-An invitation is a private, temporary link. WhatsUp keeps it in session memory
-and copies it to the clipboard only when you choose **Copy invitation**. The link
-is cleared from the interface on handoff, cancellation, expiry or lock. A copied
-link remains in the operating-system clipboard until it is replaced.
-Cancellation and expiry invalidate its pairing authority.
-
-Invitations are not published through DNS or a public contact directory. Pasting
-one into WhatsUp does not navigate a browser.
+Invitations are temporary bearer links held in memory. Copying one places it on
+the OS clipboard; it can remain there or in clipboard history until removed.
+Cancellation, expiry and restart invalidate its authority. Links are not
+published through DNS or a public contact directory, and pasting one does not
+navigate a browser.
 
 ## Connections and relays
 
-The connection-service field starts empty, and relay consent starts unchecked.
-You explicitly select a trusted HTTPS relay-map service before creating or
-joining an invitation.
+Creating an invitation requires a chosen HTTPS relay-map service and separate
+unchecked consent. The public Tailcat preset fills an empty field without a fetch
+or consent. Joiners review and consent to the service carried in the invitation
+before any map fetch. Opening an invitation form alone starts no networking.
+Launching in OS-only mode, going online or completing pairing reconnects contacts.
 
-Opening WhatsUp or viewing Settings does not start a new contact connection.
-**Unlock and connect**, an explicit **Connect** action, or successful pairing
-completion starts the saved connection and its automatic retry loop.
+Direct connectivity is preferred, with consented encrypted relay fallback. The
+service can observe IP addresses and availability. Setup/reconnection and network
+rediscovery depend on that service even if payload traffic later becomes direct.
+No anonymity or offline mailbox is provided. Strict direct-only is unavailable.
+A sampled Direct/Relayed/Unknown display is not a packet-level policy guarantee.
 
-Automatic mode prefers direct connectivity and allows consented encrypted relay
-fallback. The service can observe connection metadata, including IP addresses
-and availability. Encryption does not hide that metadata or guarantee anonymity.
-Strict direct-only mode is not available.
+Saved relay services cannot be changed silently by a peer. A service migration
+requires both users' authenticated approval. The operator can update its server
+list under the same service URL.
 
-The selected service is saved encrypted with the contact. A peer cannot substitute
-another provider during reconnection, although the selected operator may update
-its own server list.
+## Files, exports and deletion
 
-## Local diagnostics
+Received files require Accept/Decline. Per-contact automatic acceptance of images
+up to 25 MB is an explicit receiver opt-in. Incomplete data and completed objects
+remain encrypted inside WhatsUp. Save writes a plaintext copy to a destination
+you choose through the Go dialog; Show in folder reveals it without opening it.
+Those copies are outside WhatsUp's encryption and deletion controls.
 
-Diagnostic files contain fixed operational event codes, UTC time, app and Go
-versions, operating system and architecture. They exclude names, message text,
-keys, invitations, fingerprints, peer addresses, user paths and raw error or
-bridge payloads.
+Image sends re-encode and strip metadata by default. Send as file retains original
+bytes and metadata. Copy/paste uses the OS clipboard and its retention policy.
+Recovery exports contain identity, contacts, history and attachments, encrypted
+under a separate recovery passphrase. Keep exports and secrets private.
 
-The active and previous logs are limited to 256 KiB each, for 512 KiB total
-retained diagnostic data. These logs are plaintext operational metadata,
-separate from the encrypted conversation. Anyone with access to the local
-account may be able to read them.
+Clear history keeps the contact and cancels unfinished attachments. Queued text
+continues until acknowledged. Forget deletes one contact's local state while
+preserving your identity and other contacts. An online removal notice stops the
+peer's retries; it does not delete their history. These are logical deletion,
+not physical erasure of media, memory, external exports or OS notification history.
+Managed migration backups are re-protected on passphrase changes/authenticated
+reopen and have bounded root-snapshot retention. Complete recovery rollback data
+is retained for safety; external old backups are not retroactively protected.
 
-The files are named diagnostics.jsonl and diagnostics.previous.jsonl:
+## Desktop behavior and OS artifacts
+
+Close-to-tray and generic new-message notifications start on. Start at login,
+notification contact names and message previews are separate opt-ins. Choose
+Quit from the tray to stop the app. Behavior preferences are encrypted in
+app-preferences.vault; appearance alone uses the private WebView's storage.
+
+Windows notification support registers per-user app identity and activation data
+under `HKCU\Software\Classes\AppUserModelId\WhatsUp` and an app-specific
+`HKCU\Software\Classes\CLSID\{GUID}\LocalServer32`. These identify the app and
+its executable; they are not analytics. The native runtime writes an app icon
+under `%TEMP%` using the app name and GUID. Registration/icon artifacts can outlive
+a run. Enabling start at login adds the WhatsUp value under
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`; disabling it removes
+that value. No system-wide startup entry is created.
+
+Linux start at login uses `$XDG_CONFIG_HOME/autostart/whatsup.desktop`, normally
+`~/.config/autostart/whatsup.desktop`. Disabling it removes the app-managed entry.
+Installation may also create a menu/desktop launcher and optional dock entry.
+Notifications use the desktop notification service over the user's session bus.
+
+Notifications say only **New message** by default. Enabling names/previews sends
+that content to the OS notification system, including its notification history.
+It can appear on the desktop or lock screen according to OS settings. The current
+Windows runtime also includes notification content and the random contact ID in
+its activation payload. Turning previews off affects future notifications; it
+does not erase existing Action Center entries, OS history or prior copies.
+
+## Local diagnostics and locations
+
+Logs contain fixed event codes, UTC time, app/Go versions, OS and architecture.
+They exclude names, text, keys, invitations, fingerprints, peer addresses, user
+paths and raw errors/bridge payloads. Network diagnostics use fixed rate-limited
+codes. Logs are plaintext operational metadata readable by the local account.
+The active and previous logs are limited to 256 KiB each, 512 KiB total.
 
 | Platform | Application data |
 | --- | --- |
-| Windows | %LOCALAPPDATA%\\WhatsUp |
-| Linux | $XDG_DATA_HOME/whatsup, or ~/.local/share/whatsup |
+| Windows | `%LOCALAPPDATA%\WhatsUp` |
+| Linux | `$XDG_DATA_HOME/whatsup`, normally `~/.local/share/whatsup` |
 
-There is no automatic diagnostic export or upload. Share troubleshooting
-information only through a channel you choose, after checking it for private
-content.
+The profile includes state.vault, messages.sqlite and encrypted sidecars,
+encrypted attachment objects, app-preferences.vault, private WebView data and
+recognized migration/recovery copies. Logs are diagnostics.jsonl and
+diagnostics.previous.jsonl. Linux cache normally uses `~/.cache/whatsup`.
+No diagnostic export or upload runs automatically.
 
 ## WebView storage and vendor diagnostics
 
-On Windows, WhatsUp uses the system WebView2 runtime with a private profile under
-%LOCALAPPDATA%\\WhatsUp\\webview. It does not share Edge's cookies or storage.
-The app does not change system-wide Windows or Edge privacy settings.
+Windows uses system WebView2 with a private profile at
+`%LOCALAPPDATA%\WhatsUp\webview`, separate from Edge cookies/storage. The app does
+not change Windows/Edge privacy settings. Optional diagnostic data follows
+Windows privacy settings. Microsoft also documents required diagnostics without
+an overall application-controlled off switch. See [Microsoft's WebView2 privacy
+documentation](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/data-privacy).
 
-Optional WebView2 diagnostic data follows Windows privacy settings. Microsoft
-also documents required diagnostics that applications cannot disable through
-an overall collection switch. See [Microsoft's WebView2 privacy documentation](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/data-privacy).
-WhatsUp's local diagnostics policy does not control those runtime diagnostics.
-
-Linux uses the system WebKitGTK runtime with private application data and cache
-directories, normally ~/.local/share/whatsup and ~/.cache/whatsup. Startup checks
-their location, ownership and permissions. Unsafe existing directories are
-rejected rather than silently accepted.
-
-A private WebView profile separates storage. It does not sandbox the local
-operating-system account or guarantee that the operating system and network
-infrastructure send no data.
-
-## Locking and deletion
-
-**Disconnect and lock** stops networking, closes local storage and clears
-displayed messages, names, drafts and the contact search. Saved data remains
-encrypted for the next unlock.
-
-**Forget contact and delete conversation** removes that contact's credentials,
-history, queue and contact names from this device. Your own profile, identity,
-fingerprint and appearance preferences remain. It does not delete remote copies
-or guarantee physical erasure from media, backups or memory.
-
-Appearance is the only preference persisted in the WebView. Profile pictures,
-remote avatars and attachment sharing are not available.
-
-See the [security information](../SECURITY.md) for the current security boundary.
+Linux uses system WebKitGTK with private data/cache paths checked for location,
+ownership and permissions. Unsafe existing paths fail closed. Private profiles
+separate storage; they do not guarantee no OS/runtime/network diagnostic traffic.
+See [security information](../SECURITY.md) for the security boundary.

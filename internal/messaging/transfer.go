@@ -174,6 +174,25 @@ func (r *Registry) ResumeTransfer(contactID, id string) error {
 	}
 	return e.Resume(id)
 }
+func (r *Registry) WithdrawTransfer(contactID, id string) error {
+	m, err := r.manager(contactID)
+	if err != nil {
+		return err
+	}
+	scope, e, _, err := m.localAttachments(contactID)
+	if err != nil {
+		return err
+	}
+	if e != nil {
+		err = e.Withdraw(id)
+	} else {
+		err = scope.Decline(id)
+	}
+	if err == nil {
+		r.MetadataChanged(contactID)
+	}
+	return err
+}
 func (r *Registry) AllowTransferRelay(contactID, id string) error {
 	e, err := r.transferEngine(contactID)
 	if err != nil {

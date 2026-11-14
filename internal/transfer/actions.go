@@ -34,6 +34,11 @@ func (e *Engine) Accept(id string) error {
 	}})
 }
 func (e *Engine) Decline(id string) error {
+	if e == nil {
+		return ErrUnavailable
+	}
+	unblock := e.blockSources(id)
+	defer unblock()
 	return e.request(event{kind: actionEvent, action: func() error {
 		record, err := e.repo.Get(id)
 		if err != nil || record.Direction != Incoming {
@@ -56,6 +61,11 @@ func (e *Engine) Decline(id string) error {
 	}})
 }
 func (e *Engine) Cancel(id string) error {
+	if e == nil {
+		return ErrUnavailable
+	}
+	unblock := e.blockSources(id)
+	defer unblock()
 	return e.request(event{kind: actionEvent, action: func() error {
 		record, err := e.repo.Get(id)
 		if err != nil {

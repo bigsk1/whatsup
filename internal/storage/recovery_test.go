@@ -103,6 +103,79 @@ func assertRestoredFixture(t *testing.T, a *ApplicationState, f recoveryFixture)
 	}
 }
 
+func TestPassphraseAfterOwnRecoveryProtectsNestedMigrationBackup(t *testing.T) {
+	keys := &memoryKeys{}
+	f := makeRecoveryFixtureWithKeys(t, keys)
+	dir := f.source.vault.directory
+	backupName := "pre-migration-0123456789abcdef0123456789abcdef.vault"
+	original, err := os.ReadFile(filepath.Join(dir, "state.vault"))
+	if err != nil || os.WriteFile(filepath.Join(dir, backupName), original, 0600) != nil {
+		t.Fatal("prepare migration backup", err)
+	}
+	f.source.Close()
+	staged, err := StageRecovery(context.Background(), dir, bytes.NewReader(f.archive), testPassphrase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer staged.Close()
+	if err := staged.Commit(context.Background(), keys, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	_, app := openApplicationTest(t, dir, keys)
+	assertRestoredFixture(t, app, f)
+	entries, _ := os.ReadDir(dir)
+	var backup string
+	for _, entry := range entries {
+		if recoveryRollbackName.MatchString(entry.Name()) {
+			path := filepath.Join(dir, entry.Name(), backupName)
+			if _, err := os.Stat(path); err == nil {
+				backup = path
+			}
+		}
+	}
+	if backup == "" {
+		t.Fatal("recovery did not retain the migration backup")
+	}
+	data, err := os.ReadFile(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratch := scratchVault(app.vault)
+	plain, err := decodeRootWithSecret(scratch, data, nil)
+	clear(plain)
+	same := bytes.Equal(scratch.master, app.vault.master)
+	clearScratch(scratch)
+	if err != nil || !same {
+		t.Fatal("fixture does not reproduce an OS-only path to the current master")
+	}
+	if err := app.SetPassphrase(context.Background(), nil, testPassphrase); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratch = scratchVault(app.vault)
+	plain, err = decodeRootWithSecret(scratch, data, nil)
+	clear(plain)
+	clearScratch(scratch)
+	if !errors.Is(err, ErrPassphraseRequired) {
+		t.Fatal("nested migration backup still exposes the current master with only the OS credential")
+	}
+	scratch = scratchVault(app.vault)
+	plain, err = decodeRootWithSecret(scratch, data, testPassphrase)
+	clear(plain)
+	same = bytes.Equal(scratch.master, app.vault.master)
+	clearScratch(scratch)
+	if err != nil || !same {
+		t.Fatal("backup did not preserve its master under the new protection")
+	}
+	assertRestoredFixture(t, app, f)
+	app.Close()
+	_, app = openProtectedTest(t, dir, keys, testPassphrase)
+	assertRestoredFixture(t, app, f)
+}
+
 func TestRecoveryExportRestorePreservesHierarchyAndPendingDelivery(t *testing.T) {
 	f := makeRecoveryFixture(t)
 	target, keys := privateDirectory(t), &memoryKeys{}

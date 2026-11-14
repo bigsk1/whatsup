@@ -423,6 +423,47 @@ func retryDelay(count int) time.Duration {
 	return floor + time.Duration(n.Int64())
 }
 
+const maxAutomaticRouteRestarts = 3
+
+// An exact approved plan gets one prompt automatic handover. Repeated rebuilds
+// for that same plan use an independent backoff and a hard restart limit:
+// successful TLS on its old fallback route must not reset the failure history
+// of an unreachable preferred route. A genuinely new approved plan resets this
+// schedule, as does an explicit new Connect after the worker stops.
+type routeReadyRetry struct {
+	plan    [32]byte
+	started bool
+	attempt int
+}
+
+func (r *routeReadyRetry) next(plan [32]byte) (time.Duration, bool) {
+	if !r.started || r.plan != plan {
+		r.plan, r.started, r.attempt = plan, true, 1
+		return 0, true
+	}
+	if r.attempt >= maxAutomaticRouteRestarts {
+		return 0, false
+	}
+	delay := retryDelay(r.attempt - 1)
+	r.attempt++
+	return delay, true
+}
+
+func (m *Manager) waitRetry(delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-m.ctx.Done():
+		return false
+	case request := <-m.routeRestart:
+		// An explicit local refresh may retire the generation promptly. Peer
+		// frames cannot enqueue these requests or bypass their own backoff.
+		request.finish()
+	case <-timer.C:
+	}
+	return true
+}
+
 func terminalPersistence(err error) bool {
 	return errors.Is(err, chat.ErrStore) || errors.Is(err, chat.ErrCorrupt) || errors.Is(err, storage.ErrStateFailed) || errors.Is(err, storage.ErrStateConflict)
 }
@@ -455,6 +496,7 @@ func (m *Manager) run() {
 			close(done)
 		}
 	}()
+	var routeReady routeReadyRetry
 	for attempt := 0; m.ctx.Err() == nil; attempt++ {
 		previousAuthentication := m.authenticated
 		err := m.runRouteCycle()
@@ -465,8 +507,25 @@ func (m *Manager) run() {
 			attempt = 0
 		}
 		if errors.Is(err, errRoutesChanged) {
+			if !errors.Is(err, errLocalRouteRefresh) {
+				m.mu.Lock()
+				plan := m.planKey
+				m.mu.Unlock()
+				delay, retry := routeReady.next(plan)
+				if !retry {
+					m.changed("route-unavailable")
+					return
+				}
+				if delay > 0 {
+					m.changed("connecting")
+					if !m.waitRetry(delay) {
+						return
+					}
+				}
+			}
 			// A planned generation replacement is not a failed connection. The
-			// loop post must not advance backoff, including after fresh TLS.
+			// loop post must not advance ordinary transport backoff. Repeated
+			// peer hints have their own bounded schedule above.
 			attempt--
 			continue
 		}
@@ -513,15 +572,8 @@ func (m *Manager) run() {
 		m.changed(retryState(err))
 		// Transport failures retry automatically, never prompt for another
 		// invitation or silently choose a different relay provider.
-		timer := time.NewTimer(retryDelay(attempt))
-		select {
-		case <-m.ctx.Done():
-			timer.Stop()
+		if !m.waitRetry(retryDelay(attempt)) {
 			return
-		case request := <-m.routeRestart:
-			timer.Stop()
-			request.finish()
-		case <-timer.C:
 		}
 	}
 }

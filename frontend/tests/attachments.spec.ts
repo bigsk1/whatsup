@@ -219,6 +219,20 @@ async function desktop(
         state.items = [];
         state.revision++;
         break;
+      case 'CancelAttachment':
+        state.items = state.items.map((value) => ({
+          ...value,
+          state: 'paused',
+        }));
+        state.revision++;
+        break;
+      case 'WithdrawAttachment':
+        state.items = state.items.map((value) => ({
+          ...value,
+          state: 'declined',
+        }));
+        state.revision++;
+        break;
       case 'SetAutoAcceptImages':
         state.autoAcceptImages = args[1] as boolean;
         break;
@@ -258,6 +272,42 @@ async function expandAttachments(page: Page) {
     page.getByRole('button', { name: 'Collapse attachments', exact: true }),
   ).toHaveAttribute('aria-expanded', 'true');
 }
+
+test('pause is resumable while cancel permanently withdraws the exact transfer', async ({
+  page,
+}) => {
+  const { calls, errors } = await desktop(
+    page,
+    [{ ...item, direction: 'outgoing', state: 'queued' }],
+    'connected',
+    4,
+  );
+  await expandAttachments(page);
+  await page
+    .getByRole('button', { name: 'Pause transfer', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'Resume', exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole('button', { name: 'Cancel transfer', exact: true })
+    .click();
+  await expect(
+    page.getByRole('article', { name: 'Sent attachment' }),
+  ).toContainText('declined');
+  await expect(
+    page.getByRole('button', { name: 'Resume', exact: true }),
+  ).toHaveCount(0);
+  expect(
+    calls.filter((call) =>
+      ['CancelAttachment', 'WithdrawAttachment'].includes(call.name),
+    ),
+  ).toEqual([
+    { name: 'CancelAttachment', args: [contactID, fileID] },
+    { name: 'WithdrawAttachment', args: [contactID, fileID] },
+  ]);
+  expect(errors).toEqual([]);
+});
 
 async function attachmentUpdate(page: Page, revision: number) {
   const loaded = page.waitForResponse((response) => {

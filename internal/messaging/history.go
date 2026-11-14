@@ -2,18 +2,44 @@ package messaging
 
 import "whatsup/internal/chat"
 
-// Local history actions never start networking or discard pending delivery.
+// Local history actions never start networking. Clearing history preserves the
+// text outbox but permanently withdraws attachments, reclaiming transfer quota.
 // Contact and message IDs are checked again under the runtime guard.
 func (m *Manager) ClearHistory(id string) (Snapshot, error) {
 	if m == nil || m.managerState == nil {
 		return m.Snapshot(), ErrUnavailable
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.refreshLocked() != nil || m.record.ID != id || m.conversation == nil || m.closed || m.state == "failed" {
-		return m.snapshotLocked(), ErrUnavailable
+		snapshot := m.snapshotLocked()
+		m.mu.Unlock()
+		return snapshot, ErrUnavailable
 	}
-	if err := m.conversation.ClearHistory(); err != nil {
+	engine, conversation := m.transfers, m.conversation
+	if engine == nil {
+		defer m.mu.Unlock()
+		// Keep engine creation excluded until the durable clear has committed.
+		// A later session can only load the already-retired attachment set.
+		if err := conversation.ClearHistory(); err != nil {
+			return m.historyFailureLocked(err)
+		}
+		m.historyCapacityRecoveredLocked()
+		m.bumpLocked()
+		return m.snapshotLocked(), nil
+	}
+	m.mu.Unlock()
+	clearHistory := func() error {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.closed || m.record.ID != id || m.conversation != conversation || m.state == "failed" {
+			return ErrUnavailable
+		}
+		return conversation.ClearHistory()
+	}
+	err := engine.ClearHistory(clearHistory)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err != nil {
 		return m.historyFailureLocked(err)
 	}
 	m.historyCapacityRecoveredLocked()

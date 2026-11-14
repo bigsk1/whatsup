@@ -58,8 +58,8 @@
   </div>
   <p>
     This changes only the history shown on this device. Your contact stays
-    saved. Messages still queued for delivery continue sending until
-    acknowledged.
+    saved. Unfinished attachments are cancelled. Messages still queued for
+    delivery continue sending until acknowledged.
   </p>
   {#if notice}<p role="alert">{notice}</p>{/if}
   <div class="dialog-footer">

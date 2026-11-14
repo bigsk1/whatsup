@@ -31,8 +31,21 @@ func (e *Engine) receive(frame Frame) error {
 		return e.receiveOffer(frame.Offer)
 	}
 	record, err := e.repo.Get(frame.ID)
+	// An offer and its immediate withdrawal can cross queued actor output. An
+	// unknown terminal notice grants no authority and creates no record.
+	if errors.Is(err, ErrUnavailable) && frame.Kind == DeclineFrame {
+		return nil
+	}
 	if err != nil || !validRecord(record) || record.Offer.SHA256 != frame.SHA256 {
 		return ErrProtocol
+	}
+	// Terminal local cancellation wins over stale credits, ACKs and chunks
+	// already in flight. Their exact authenticated offer ID/hash is still pinned.
+	if record.State == Declined && frame.Kind != DeclineFrame {
+		if frame.Kind == AcceptFrame || frame.Kind == ChunkFrame || frame.Kind == FinishFrame {
+			return e.emit(control(DeclineFrame, record.Offer, 0, ReasonDeclined))
+		}
+		return nil
 	}
 	switch frame.Kind {
 	case AcceptFrame:
@@ -183,14 +196,20 @@ func (e *Engine) receive(frame Frame) error {
 		e.changed(false)
 		return e.promoteReceiver()
 	case DeclineFrame:
-		if record.Direction != Outgoing {
-			return ErrProtocol
-		}
 		if record.State == Complete || record.State == Declined {
 			return nil
 		}
-		if job := e.jobs[frame.ID]; job == nil || !job.offered {
+		if record.Direction == Incoming {
+			if e.peerOffers[frame.ID] != record.Offer {
+				return ErrProtocol
+			}
+		} else if job := e.jobs[frame.ID]; job == nil || !job.offered {
 			return ErrProtocol
+		}
+		if e.finalDone != nil && e.activeIn == frame.ID {
+			e.finalCancel()
+			<-e.finalDone
+			e.finalCancel, e.finalDone = nil, nil
 		}
 		if err := e.repo.Decline(frame.ID); err != nil {
 			return err
@@ -198,6 +217,7 @@ func (e *Engine) receive(frame Frame) error {
 		e.drop(frame.ID)
 		delete(e.jobs, frame.ID)
 		e.changed(false)
+		return e.promoteReceiver()
 	default:
 		return ErrProtocol
 	}

@@ -145,9 +145,8 @@ type Repository interface {
 	Open(context.Context, string) (io.ReadSeekCloser, error)
 }
 
-// OutgoingRepository separates transport delivery of hidden pending sources
-// from user-readable media. Clearing history must revoke preview/save reads
-// while preserving already queued delivery until its authenticated ACK.
+// OutgoingRepository separates transport reads from user-readable media. Clear
+// history withdraws unfinished attachments and revokes both forms of authority.
 type OutgoingRepository interface {
 	OpenOutgoing(context.Context, string) (io.ReadSeekCloser, error)
 }

@@ -6,9 +6,11 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 var testPassphrase = []byte("  synthetic passphrase exact spaces  ")
@@ -306,5 +308,153 @@ func TestPassphraseCleansOnlyOwnedUncommittedRootTemporaryFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(unrelated); err != nil {
 		t.Fatal("unrelated path removed")
+	}
+}
+
+func TestProtectedReopenRepairsNestedBackupsAndTemporaryRoots(t *testing.T) {
+	dir, keys := privateDirectory(t), &memoryKeys{}
+	_, app := openApplicationTest(t, dir, keys)
+	original, err := os.ReadFile(filepath.Join(dir, "state.vault"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, _ := app.Identity()
+	seed := identity.Seed()
+	if err := app.SetPassphrase(context.Background(), nil, testPassphrase); err != nil {
+		t.Fatal(err)
+	}
+	var paths, temps, unrelated []string
+	for _, name := range []string{".recovery-stage-AQEBAQEBAQEBAQEBAQEBAQ", ".recovery-rollback-AgICAgICAgICAgICAgICAg"} {
+		container := filepath.Join(dir, name)
+		if err := os.Mkdir(container, 0700); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(container, "pre-migration-0123456789abcdef0123456789abcdef.vault")
+		if err := os.WriteFile(path, original, 0600); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+		for _, temp := range []string{".state-12345.tmp", ".protection-67890.tmp"} {
+			path := filepath.Join(container, temp)
+			if err := os.WriteFile(path, original, 0600); err != nil {
+				t.Fatal(err)
+			}
+			temps = append(temps, path)
+		}
+		path = filepath.Join(container, ".state-user-note.tmp")
+		if err := os.WriteFile(path, []byte("synthetic unrelated note"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		unrelated = append(unrelated, path)
+	}
+	app.Close()
+	_, app = openProtectedTest(t, dir, keys, testPassphrase)
+	secretB := []byte("synthetic replacement passphrase B")
+	for _, secret := range [][]byte{testPassphrase, secretB} {
+		if bytes.Equal(secret, secretB) {
+			if err := app.SetPassphrase(context.Background(), testPassphrase, secretB); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, path := range paths {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			scratch := scratchVault(app.vault)
+			plain, err := decodeRootWithSecret(scratch, data, nil)
+			clear(plain)
+			clearScratch(scratch)
+			if !errors.Is(err, ErrPassphraseRequired) {
+				t.Fatal("reopen left an OS-only managed root")
+			}
+			scratch = scratchVault(app.vault)
+			plain, err = decodeRootWithSecret(scratch, data, secret)
+			clear(plain)
+			same := bytes.Equal(scratch.master, app.vault.master)
+			clearScratch(scratch)
+			if err != nil || !same {
+				t.Fatal("managed root did not follow authenticated protection change")
+			}
+		}
+	}
+	for _, path := range temps {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatal("nested crash temporary retained an OS-only root")
+		}
+	}
+	for _, path := range unrelated {
+		if data, err := os.ReadFile(path); err != nil || string(data) != "synthetic unrelated note" {
+			t.Fatal("unrelated nested file was changed")
+		}
+	}
+	identity, _ = app.Identity()
+	if identity.Seed() != seed {
+		t.Fatal("repair changed identity")
+	}
+}
+
+func TestManagedMigrationRetentionKeepsNewestThreeAndPinnedCopy(t *testing.T) {
+	dir, keys := privateDirectory(t), &memoryKeys{}
+	_, app := openApplicationTest(t, dir, keys)
+	original, err := os.ReadFile(filepath.Join(dir, "state.vault"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	container := filepath.Join(dir, ".recovery-rollback-AQEBAQEBAQEBAQEBAQEBAQ")
+	if err := os.Mkdir(container, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for i := range 8 {
+		parent := dir
+		if i%2 != 0 {
+			parent = container
+		}
+		path := filepath.Join(parent, fmt.Sprintf("pre-migration-%032x.vault", i))
+		if err := os.WriteFile(path, original, 0600); err != nil {
+			t.Fatal(err)
+		}
+		at := time.Unix(int64(1000+i), 0)
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	if err := app.SetPassphrase(context.Background(), nil, testPassphrase); err != nil {
+		t.Fatal(err)
+	}
+	for i, path := range paths {
+		_, err := os.Stat(path)
+		want := i >= len(paths)-maxRetainedMigrationBackups
+		if want && err != nil || !want && !os.IsNotExist(err) {
+			t.Fatalf("first protection lost original snapshot age at index %d", i)
+		}
+	}
+	// Recreate authenticated managed backups with deterministic ages, then keep
+	// the oldest top-level snapshot pinned by the current envelope.
+	protected, _ := os.ReadFile(filepath.Join(dir, "state.vault"))
+	for i, path := range paths {
+		if err := os.WriteFile(path, protected, 0600); err != nil {
+			t.Fatal(err)
+		}
+		at := time.Unix(int64(1000+i), 0)
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	app.state.MigrationBackup = filepath.Base(paths[0])
+	if err := app.finishManagedCopiesLocked(); err != nil {
+		t.Fatal(err)
+	}
+	for i, path := range paths {
+		_, err := os.Stat(path)
+		want := i == 0 || i >= len(paths)-maxRetainedMigrationBackups
+		if want && err != nil || !want && !os.IsNotExist(err) {
+			t.Fatalf("retention violated pinned/newest policy at index %d", i)
+		}
+	}
+	if _, err := os.Stat(container); err != nil {
+		t.Fatal("retention removed a recovery container")
 	}
 }

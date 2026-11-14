@@ -3,6 +3,7 @@ package messaging
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -15,6 +16,9 @@ import (
 var (
 	errRoutesChanged = errors.New("approved contact routes changed")
 	errRouteBusy     = errors.New("another authenticated contact stream is active")
+	// Only a typed local refresh may retire a generation without consuming the
+	// automatic unchanged-plan restart budget. Peer frames cannot mint this.
+	errLocalRouteRefresh = fmt.Errorf("%w: explicit local refresh", errRoutesChanged)
 )
 
 const overlappingRouteWindow = 25 * time.Second
@@ -309,12 +313,12 @@ drained:
 			request.finish()
 			cancel()
 			<-result
-			return errRoutesChanged
+			return errLocalRouteRefresh
 		}
 		cancel()
 		<-result
 		request.finish()
-		return errRoutesChanged
+		return errLocalRouteRefresh
 	case <-m.ctx.Done():
 		cancel()
 		<-result

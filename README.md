@@ -1,158 +1,133 @@
 # WhatsUp
 
-WhatsUp is a private, one-to-one desktop messenger for Windows and Linux.
+WhatsUp is a private desktop messenger for Windows and Linux. The current
+**0.0.11 preview** supports up to 32 saved contacts, with a separate one-to-one
+conversation and approved device identities for each contact.
 
-The current **0.0.7 preview** supports identity-verified pairing, text messages,
-encrypted local history and queued messages, automatic reconnection, optional
-shared display names, and private contact names.
+It includes encrypted local message history and offline queues, resumable file
+transfers, image previews, optional shared display names, private contact names,
+a tray, notifications and optional app passphrase protection. Both apps must be
+running to exchange data; there is no account service or offline mailbox.
 
-WhatsUp is still preview software. Signed installers, automatic updates and a
-public download are not available yet. It has not undergone an independent
-security audit. See the [security information](SECURITY.md) before relying on it
+This is unsigned preview software. Public downloads, signed installers and
+automatic updates are not available. It has not undergone an independent
+security audit. Read the [security information](SECURITY.md) before relying on it
 for sensitive communication.
 
-## Start the app
+## Start and stop
 
-On Windows, launch the WhatsUp executable. On Linux, use the installed WhatsUp
-application-menu entry. A supplied preview build does not need a development
-server or a separate browser to run.
+On Windows, run the WhatsUp executable or its installed shortcut. On Linux, use
+the installed application-menu entry. Supplied builds need no Go, Node.js,
+development server or separate browser. See [Linux support](docs/linux-support.md)
+for native dependencies and sandbox integration.
 
-Linux requires the native libraries and desktop services described in
-[Linux support](docs/linux-support.md). Use the same preview version on both
-devices. Version 0.0.6 upgrades existing local data; installing an older executable
-does not downgrade that data.
+With OS-only protection, launch opens local storage and reconnects saved contacts
+automatically. If an app passphrase is enabled, enter it to go online. Windows
+Credential Manager or Linux Secret Service is required in both modes.
 
-Choose **Unlock and connect** to open local storage and reconnect to a saved
-contact. If no contact is saved, the app is ready for a new invitation. Local
-storage uses Windows Credential Manager or Linux Secret Service to protect its
-encryption key.
+**Go offline** disconnects all contacts and closes local storage. Encrypted data
+stays on the device. **Keep running when the window closes** is enabled initially;
+closing the window keeps connections running in the tray. Choose **Quit** from
+the tray to exit. A second launch shows the existing window. Start at login is
+opt-in under **Settings → App behavior**.
 
 ## Pair with someone
 
-1. Launch and unlock WhatsUp on both devices.
-2. On one device, choose **Start a conversation**, then **Create invitation**.
-   Enter a trusted connection service's HTTPS relay-map URL and explicitly allow
-   encrypted relay fallback.
-3. Choose **Copy invitation** and send the link privately to the intended person.
-   Invitations expire after ten minutes and can be used once. Cancel ends the
-   invitation immediately.
-4. On the other device, choose **Paste invitation**, paste the link, enter the
-   same trusted service URL and give relay consent.
-5. Compare the full reciprocal fingerprints through a trusted channel and approve
-   on both devices. A display name is a label; the fingerprint identifies the
-   device's key.
-6. After both approvals and completed setup, the apps start connecting
-   automatically.
+1. Open WhatsUp on both devices and go online.
+2. Choose **Start a conversation**, then **Create invitation**. Choose a trusted
+   HTTPS relay-map URL and separately allow encrypted relay fallback.
+3. **Use Tailcat public relay** fills an empty field with
+   `https://tailcat.dev/derpmap.json`; it does not grant consent or fetch the map.
+   The public service is best effort and rate limited, with no WhatsUp uptime
+   guarantee. A compatible service you trust can be used instead.
+4. Copy the invitation and send it privately to the intended person. It expires
+   after ten minutes and can be used once. Cancel invalidates it immediately.
+5. The other person pastes the invitation, reviews the included service host and
+   explicitly allows it before WhatsUp contacts that service.
+6. Compare the full reciprocal fingerprints, shown in groups of four characters,
+   through a trusted channel. Approve on both devices. Names are labels, not
+   identity verification. Completed setup connects automatically.
 
-The relay field starts empty and consent starts unchecked. The invitation page
-lists Tailcat's public relay map with a **Copy relay URL** button:
+Saved identities are checked on every connection. Ordinary restarts do not need
+another invitation. A changed identity stops reconnection and preserves the pin.
+An authenticated incompatible old peer gets an update notice. Current and
+previous messaging protocols can exchange text; some newer operations require
+both devices to use the current protocol. Prefer the same preview on both.
 
-    https://tailcat.dev/derpmap.json
+## Messages, history and files
 
-Copying it does not fill the field, grant consent or contact the service. You can
-use that public service or a compatible service you trust. The public service is
-best effort and rate limited; WhatsUp does not guarantee its availability.
+**Queued** means saved encrypted on your device. **Delivered** means the
+receiving app durably saved and acknowledged the message, not that it was read.
+Messages retry after the other app reconnects. Stable IDs prevent duplicates.
+There is no lifetime message-count cap. The default per-contact message quota is
+1 GiB of logical record storage; a full state is shown when it is reached. This
+is not an exact cap on database, journal or filesystem space.
 
-Automatic mode prefers a direct connection and permits encrypted relay fallback.
-The selected service can observe connection metadata, including IP addresses and
-availability. Strict direct-only mode and a live Direct/Relayed indicator are
-not available in this preview.
+Select a contact to view its conversation. Local message deletion removes the
+visible message. **Clear history** keeps the contact, clears local history and
+cancels unfinished attachments; already queued text continues until acknowledged.
+Neither action deletes another person's copies or guarantees physical erasure.
 
-Fresh connection setup also needs the selected relay service for rendezvous,
-even when messages subsequently use a direct path. Relay availability matters
-for reconnection as well as initial pairing. An established direct connection
-does not need the relay to forward each message.
+Use the Go file picker, file drop or **Paste image** to prepare an attachment,
+then explicitly send it. The receiver chooses **Accept** or **Decline**. A contact
+may separately enable automatic acceptance of images up to 25 MB. Files are
+limited to 2 GiB each and logical attachment storage to 4 GiB per contact.
+Transfers can be paused/resumed or cancelled. Completed files remain encrypted
+inside WhatsUp until **Save…** writes a copy to a destination you choose.
+**Show in folder** reveals a saved copy; the app never opens arbitrary files.
 
-## Messages and reconnection
+PNG, JPEG, WebP and static GIF previews use bounded Go decoding and sanitized
+thumbnails. Image sends re-encode by default and strip metadata. **Send as file**
+preserves supported originals. MP4/WebM playback starts only on click; Linux
+playback depends on installed GStreamer codecs. Other file types are save-only.
+No HTML, SVG or active Markdown preview is provided. The attachment panel can be
+collapsed without losing transfer state or saved items.
 
-Send plain text in either direction. **Queued** means a message is stored
-encrypted on the sending device. **Delivered** means the authenticated receiving
-app has saved it and acknowledged receipt.
+## Settings and privacy
 
-Both apps must be running and connected to exchange messages. The relay is not
-an offline mailbox. If a contact is offline, outgoing messages remain in the
-local encrypted queue and retry after reconnection.
+Settings has Profile, Contact, Appearance, App behavior, Security & recovery,
+and Privacy & diagnostics pages. Shared display names start off; private contact
+names stay local. Display names never replace fingerprint verification. Light,
+dark and system themes and several accent colors are available.
 
-This preview stores at most 256 messages and 256 KiB of message text per
-conversation. Saved history is not automatically deleted to make room. At the
-limit, new messages cannot be saved; the app explains the capacity problem and
-keeps undelivered text queued rather than marking it delivered.
+Notifications start on and say only **New message**. Contact names and message
+previews are separate opt-ins. Enabling them exposes that content to the desktop
+notification system and its history. Turning them off does not erase notices
+already retained by the OS. Appearance is stored in the private WebView;
+behavior preferences, names and conversation data are encrypted locally.
 
-The saved device identities are checked automatically on every connection.
-Ordinary disconnects, restarts and reconnections do not require another
-invitation or manual fingerprint approval. An identity mismatch stops
-reconnection and preserves the saved key.
+In Security & recovery, optionally require an app passphrase in addition to the
+OS credential. Keep it safe. Recovery export uses a separate recovery passphrase
+and includes identity, saved contacts, history and attachment data. Import is an
+explicit replacement operation. Losing required secrets can make data
+unrecoverable. Exports and files saved outside WhatsUp are your responsibility.
 
-When WhatsUp can authenticate a saved contact running the previous incompatible
-messaging protocol, it stops automatic retries and asks for compatible app
-builds. Update both apps, then choose **Connect**. Other authentication failures
-show a notice to check compatible builds and device clocks while retries continue.
+**Forget contact…** deletes that contact's local credentials, names, history and
+queue while preserving your identity and other contacts. When the peer is online,
+an authenticated removal notice stops its retries; it keeps its own history.
+A relay-service change requires approval on both devices and preserves identity
+pins. A peer cannot silently change providers during reconnection.
 
-## Names and settings
+Automatic connections prefer a direct path and permit consented encrypted relay
+fallback. The live indicator shows **Direct**, **Relayed** or **Unknown**; stale
+samples become Unknown. Setup and rediscovery still depend on the selected relay
+service. Transfers over 100 MB need additional relay-bandwidth approval when a
+fresh direct sample is unavailable. This is a bandwidth precaution, not a strict
+packet-level direct-only guarantee. Strict direct-only remains unavailable.
 
-Settings opens a workspace with **Profile**, **Contact**, **Appearance**, and
-**Privacy & diagnostics** pages. **Back to chats** returns without disconnecting.
-
-In **Profile**, save a display name and enable **Share my display name** if you
-want your approved contact to receive it. Sharing starts off. The name travels
-through the authenticated connection after pairing approval; it is not included
-in the invitation link. Saved changes are sent while connected. Changing profile
-settings while offline does not connect the app.
-
-Clearing a shared name or disabling sharing clears the received shared label
-when the peer is connected. It does not erase their private nickname or copies
-outside WhatsUp.
-
-In **Contact**, assign a private name to the saved contact. This name stays on
-your device. Chat displays your private contact name first, then their shared
-display name, then the generic contact label. Changing a name does not change
-the identity fingerprint.
-
-Appearance supports dark, light and system themes, with teal, blue and rose
-accents.
-
-## Disconnect or forget a contact
-
-**Disconnect and lock** stops networking, closes local storage and clears the
-displayed conversation and decrypted names. The saved contact, history and queued
-messages remain encrypted for the next unlock.
-
-Unlock uses your operating system's credential store. There is currently no
-separate WhatsUp password, so someone using your unlocked desktop session can
-also unlock WhatsUp. Lock your operating system session when leaving the device.
-
-**Forget contact…** opens a confirmation to delete that contact's local
-credentials, saved messages, queued messages and contact names. Your own profile,
-device identity, fingerprint and appearance preferences remain. You can then
-create or paste a fresh invitation without restarting.
-
-Forget affects only this device. It does not delete the other person's copies or
-guarantee physical erasure. To reuse another device with a different pairing,
-remove its old contact there too. A new pairing uses fresh contact keys.
+WhatsUp has no application analytics, automatic diagnostic upload or remote crash
+reporting. Windows uses the system WebView2 with a private profile separate from
+Edge. Diagnostic data follows Windows privacy settings; required vendor
+WebView2 diagnostics may still occur. Linux uses WebKitGTK and private data/cache
+paths. Read the [privacy guide](docs/privacy.md) for OS artifacts and boundaries.
 
 ## Current limits
 
-- One saved conversation with two approved device identities.
-- Plain text only. Files, images, videos and profile pictures are not available.
-- No group chat, conversation search, backup/restore interface or recognition
-  record surviving full Forget.
-- No tray/background mode, notifications or startup preferences. Closing the last
-  window quits the app.
-- No strict direct-only mode, live path indicator, signed installer or automatic
-  update.
+There is no group chat, offline mailbox, conversation search, profile-picture
+sharing or public contact directory. Backward protocol support is limited; an old
+executable may also be unable to read upgraded local data. Native video playback,
+all desktop environments and all network conditions are not universally verified.
+There is no signed public distribution or in-app updater.
 
-## Privacy and security
-
-WhatsUp has no application analytics or remote crash reporting. Local diagnostics
-are bounded and redacted, with no automatic upload. Names, messages and contact
-state are encrypted locally; appearance is the only preference stored in the
-WebView.
-
-Windows uses the system WebView2 runtime with a private profile separate from
-Edge. Optional vendor diagnostics follow Windows privacy settings, and required
-WebView2 diagnostics may still occur. Linux uses the system WebKitGTK runtime and
-private application data/cache directories.
-
-Read the [privacy guide](docs/privacy.md), [security information](SECURITY.md),
-[Linux support](docs/linux-support.md), [version guide](docs/versioning.md), and
-[third-party notices](THIRD_PARTY_NOTICES.md) for details.
+See [Linux support](docs/linux-support.md), [versioning](docs/versioning.md),
+[security information](SECURITY.md) and [third-party notices](THIRD_PARTY_NOTICES.md).

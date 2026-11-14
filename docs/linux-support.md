@@ -36,8 +36,9 @@ desktop shortcut and a GNOME dock entry. Other dock entries are preserved. Other
 desktop environments can use the standard application-menu entry.
 
 Launch **WhatsUp (Development)** from the menu or installed shortcut. This preview
-label identifies the unsigned preview build. Closing the last window exits the
-app; no terminal needs to remain open.
+label identifies the unsigned preview build. Closing the window keeps the app in
+the tray by default. Choose Quit from its tray menu to exit; no terminal needs to
+remain open. Start at login is optional under Settings → App behavior.
 
 No universal Linux package, signed DEB/RPM or Flatpak release is available yet.
 

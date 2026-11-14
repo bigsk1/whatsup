@@ -1,92 +1,115 @@
 # Security information
 
-WhatsUp is preview software and has not undergone an independent security audit.
-It is not yet a supported, signed public release. Do not rely on the preview for
-sensitive communication.
+WhatsUp 0.0.11 is unsigned preview software, not a supported public release.
+It has not undergone an independent security audit or certification. Do not
+rely on the preview for sensitive communication.
 
-## Identity and pairing
+## Identity, pairing and connections
 
-Each device has its own Ed25519 identity. Invitations expire after ten minutes,
-accept one candidate and require approval on both devices. Compare the reciprocal
-fingerprints through a trusted channel before approving. A name or invitation
-alone does not verify the person behind a device.
+Each device has an Ed25519 identity. A conversation has exactly two approved
+identities; up to 32 separate contacts can be saved. Invitations expire after
+ten minutes, admit one candidate atomically and require both approvals. Compare
+the full reciprocal fingerprints through a trusted channel. Names and avatars
+do not verify identity. Pending pairing has no access to existing history.
+Invitation credentials are retired after setup. Saved contacts have distinct
+transport credentials and random WireGuard pre-shared keys, always enabled.
 
-A pending pairing cannot read an existing conversation. After approval, the
-invitation connection and its credentials are retired. The saved contact uses
-separate credentials, including a random per-contact WireGuard pre-shared key.
+Connections use fresh mutually authenticated TLS 1.3 against the saved identity
+and exact contact/policy association, inside the encrypted Tailcat transport.
+Changed identities stop reconnection. Reconnect requires no repeated manual
+fingerprint approval. Current and previous messaging protocols exchange text;
+older incompatible authenticated peers get an update notice. This is not an
+unlimited compatibility promise.
 
-Each ongoing connection uses fresh TLS 1.3 mutual authentication against the
-saved device identities and contact association. Ordinary reconnection does not
-ask for another manual approval. A changed identity stops reconnection; WhatsUp
-does not silently replace the saved key.
+Automatic mode prefers direct connectivity and permits explicitly accepted
+encrypted relay fallback. A relay sees IP addresses and availability and may
+carry encrypted traffic. Setup and rediscovery require the selected service.
+The path display is sampled and is not packet-boundary enforcement. Large-file
+relay-bandwidth consent is a precaution, not strict direct-only protection.
+Strict direct-only is unavailable. WhatsUp does not promise anonymity.
 
-Display names and private contact names are labels associated with the approved
-identity. They do not grant trust or change a key pin. Shared names arrive only
-through the authenticated connection after pairing approval. Private contact
-names are never transmitted.
+The approved service is saved with each contact. Relay migration requires
+explicit authenticated consent on both sides, retaining identity pins. An
+operator may update its map; this is not permanent operator certificate pinning.
 
-## Messages and local storage
+## Local encryption and access
 
-Messages are saved to an encrypted local queue before sending. A message is
-marked delivered only after the authenticated receiving app has saved it and
-returned an acknowledgement. Stable message identifiers prevent duplicate
-display after retries.
+A random master key is wrapped using the OS-protected credential. An optional
+app passphrase adds a required wrapping layer, using Argon2id with RFC 9106's
+second recommended parameter set: t=3, 64 MiB, p=4. Purpose keys use HKDF-SHA256.
+There is no passphrase-only fallback for a missing OS credential provider.
 
-Local identity, contact credentials, names, history and queued messages use
-authenticated AES-256-GCM encryption. The random local encryption key is
-protected by Windows Credential Manager or Linux Secret Service. Missing
-credentials, corrupt state and uncertain saves fail closed; there is no plaintext
-fallback or automatic replacement key for an existing vault.
+The small authenticated encrypted envelope holds identity, contact credentials
+and key slots. SQLite history and outbox records use XChaCha20-Poly1305 with
+random 192-bit nonces and record/context binding. Readable database metadata is
+limited to random IDs, per-contact sequence numbers, ciphertext lengths and
+row counts. Retry scheduling stays in memory. Attachment objects and recovery
+archives use Tink streaming AEAD. Temporary attachment files are encrypted too.
 
-**Disconnect and lock** stops connections before closing storage. It preserves
-encrypted saved state and clears displayed messages, names and drafts.
-It does not require a separate application password to unlock again. It is not
-an access-control barrier against someone using the same unlocked OS session.
-**Forget contact and delete conversation** removes the selected contact's local
-credentials, history, outbox and names after stopping its work. It preserves the
-device identity and local profile.
+Messages are queued durably before sending. Receive and duplicate-check state
+commit before ACK; delivery and outbox removal commit together. Stable IDs
+prevent duplicate delivery after retries. Message and attachment quotas are
+logical limits; they do not guarantee enough free disk space or bound all OS
+storage overhead. Missing credentials, corrupt state and uncertain writes fail
+closed without plaintext fallback or replacement keys for existing data.
 
-Forget is logical local deletion. It does not delete another person's copies or
-guarantee erasure from storage media, backups or operating-system memory.
+In OS-only mode launch auto-unlocks and reconnects contacts. Anyone using the
+unlocked OS account can access that credential. Requiring an app passphrase adds
+an application access barrier. **Go offline** closes connections and local
+storage; it does not erase keys from OS memory or substitute for locking the OS.
+A wrong current passphrase is a validation error and does not disconnect a
+healthy app. Storage corruption and uncertain protection writes still close it.
 
-## Network and runtime boundaries
+Passphrase changes cover recognized migration and recovery root copies and owned
+crash temporaries. Authenticated reopen repairs copies missed by older builds.
+At most three migration root backups, plus a required live migration reference,
+are retained after protected reconciliation. Full recovery rollback trees and
+unknown recovery material are preserved for safety and can consume extra space.
+An app passphrase cannot revoke an earlier external OS-only backup or data
+already obtained by someone else. Master keys are not rotated on mode changes.
 
-Automatic mode prefers a direct connection and permits explicitly accepted
-encrypted relay fallback. Strict direct-only mode is unavailable. A relay can
-observe IP addresses and availability and can carry encrypted packets. WhatsUp
-does not promise anonymity.
+Recovery export/import uses a separate recovery passphrase and authenticated
+archive. Import may replace local data and restore the same identity/contact
+credentials. Lost OS credentials or secrets can make data unrecoverable without
+a usable export. No backup forward-secrecy guarantee is made.
 
-The selected connection service is saved with the contact. A peer cannot replace
-it during reconnection. The service operator may update its own relay map; this
-is not permanent certificate or public-key pinning of that operator.
+## Files and deletion
 
-The app exposes no shell, SSH service, port forwarding, LAN proxy or public
-content server. Its desktop renderer is not an operating-system sandbox for the
-Go application. A compromised local account, operating system or approved peer
-can access information available to it.
+Transfers require receiver approval, bounded offers/chunks, encrypted temporary
+storage and whole-file SHA-256 verification before completion. A peer cannot
+choose a local save path. The Go save dialog chooses the export destination.
+Files are never auto-opened. Preview handlers serve opaque IDs with forced MIME,
+nosniff and restrictive CSP; HTML, SVG and active Markdown are not previewed.
+Images are decoded with dimension/pixel limits and re-encoded for thumbnails.
+Normal image sends strip metadata; send-as-file preserves original bytes.
 
-WhatsUp has no application analytics, automatic diagnostic upload or remote crash
-reporting. Windows WebView2 has its own documented vendor diagnostics behavior.
-See the [privacy guide](docs/privacy.md).
+Clear history cancels unfinished attachments while keeping the contact; queued
+text retains its delivery obligation. Forget removes one contact's local state
+and sends an authenticated removal notice when connected. Neither action erases
+a peer's copies, earlier exports, notification history, physical media or memory.
 
-## Current limitations
+## Desktop and disclosure boundaries
 
-Files, images, videos, profile pictures, backup/restore and automatic updates are
-not available. Signed installers and release verification are incomplete. A
-version number or successful connection does not certify security.
+The Go application runs with the desktop account's privileges. A private WebView
+is not an OS sandbox for that process. No shell/SSH service, command execution,
+generic filesystem bridge, LAN proxy, port forwarding or public content server
+is exposed. A compromised OS/account or approved peer can access its own data.
 
-Use compatible versions on both devices. Newer versions may upgrade local data,
-and an older executable cannot necessarily read that data. Replacing the
-executable alone is not a storage downgrade.
+No application analytics, automatic diagnostic upload or remote crash reporting
+is enabled. Local diagnostics are bounded and redact content and endpoints.
+Notification names/previews are opt-in and may persist in OS notification history.
+WebView2 has vendor diagnostics outside this policy. See [privacy](docs/privacy.md)
+for data paths, registry/autostart artifacts and notification behavior.
 
-See [third-party notices](THIRD_PARTY_NOTICES.md) for included software notices.
+Signed installers, signed update verification, SBOM/distribution checks and a
+private reporting route are incomplete. There is no automatic updater. Version
+numbers, passing tests and successful connections do not certify security.
+Older executables cannot necessarily read upgraded storage.
 
 ## Reporting a security issue
 
-There is no published private security-reporting address yet. A private reporting
-route and supported-version policy must be documented before public distribution.
-
-Do not include live invitations, private keys, fingerprints, message history,
-vault files, credentials or personal endpoints in a public report. A useful
-report can describe the app version, platform, affected action and a redacted
-reproduction without exposing private data.
+No private security-reporting address is published yet. A reporting route and
+supported-version policy are required before public distribution. Do not post
+live invitations, private keys, fingerprints, history, vaults, credentials or
+personal endpoints publicly. Describe the version, platform, affected action and
+a redacted reproduction. See [third-party notices](THIRD_PARTY_NOTICES.md).

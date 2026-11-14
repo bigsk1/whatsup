@@ -17,7 +17,7 @@ import (
 func storageAttachmentOffer(n byte, body []byte) transfer.Offer {
 	return transfer.Offer{ID: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{n}, 16)), Name: "synthetic-test-file.pdf", MediaType: "application/pdf", Size: uint64(len(body)), SHA256: sha256.Sum256(body)}
 }
-func TestAttachmentHistoryClearRetainsPendingAndRevokesPreview(t *testing.T) {
+func TestAttachmentHistoryClearWithdrawsPendingAndRevokesPreview(t *testing.T) {
 	_, app := openApplicationTest(t, privateDirectory(t), &memoryKeys{})
 	record, _, _, _, chat, _ := prepareForgetStorage(t, app, 181)
 	other, _, _, _, _, _ := prepareForgetStorage(t, app, 182)
@@ -55,17 +55,12 @@ func TestAttachmentHistoryClearRetainsPendingAndRevokesPreview(t *testing.T) {
 	if _, err := scope.Open(context.Background(), o.ID); err == nil {
 		t.Fatal("hidden queued source exposed through public Open")
 	}
-	transportReader, err := scope.OpenOutgoing(context.Background(), o.ID)
-	if err != nil {
-		t.Fatal("clear lost pending authenticated transport source", err)
+	if reader, err := scope.OpenOutgoing(context.Background(), o.ID); err == nil {
+		reader.Close()
+		t.Fatal("clear retained queued attachment transport authority")
 	}
-	actual, err := io.ReadAll(transportReader)
-	transportReader.Close()
-	if err != nil || !bytes.Equal(actual, body) {
-		t.Fatal("pending bytes changed")
-	}
-	if err := scope.MarkDelivered(o.ID); err != nil {
-		t.Fatal(err)
+	if err := scope.MarkDelivered(o.ID); err == nil {
+		t.Fatal("late completion revived a withdrawn attachment")
 	}
 	if rows, _, _, err := scope.History(0, 32); err != nil || len(rows) != 0 {
 		t.Fatal("hidden delivered card returned")

@@ -56,10 +56,11 @@ func connectRegistryPair(t *testing.T, a, b *registryPeer, id string) {
 // the shared packet scheduler. net.Pipe deliberately supplies no DERP/direct
 // path evidence and does not stand in for native two-machine attachment QA.
 func TestAttachmentEncryptedStoreTLSAndChatContinueWhileFileReadWaits(t *testing.T) {
-	t.Run("sender-history-cleared", func(t *testing.T) { attachmentStoreTLS(t, false) })
-	t.Run("both-histories-cleared", func(t *testing.T) { attachmentStoreTLS(t, true) })
+	for _, side := range []string{"none", "sender", "receiver", "both"} {
+		t.Run(side, func(t *testing.T) { attachmentStoreTLS(t, side) })
+	}
 }
-func attachmentStoreTLS(t *testing.T, clearReceiver bool) {
+func attachmentStoreTLS(t *testing.T, clearSide string) {
 	a, b := newRegistryPeer(t), newRegistryPeer(t)
 	id := seedRegistryAssociation(t, a, b)
 	network := &registryNetwork{}
@@ -139,40 +140,50 @@ func attachmentStoreTLS(t *testing.T, clearReceiver bool) {
 		return len(s.Messages) == 1 && s.Messages[0].Text == "synthetic text while attachment read waits"
 	})
 	waitRegistry(t, a, id, func(s Snapshot) bool { return len(s.Messages) == 1 && s.Messages[0].Delivered })
-	if _, err := a.registry.ClearHistory(id); err != nil {
-		t.Fatal(err)
+	if clearSide == "sender" || clearSide == "both" {
+		done := make(chan error, 1)
+		go func() { _, err := a.registry.ClearHistory(id); done <- err }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("clear did not interrupt the gated outgoing source")
+		}
+		hidden, err := source.Get(offer.ID)
+		if err != nil || !hidden.Hidden || hidden.State != transfer.Declined {
+			t.Fatal("history clear retained queued transfer", err)
+		}
 	}
-	hidden, err := source.Get(offer.ID)
-	if err != nil || !hidden.Hidden || hidden.State != transfer.Queued {
-		t.Fatal("history clear did not retain hidden queued transfer")
-	}
-	if reader, err := source.Open(context.Background(), offer.ID); err == nil {
-		_ = reader.Close()
-		t.Fatal("history clear left preview/save read authority")
-	}
-	if clearReceiver {
+	if clearSide == "receiver" || clearSide == "both" {
 		if _, err := b.registry.ClearHistory(id); err != nil {
 			t.Fatal(err)
 		}
 		hidden, err := received.Get(offer.ID)
-		if err != nil || !hidden.Hidden || hidden.State != transfer.Accepted {
-			t.Fatal("receiver clear discarded pending approved transfer")
+		if err != nil || !hidden.Hidden || hidden.State != transfer.Declined {
+			t.Fatal("receiver clear retained accepted transfer", err)
 		}
 	}
 	close(release)
+	wantState := transfer.Complete
+	if clearSide != "none" {
+		wantState = transfer.Declined
+	}
 	deadline = time.Now().Add(8 * time.Second)
 	for {
 		record, err := source.Get(offer.ID)
-		if err == nil && record.State == transfer.Complete {
+		other, otherErr := received.Get(offer.ID)
+		if err == nil && otherErr == nil && record.State == wantState && other.State == wantState {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("encrypted transfer did not finish")
+			t.Fatalf("transfer did not become %s on both sides: %s/%s", wantState, record.State, other.State)
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
 	reader, err := received.Open(context.Background(), offer.ID)
-	if clearReceiver {
+	if clearSide != "none" {
 		if err == nil {
 			_ = reader.Close()
 			t.Fatal("hidden received file became user readable")
@@ -181,12 +192,8 @@ func attachmentStoreTLS(t *testing.T, clearReceiver bool) {
 			t.Fatal(err)
 		}
 		retained, err := received.Get(offer.ID)
-		if err != nil || !retained.Hidden || retained.State != transfer.Complete {
-			t.Fatal("duplicate offer restored hidden history")
-		}
-		history, _, _, err := received.History(0, 32)
-		if err != nil || len(history) != 0 {
-			t.Fatal("completed hidden transfer returned in history")
+		if err != nil || retained.State != transfer.Declined {
+			t.Fatal("duplicate offer revived cancelled transfer")
 		}
 	} else if err != nil {
 		t.Fatal(err)
@@ -201,7 +208,7 @@ func attachmentStoreTLS(t *testing.T, clearReceiver bool) {
 		t.Fatal(err)
 	}
 	expected := 2
-	if clearReceiver {
+	if clearSide == "receiver" || clearSide == "both" {
 		expected = 1
 	}
 	waitRegistry(t, b, id, func(s Snapshot) bool { return len(s.Messages) == expected })

@@ -5,10 +5,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 
 	"whatsup/internal/keymaterial"
 )
@@ -352,35 +354,76 @@ func rootUsesCurrentProtection(v *Vault, root rootEnvelope) bool {
 	return err == nil && bytes.Equal(master, v.master)
 }
 
-// Only fixed app-owned root copies are considered. Protected historical copies
-// remain protected; an OS-only copy is rewritten before publishing protection.
-func protectManagedCopiesLocked(v *Vault, currentSecrets ...[]byte) error {
-	entries, err := os.ReadDir(v.directory)
+// Rewrapping changes protection, not snapshot age. Retention must continue to
+// order historical snapshots by their original time after the atomic replace.
+func replaceManagedRoot(path string, sealed []byte) error {
+	info, err := os.Lstat(path)
 	if err != nil {
 		return err
 	}
+	if err := atomicCipherReplace(path, sealed); err != nil {
+		return err
+	}
+	return os.Chtimes(path, info.ModTime(), info.ModTime())
+}
+
+// Recovery moves roots and migration backups one level below the profile. Keep
+// that same fixed boundary for protection, crash-temp cleanup and retention;
+// unrelated files, nested trees, databases and attachment objects are not roots.
+func managedRootPaths(v *Vault) ([]string, error) {
+	entries, err := os.ReadDir(v.directory)
+	if err != nil {
+		return nil, err
+	}
+	containers := []string{v.directory}
+	for _, entry := range entries {
+		if recoveryRollbackName.MatchString(entry.Name()) || recoveryStageName.MatchString(entry.Name()) {
+			path := filepath.Join(v.directory, entry.Name())
+			if privateRecoveryDirectory(path) != nil {
+				return nil, ErrUnsafePath
+			}
+			containers = append(containers, path)
+		}
+	}
 	var paths []string
-	for _, e := range entries {
-		if ownedRootTemporaryName.MatchString(e.Name()) {
-			path := filepath.Join(v.directory, e.Name())
+	for _, directory := range containers {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			return nil, err
+		}
+		removed := false
+		for _, entry := range entries {
+			temporary := ownedRootTemporaryName.MatchString(entry.Name())
+			if !temporary && !migrationBackupName.MatchString(entry.Name()) && !(directory != v.directory && entry.Name() == "state.vault") {
+				continue
+			}
+			path := filepath.Join(directory, entry.Name())
 			info, err := os.Lstat(path)
 			if err != nil || !info.Mode().IsRegular() || !recoveryOwned(info) || info.Size() < 0 || info.Size() > maxRootFileBytes || regular(path) != nil {
-				return ErrUnsafePath
+				return nil, ErrUnsafePath
 			}
-			if os.Remove(path) != nil {
-				return ErrState
+			if temporary {
+				if os.Remove(path) != nil {
+					return nil, ErrState
+				}
+				removed = true
+			} else {
+				paths = append(paths, path)
 			}
-			continue
 		}
-		if migrationBackupName.MatchString(e.Name()) {
-			paths = append(paths, filepath.Join(v.directory, e.Name()))
+		if removed && syncDirectory(directory) != nil {
+			return nil, ErrState
 		}
-		if recoveryRollbackName.MatchString(e.Name()) || recoveryStageName.MatchString(e.Name()) {
-			if privateRecoveryDirectory(filepath.Join(v.directory, e.Name())) != nil {
-				return ErrUnsafePath
-			}
-			paths = append(paths, filepath.Join(v.directory, e.Name(), "state.vault"))
-		}
+	}
+	return paths, nil
+}
+
+// Protected historical copies remain protected; every OS-only managed copy is
+// rewritten before publishing protection, including backups moved by recovery.
+func protectManagedCopiesLocked(v *Vault, currentSecrets ...[]byte) error {
+	paths, err := managedRootPaths(v)
+	if err != nil {
+		return err
 	}
 	for _, path := range paths {
 		data, err := readCipherFile(path, maxRootFileBytes)
@@ -404,7 +447,7 @@ func protectManagedCopiesLocked(v *Vault, currentSecrets ...[]byte) error {
 					return err
 				}
 				if same {
-					if err := atomicCipherReplace(path, sealed); err != nil {
+					if err := replaceManagedRoot(path, sealed); err != nil {
 						return err
 					}
 				}
@@ -418,7 +461,7 @@ func protectManagedCopiesLocked(v *Vault, currentSecrets ...[]byte) error {
 						if err != nil {
 							return err
 						}
-						if err := atomicCipherReplace(path, sealed); err != nil {
+						if err := replaceManagedRoot(path, sealed); err != nil {
 							return err
 						}
 					} else {
@@ -453,8 +496,63 @@ func protectManagedCopiesLocked(v *Vault, currentSecrets ...[]byte) error {
 		if err != nil {
 			return err
 		}
-		if err := atomicCipherReplace(path, sealed); err != nil {
+		if err := replaceManagedRoot(path, sealed); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+const maxRetainedMigrationBackups = 3
+
+// A completed authenticated open may retire excess migration root snapshots.
+// The live migration reference and every active recovery journal are preserved.
+// Full recovery rollback trees are retained: absence of a journal does not prove
+// their databases/objects or lost-credential originals are disposable.
+func (a *ApplicationState) finishManagedCopiesLocked() error {
+	if a.vault.protectionMode != "os-plus-passphrase" {
+		return nil
+	}
+	if err := protectManagedCopiesLocked(a.vault); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(filepath.Join(a.vault.directory, recoveryJournalFilename)); !os.IsNotExist(err) {
+		return err
+	}
+	paths, err := managedRootPaths(a.vault)
+	if err != nil {
+		return err
+	}
+	type backup struct {
+		path string
+		info os.FileInfo
+	}
+	var backups []backup
+	pinned := filepath.Join(a.vault.directory, a.state.MigrationBackup)
+	for _, path := range paths {
+		if !migrationBackupName.MatchString(filepath.Base(path)) || path == pinned {
+			continue
+		}
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || !recoveryOwned(info) || regular(path) != nil {
+			return ErrUnsafePath
+		}
+		backups = append(backups, backup{path, info})
+	}
+	sort.Slice(backups, func(i, j int) bool {
+		if backups[i].info.ModTime().Equal(backups[j].info.ModTime()) {
+			return backups[i].path < backups[j].path
+		}
+		return backups[i].info.ModTime().After(backups[j].info.ModTime())
+	})
+	for index := maxRetainedMigrationBackups; index < len(backups); index++ {
+		item := backups[index]
+		info, err := os.Lstat(item.path)
+		if err != nil || !os.SameFile(info, item.info) || regular(item.path) != nil {
+			return ErrUnsafePath
+		}
+		if os.Remove(item.path) != nil || syncDirectory(filepath.Dir(item.path)) != nil {
+			return ErrState
 		}
 	}
 	return nil
@@ -518,8 +616,14 @@ func (a *ApplicationState) SetPassphrase(ctx context.Context, current, next []by
 		clear(plain)
 		same := bytes.Equal(scratch.master, v.master)
 		clearScratch(scratch)
-		if err != nil || !same {
+		if errors.Is(err, ErrPassphrase) || errors.Is(err, ErrPassphraseRequired) {
 			return ErrPassphrase
+		}
+		if err != nil {
+			return err
+		}
+		if !same {
+			return ErrCorrupt
 		}
 	}
 	mode := "os-only"
@@ -601,6 +705,9 @@ func (a *ApplicationState) SetPassphrase(ctx context.Context, current, next []by
 	if err != nil || !same {
 		a.failed = true
 		return ErrState
+	}
+	if err := a.finishManagedCopiesLocked(); err != nil {
+		return err
 	}
 	finished = true
 	return nil

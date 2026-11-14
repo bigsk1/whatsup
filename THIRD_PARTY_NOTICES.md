@@ -26,7 +26,7 @@ The exact upstream module and its MIT notice are preserved during the build.
 
 ## Tink
 
-Attachment storage uses `github.com/tink-crypto/tink-go/v2` version 2.9.0,
+Attachment storage and encrypted recovery archives use `github.com/tink-crypto/tink-go/v2` version 2.9.0,
 distributed under the Apache License, Version 2.0. Its full license is retained
 at [third_party/licenses/tink-Apache-2.0.txt](third_party/licenses/tink-Apache-2.0.txt).
 Source: [Tink Go 2.9.0](https://github.com/tink-crypto/tink-go/tree/v2.9.0).
