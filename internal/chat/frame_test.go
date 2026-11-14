@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -99,8 +100,8 @@ func TestFrameParserRejectsAmbiguousOrActiveInputs(t *testing.T) {
 
 func TestPeerDisplayControlsRejectedBeforeEncodingAndDecoding(t *testing.T) {
 	for _, hidden := range []rune{
-		0x0085, 0x009b, 0x00ad, 0x034f, 0x061c, 0x115f, 0x1160,
-		0x17b4, 0x17b5, 0x180e, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f,
+		0x0085, 0x009b, 0x034f, 0x061c, 0x115f, 0x1160,
+		0x17b4, 0x17b5, 0x180e, 0x200b, 0x200e, 0x200f,
 		0x2028, 0x2029, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
 		0x2060, 0x2066, 0x2067, 0x2068, 0x2069, 0x3164, 0xfeff, 0xffa0,
 	} {
@@ -126,6 +127,108 @@ func TestPeerDisplayControlsRejectedBeforeEncodingAndDecoding(t *testing.T) {
 		}
 		if decoded, err := DecodeFrame(encoded); err != nil || decoded.Text != text {
 			t.Fatal("ordinary display text did not round trip")
+		}
+	}
+}
+
+func TestTextShapingAndEmojiRemainVerbatimAcrossWire(t *testing.T) {
+	for name, text := range map[string]string{
+		"family emoji":        "Family: 👨\u200d👩\u200d👧\u200d👦",
+		"heart on fire":       "Love ❤️\u200d🔥",
+		"rainbow flag":        "Flag 🏳️\u200d🌈",
+		"England flag":        "Flag 🏴\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f",
+		"Scotland flag":       "Flag 🏴\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f",
+		"Wales flag":          "Flag 🏴\U000e0067\U000e0062\U000e0077\U000e006c\U000e0073\U000e007f",
+		"bare black flag":     "Flag 🏴 without tags",
+		"Persian non-joiner":  "می\u200cروم",
+		"Indic joiner":        "क्\u200dष",
+		"Indic non-joiner":    "क्\u200cष",
+		"optional hyphen":     "copy co\u00adoperate from a webpage",
+		"variation selectors": "Text \u2764\ufe0e and emoji \u2764\ufe0f",
+	} {
+		t.Run(name, func(t *testing.T) {
+			frame := Frame{Version: ProtocolVersion, Type: MessageFrame, ID: syntheticID, Text: text}
+			var stream bytes.Buffer
+			if err := WriteFrame(&stream, frame); err != nil {
+				t.Fatalf("legitimate Unicode text rejected: %v", err)
+			}
+			if received, err := ReadFrame(&stream); err != nil || received.Text != text {
+				t.Fatalf("Unicode text changed across the wire: %v", err)
+			}
+			// Exercise a peer's bytes independently of our encoder as well.
+			encoded, err := json.Marshal(frame)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if received, err := DecodeFrame(encoded); err != nil || received.Text != text {
+				t.Fatalf("legitimate peer Unicode text rejected or changed: %v", err)
+			}
+		})
+	}
+}
+
+func TestEmojiTagsCannotCarryArbitraryOrMalformedHiddenText(t *testing.T) {
+	tags := func(ascii string) string {
+		var encoded strings.Builder
+		for _, character := range ascii {
+			encoded.WriteRune('\U000e0000' + character)
+		}
+		return encoded.String()
+	}
+	const blackFlag, cancel = "\U0001f3f4", "\U000e007f"
+	england := blackFlag + tags("gbeng") + cancel
+	bad := map[string]string{
+		"hidden ASCII without flag": tags("synthetic text") + cancel,
+		"hidden ASCII after flag":   blackFlag + tags("synthetic text") + cancel,
+		"no flag base":              tags("gbeng") + cancel,
+		"wrong flag base":           "😀" + tags("gbeng") + cancel,
+		"no cancel tag":             blackFlag + tags("gbeng"),
+		"empty payload":             blackFlag + cancel,
+		"partial payload":           blackFlag + tags("gbe") + cancel,
+		"unknown subdivision":       blackFlag + tags("gbabc") + cancel,
+		"uppercase payload":         blackFlag + tags("GBENG") + cancel,
+		"numeric payload":           blackFlag + tags("12345") + cancel,
+		"interrupted payload":       blackFlag + tags("gb") + "x" + tags("eng") + cancel,
+		"joiner in payload":         blackFlag + tags("gb") + "\u200d" + tags("eng") + cancel,
+		"nested flag":               blackFlag + tags("gb") + blackFlag + tags("eng") + cancel,
+		"extra variation selector":  blackFlag + "\ufe0f" + tags("gbeng") + cancel,
+		"extra payload":             blackFlag + tags("gbengx") + cancel,
+		"trailing hidden payload":   england + tags("synthetic") + cancel,
+		"trailing cancel":           england + cancel,
+		"overlong payload":          blackFlag + tags(strings.Repeat("a", 1000)) + cancel,
+	}
+	// Every tag character, including CANCEL TAG, is invalid outside the exact
+	// complete sequences. Exercise peer bytes independently of local validation.
+	for character := '\U000e0020'; character <= '\U000e007f'; character++ {
+		bad[fmt.Sprintf("stray U+%X", character)] = "visible" + string(character) + "text"
+	}
+	for name, text := range bad {
+		t.Run(name, func(t *testing.T) {
+			frame := Frame{Version: ProtocolVersion, Type: MessageFrame, ID: syntheticID, Text: text}
+			if _, err := EncodeFrame(frame); !errors.Is(err, ErrText) {
+				t.Fatal("malformed or arbitrary hidden tag payload accepted locally")
+			}
+			wire, err := json.Marshal(frame)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := DecodeFrame(wire); err == nil {
+				t.Fatal("malformed or arbitrary hidden tag payload accepted from peer")
+			}
+		})
+	}
+	for _, text := range []string{
+		england + england,
+		"مرحبا " + england + " hello",
+		strings.Repeat("x", MaxTextBytes-len(england)) + england,
+	} {
+		frame := Frame{Version: ProtocolVersion, Type: MessageFrame, ID: syntheticID, Text: text}
+		wire, err := EncodeFrame(frame)
+		if err != nil {
+			t.Fatal("complete recognized flags rejected at message boundaries")
+		}
+		if got, err := DecodeFrame(wire); err != nil || got.Text != text {
+			t.Fatal("complete recognized flags changed across the wire")
 		}
 	}
 }

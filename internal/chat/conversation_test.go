@@ -318,6 +318,45 @@ func TestHistoryAndQueueAreBoundedWithoutEvictingDedup(t *testing.T) {
 	}
 }
 
+func TestFreshAuthenticatedSessionResetsPersistedRetryWithoutAcknowledgement(t *testing.T) {
+	store := &memoryStore{}
+	contact := testContact(t, 1, 2)
+	clock := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
+	options := Options{Now: func() time.Time { return clock }, Jitter: func(_, maximum time.Duration) (time.Duration, error) { return maximum, nil }}
+	conversation := openTest(t, store, contact, options)
+	queued, _ := conversation.Queue("synthetic offline retry")
+	for index := 0; index < 12; index++ {
+		if _, due, err := conversation.NextAttempt(contact.Peer()); err != nil || !due {
+			t.Fatal("failed to build persisted retry schedule")
+		}
+		if index < 11 {
+			clock = conversation.Outbox()[0].NextAttempt
+		}
+	}
+	if conversation.Outbox()[0].NextAttempt.Sub(clock) != RetryMax {
+		t.Fatal("fixture did not reach maximum offline backoff")
+	}
+	before := bytes.Clone(store.data)
+	if err := conversation.ResetRetries(testKey(t, 3)); err == nil || !bytes.Equal(before, store.data) {
+		t.Fatal("unapproved peer reset the outbox schedule")
+	}
+	if err := conversation.ResetRetries(contact.Peer()); err != nil {
+		t.Fatal(err)
+	}
+	conversation = openTest(t, store, contact, options)
+	frame, due, err := conversation.NextAttempt(contact.Peer())
+	if err != nil || !due || frame.ID != queued.ID || conversation.Messages()[0].Delivered || len(conversation.Outbox()) != 1 {
+		t.Fatal("fresh authenticated session waited for old backoff or lost queued text")
+	}
+	if _, due, err := conversation.NextAttempt(contact.Peer()); err != nil || due {
+		t.Fatal("session reset disabled bounded backoff within that session")
+	}
+	store.fail = true
+	if err := conversation.ResetRetries(contact.Peer()); !errors.Is(err, ErrStore) {
+		t.Fatal("retry reset hid persistence failure")
+	}
+}
+
 func TestStoredIdentityAndStructureAreValidated(t *testing.T) {
 	store := &memoryStore{}
 	contact := testContact(t, 1, 2)

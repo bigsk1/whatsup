@@ -18,6 +18,7 @@ import (
 
 	"whatsup/internal/identity"
 	"whatsup/internal/pairing"
+	"whatsup/internal/pairing/channel"
 	"whatsup/internal/storage"
 )
 
@@ -27,6 +28,49 @@ type memoryStore struct {
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
+}
+
+func TestJoinerUsesBoundedLocalDeadlineBeforeFingerprintAndApproval(t *testing.T) {
+	for _, offset := range []time.Duration{-14 * time.Minute, 4 * time.Minute} {
+		owner, _ := identity.Generate()
+		local, _ := identity.Generate()
+		manager, err := pairing.NewManager(owner.PublicKey(), pairing.Options{Now: func() time.Time { return time.Now().Add(offset) }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer manager.Close()
+		endpoint := tailcat.ConnInfo{ServerPublic: tailcat.NodePublic{NodePublic: key.NewNode().Public()}, ServerDiscoPublic: tailcat.DiscoPublic{DiscoPublic: key.NewDisco().Public()}, PresharedKey: tailcat.NewPresharedKey(), RegionID: 1}
+		invite, err := manager.Create(string(endpoint.Addr()), pairing.DefaultLifetime)
+		if err != nil {
+			t.Fatal(err)
+		}
+		flow, err := New(local, &memoryStore{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		left, right := net.Pipe()
+		defer right.Close()
+		started := time.Now()
+		a, err := flow.begin(context.Background(), left, invite, nil, channel.Joiner)
+		if err != nil {
+			t.Fatal("joiner used the remote wall-clock expiry before reservation")
+		}
+		if a.deadline.Before(started) || a.deadline.After(time.Now().Add(channel.MaxLifetime)) || !a.invite.ExpiresAt().Equal(invite.ExpiresAt()) {
+			t.Fatal("joiner lost exact invitation context or bounded local deadline")
+		}
+		a.peer = owner.PublicKey() // Model the authenticated reservation boundary.
+		if !flow.setState(a, "awaiting-approval") {
+			t.Fatal("joiner local clock suppressed a reserved fingerprint")
+		}
+		if _, err := flow.Approve(a.id, a.peer.Fingerprint()); err != nil {
+			t.Fatal("joiner local clock suppressed explicit reserved approval")
+		}
+		a.closeOwned()
+		flow.runs.Done() // This test owns begin without starting run.
+		if err := flow.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func (s *memoryStore) SavePendingContact(record storage.PendingRecord) error {

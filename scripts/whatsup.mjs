@@ -23,7 +23,7 @@ const flags = process.argv.slice(3);
 const toolDirectory = path.join(root, '.local/tools', `${process.platform}-${process.arch}`);
 // Supported by the reviewed Tailcat/Tailscale revision. Own redacted local
 // diagnostics are independent from these upstream collectors/uploaders.
-const privacyTags = 'ts_omit_logtail,ts_omit_netlog,ts_omit_clientmetrics,ts_omit_usermetrics,ts_omit_runtimemetrics,ts_omit_useproxy,ts_omit_portmapper,ts_omit_captiveportal';
+const privacyTags = 'ts_omit_logtail,ts_omit_netlog,ts_omit_clientmetrics,ts_omit_usermetrics,ts_omit_runtimemetrics,ts_omit_useproxy,ts_omit_portmapper,ts_omit_captiveportal,ts_omit_ssh';
 const commands = new Set([
   'doctor', 'tooling-test', 'setup', 'dev', 'test-app', 'test-credentials', 'native-check', 'wsl', 'build', 'build-review', 'check', 'update', 'package', 'verify-release',
   // Reviewed Wails Taskfiles delegate to these same cross-platform implementations.

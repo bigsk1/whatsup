@@ -93,6 +93,7 @@ type attempt struct {
 	invite       pairing.Invite
 	cancel       context.CancelFunc
 	ctx          context.Context
+	deadline     time.Time
 	done         chan struct{}
 	decisions    chan channel.Decision
 	id           string
@@ -231,7 +232,7 @@ func (c *Coordinator) begin(ctx context.Context, raw net.Conn, invite pairing.In
 		}
 		return nil, ErrUnavailable
 	}
-	if c == nil || c.coordinatorState == nil || c.local == nil || c.store == nil || ctx == nil || raw == nil || !invite.Endpoint().Valid() || invite.ChannelID() == [16]byte{} || !time.Now().Before(invite.ExpiresAt()) || (role == channel.Inviter && (manager == nil || !invite.Owner().Equal(c.local.PublicKey()))) || (role == channel.Joiner && invite.Owner().Equal(c.local.PublicKey())) {
+	if c == nil || c.coordinatorState == nil || c.local == nil || c.store == nil || ctx == nil || raw == nil || !invite.Endpoint().Valid() || invite.ChannelID() == [16]byte{} || (role == channel.Inviter && (!time.Now().Before(invite.ExpiresAt()) || manager == nil || !invite.Owner().Equal(c.local.PublicKey()))) || (role == channel.Joiner && invite.Owner().Equal(c.local.PublicKey())) {
 		return reject()
 	}
 	id, err := requestID()
@@ -243,9 +244,13 @@ func (c *Coordinator) begin(ctx context.Context, raw net.Conn, invite pairing.In
 		c.mu.Unlock()
 		return reject()
 	}
-	work, cancel := context.WithDeadline(ctx, invite.ExpiresAt())
+	deadline := invite.ExpiresAt()
+	if role == channel.Joiner {
+		deadline = time.Now().Add(channel.MaxLifetime)
+	}
+	work, cancel := context.WithDeadline(ctx, deadline)
 	a := &attempt{raw: raw, manager: manager, invite: invite, id: id, ctx: work,
-		cancel: cancel, done: make(chan struct{}), decisions: make(chan channel.Decision, 2)}
+		cancel: cancel, deadline: deadline, done: make(chan struct{}), decisions: make(chan channel.Decision, 2)}
 	c.current, c.status = a, Snapshot{State: "connecting"}
 	c.runs.Add(1)
 	c.mu.Unlock()
@@ -284,12 +289,12 @@ func (a *attempt) closeOwned() {
 func (c *Coordinator) setState(a *attempt, state string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed || c.current != a || a.explicitDeny || a.ctx.Err() != nil || !time.Now().Before(a.invite.ExpiresAt()) {
+	if c.closed || c.current != a || a.explicitDeny || a.ctx.Err() != nil || !time.Now().Before(a.deadline) {
 		return false
 	}
 	c.status = Snapshot{State: state, RequestID: a.id,
 		LocalFingerprint: c.local.PublicKey().Fingerprint(), PeerFingerprint: a.peer.Fingerprint(),
-		ExpiresAt: a.invite.ExpiresAt().Format(time.RFC3339)}
+		ExpiresAt: a.deadline.Format(time.RFC3339)}
 	return true
 }
 
@@ -438,7 +443,7 @@ func (c *Coordinator) finish(a *attempt, runErr error) string {
 	if c.current != a {
 		return ""
 	}
-	expires := a.invite.ExpiresAt()
+	expires := a.deadline
 	a.invite = pairing.Invite{} // Retain no known bearer copy in saved pending UI state.
 	if c.closed {
 		a.revokeActive()
@@ -485,7 +490,7 @@ func (c *Coordinator) Approve(id, fingerprint string) (Snapshot, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	a := c.current
-	if c.closed || a == nil || c.status.State != "awaiting-approval" || id != a.id || a.ctx.Err() != nil || !time.Now().Before(a.invite.ExpiresAt()) || len(fingerprint) != len(c.status.PeerFingerprint) || subtle.ConstantTimeCompare([]byte(fingerprint), []byte(c.status.PeerFingerprint)) != 1 {
+	if c.closed || a == nil || c.status.State != "awaiting-approval" || id != a.id || a.ctx.Err() != nil || !time.Now().Before(a.deadline) || len(fingerprint) != len(c.status.PeerFingerprint) || subtle.ConstantTimeCompare([]byte(fingerprint), []byte(c.status.PeerFingerprint)) != 1 {
 		return c.status, ErrRequest
 	}
 	c.status.State = "waiting-for-peer"

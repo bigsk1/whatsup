@@ -9,6 +9,10 @@ export const conversationStates = [
   'connected',
   'failed',
   'identity-changed',
+  'authentication-failed',
+  'update-required',
+  'capacity-reached',
+  'peer-capacity-reached',
 ] as const;
 
 export type ConversationState = (typeof conversationStates)[number];
@@ -52,6 +56,13 @@ const timestamp =
 const encoder = new TextEncoder();
 const maximumText = 16 * 1024;
 const maximumStoredText = 256 * 1024;
+// Unicode 18.0 RGI emoji tag sequences. Keep this exact allowlist aligned with Go;
+// a black flag followed by arbitrary tag letters could still hide ASCII text.
+const emojiTagFlags = [
+  '\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}', // England
+  '\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}', // Scotland
+  '\u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f}', // Wales
+];
 
 function exactFields(value: Record<string, unknown>, names: string[]): boolean {
   return (
@@ -61,13 +72,34 @@ function exactFields(value: Record<string, unknown>, names: string[]): boolean {
 }
 
 function displayText(value: string): boolean {
-  for (const character of value) {
-    const point = character.codePointAt(0)!;
+  for (let index = 0; index < value.length;) {
+    const point = value.codePointAt(index)!;
+    if (point === 0x1f3f4) {
+      const flag = emojiTagFlags.find((candidate) =>
+        value.startsWith(candidate, index),
+      );
+      if (flag) {
+        index += flag.length;
+        continue;
+      }
+    }
+    const character = String.fromCodePoint(point);
+    index += character.length;
+    // Match Go's explicit shaping/hyphenation exceptions. The message
+    // element chooses its own direction and cannot change surrounding UI text.
+    if (point === 0x00ad || point === 0x200c || point === 0x200d) continue;
     if (
       (point >= 0xd800 && point <= 0xdfff) ||
       (character !== '\n' &&
         character !== '\t' &&
-        /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(character))
+        /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(character)) ||
+      [0x034f, 0x115f, 0x1160, 0x17b4, 0x17b5, 0x2065, 0x3164, 0xffa0].includes(
+        point,
+      ) ||
+      (point >= 0xfff0 && point <= 0xfff8) ||
+      (point >= 0xe0000 && point <= 0xe001f) ||
+      (point >= 0xe0080 && point <= 0xe00ff) ||
+      (point >= 0xe01f0 && point <= 0xe0fff)
     )
       return false;
   }

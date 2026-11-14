@@ -14,6 +14,7 @@ import (
 	"github.com/tailscale/tailcat"
 	"tailscale.com/types/key"
 	"whatsup/internal/pairflow"
+	"whatsup/internal/pairing"
 	"whatsup/internal/storage"
 	"whatsup/internal/transport/address"
 )
@@ -29,6 +30,42 @@ type localInvitationListener struct {
 	endpoint address.Endpoint
 	once     sync.Once
 	closed   atomic.Int32
+}
+
+func TestJoinInvitationUsesLocalTimeoutRatherThanRemoteWallClock(t *testing.T) {
+	for _, offset := range []time.Duration{-14 * time.Minute, 4 * time.Minute} {
+		owner, joiner := unlockedInvitationService(t), unlockedInvitationService(t)
+		listener := disposableListener(t)
+		manager, err := pairing.NewManager(owner.invitations.local.PublicKey(), pairing.Options{Now: func() time.Time { return time.Now().Add(offset) }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer manager.Close()
+		invite, err := manager.Create(string(listener.endpoint.EncodeForTransport()), pairing.DefaultLifetime)
+		if err != nil {
+			t.Fatal(err)
+		}
+		called := make(chan time.Time, 1)
+		joiner.invitations.dial = func(ctx context.Context, endpoint address.Endpoint, url string, consent bool) (net.Conn, error) {
+			if !consent || url != disposableRelayURL || !endpoint.Equal(listener.endpoint) {
+				return nil, net.ErrClosed
+			}
+			called <- deadline(ctx)
+			return nil, net.ErrClosed
+		}
+		started := time.Now()
+		if _, err := joiner.JoinInvitation(invite.Link(), disposableRelayURL, true); err != nil {
+			t.Fatal("joiner used its wall clock to reject remote invitation expiry")
+		}
+		select {
+		case limit := <-called:
+			if limit.Before(started) || limit.After(time.Now().Add(pairing.DefaultLifetime)) {
+				t.Fatal("joiner did not bound the bootstrap with a local timeout")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("clock-skewed invitation did not reach the consented dial factory")
+		}
+	}
 }
 
 func (l *localInvitationListener) AddrEndpoint() (address.Endpoint, error) { return l.endpoint, nil }

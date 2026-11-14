@@ -43,7 +43,7 @@ func (s *Session) retireTransport(ctx context.Context) error {
 	work, cancel := context.WithTimeout(ctx, maxRetirementTime)
 	defer cancel()
 	limit, _ := work.Deadline()
-	if state.raw.SetDeadline(earlier(limit, state.expires)) != nil {
+	if state.raw.SetDeadline(earlier(limit, state.operationDeadline())) != nil {
 		return ErrProtocol
 	}
 	stop := context.AfterFunc(work, func() { _ = s.Close() })

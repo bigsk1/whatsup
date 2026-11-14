@@ -58,6 +58,11 @@ The selected service can observe connection metadata, including IP addresses and
 availability. Strict direct-only mode and a live Direct/Relayed indicator are
 not available in this preview.
 
+Fresh connection setup also needs the selected relay service for rendezvous,
+even when messages subsequently use a direct path. Relay availability matters
+for reconnection as well as initial pairing. An established direct connection
+does not need the relay to forward each message.
+
 ## Messages and reconnection
 
 Send plain text in either direction. **Queued** means a message is stored
@@ -68,10 +73,20 @@ Both apps must be running and connected to exchange messages. The relay is not
 an offline mailbox. If a contact is offline, outgoing messages remain in the
 local encrypted queue and retry after reconnection.
 
+This preview stores at most 256 messages and 256 KiB of message text per
+conversation. Saved history is not automatically deleted to make room. At the
+limit, new messages cannot be saved; the app explains the capacity problem and
+keeps undelivered text queued rather than marking it delivered.
+
 The saved device identities are checked automatically on every connection.
 Ordinary disconnects, restarts and reconnections do not require another
 invitation or manual fingerprint approval. An identity mismatch stops
 reconnection and preserves the saved key.
+
+When WhatsUp can authenticate a saved contact running the previous incompatible
+messaging protocol, it stops automatic retries and asks for compatible app
+builds. Update both apps, then choose **Connect**. Other authentication failures
+show a notice to check compatible builds and device clocks while retries continue.
 
 ## Names and settings
 
@@ -101,6 +116,10 @@ accents.
 **Disconnect and lock** stops networking, closes local storage and clears the
 displayed conversation and decrypted names. The saved contact, history and queued
 messages remain encrypted for the next unlock.
+
+Unlock uses your operating system's credential store. There is currently no
+separate WhatsUp password, so someone using your unlocked desktop session can
+also unlock WhatsUp. Lock your operating system session when leaving the device.
 
 **Forget contact…** opens a confirmation to delete that contact's local
 credentials, saved messages, queued messages and contact names. Your own profile,

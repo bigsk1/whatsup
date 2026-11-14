@@ -179,14 +179,14 @@ func TestUntrustedCandidateCertificatesCannotEnterPending(t *testing.T) {
 		{"missing", func(*testing.T, *identity.Identity) []tls.Certificate { return nil }},
 		{"expired", func(t *testing.T, local *identity.Identity) []tls.Certificate {
 			return []tls.Certificate{alteredCertificate(t, local, func(c *x509.Certificate) {
-				c.NotBefore = time.Now().Add(-2 * time.Minute)
-				c.NotAfter = time.Now().Add(-time.Minute)
+				c.NotBefore = time.Now().Add(-MaxClockSkew - 2*time.Minute)
+				c.NotAfter = time.Now().Add(-MaxClockSkew - time.Minute)
 			})}
 		}},
 		{"future", func(t *testing.T, local *identity.Identity) []tls.Certificate {
 			return []tls.Certificate{alteredCertificate(t, local, func(c *x509.Certificate) {
-				c.NotBefore = time.Now().Add(time.Minute)
-				c.NotAfter = time.Now().Add(2 * time.Minute)
+				c.NotBefore = time.Now().Add(MaxClockSkew + time.Minute)
+				c.NotAfter = time.Now().Add(MaxClockSkew + 2*time.Minute)
 			})}
 		}},
 		{"wrong-subject", func(t *testing.T, local *identity.Identity) []tls.Certificate {
@@ -281,7 +281,13 @@ func TestHandshakeTimeoutAndConfigurationCloseTheSuppliedTransport(t *testing.T)
 			case "nil-identity":
 				inputIdentity, expectedErr = nil, ErrInvalid
 			}
-			if _, err := NewClient(ctx, left, inputIdentity, owner.PublicKey(), inputID, expires); !errors.Is(err, expectedErr) {
+			var err error
+			if kind == "expired" || kind == "too-long" {
+				_, err = NewServer(ctx, left, inputIdentity, inputID, expires)
+			} else {
+				_, err = NewClient(ctx, left, inputIdentity, owner.PublicKey(), inputID, expires)
+			}
+			if !errors.Is(err, expectedErr) {
 				t.Fatalf("unexpected failure category: %v", err)
 			}
 			_ = right.SetWriteDeadline(time.Now().Add(time.Second))
@@ -289,6 +295,64 @@ func TestHandshakeTimeoutAndConfigurationCloseTheSuppliedTransport(t *testing.T)
 				t.Fatal("failed constructor left its supplied transport open")
 			}
 		})
+	}
+}
+
+func TestJoinerClockDoesNotOwnInvitationExpiry(t *testing.T) {
+	owner, candidate := device(t), device(t)
+	for _, remoteExpiry := range []time.Time{time.Now().Add(-4 * time.Minute), time.Now().Add(MaxLifetime + 4*time.Minute)} {
+		left, right := net.Pipe()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		defer left.Close()
+		defer right.Close()
+		done := make(chan *Session, 1)
+		go func() {
+			server, _ := NewServer(ctx, left, owner, [16]byte{1}, time.Now().Add(time.Minute))
+			done <- server
+		}()
+		started := time.Now()
+		client, err := NewClient(ctx, right, candidate, owner.PublicKey(), [16]byte{1}, remoteExpiry)
+		server := <-done
+		if err != nil || server == nil {
+			t.Fatalf("joiner rejected the invitation using its own clock: %v", err)
+		}
+		if !client.ExpiresAt().Equal(remoteExpiry) || client.state.localDeadline.Before(started) || client.state.localDeadline.After(time.Now().Add(MaxLifetime)) {
+			t.Fatal("joiner modified invitation context or has an unbounded local lifetime")
+		}
+		if err := client.WithPendingPeer(func() error { return nil }); err != nil {
+			t.Fatal("joiner local clock expired a still-live channel")
+		}
+		client.state.localDeadline = time.Now().Add(-time.Second)
+		if err := client.WithPendingPeer(func() error { t.Fatal("expired local deadline admitted work"); return nil }); !errors.Is(err, ErrExpired) {
+			t.Fatal("joiner local deadline did not bound pending work")
+		}
+		_ = client.Close()
+		_ = server.Close()
+	}
+}
+
+func TestPairingCertificatesPermitOnlyBoundedClockSkew(t *testing.T) {
+	owner, candidate := device(t), device(t)
+	id := [16]byte{1}
+	now := time.Now()
+	for _, shift := range []time.Duration{-4 * time.Minute, 4 * time.Minute} {
+		certificate, err := newCertificate(candidate, now.Add(shift), now.Add(shift).Add(MaxLifetime))
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err := x509.ParseCertificate(certificate.Certificate[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		config := tlsConfig(certificate, candidate.PublicKey(), owner.PublicKey(), id)
+		state := tls.ConnectionState{Version: tls.VersionTLS13, NegotiatedProtocol: config.NextProtos[0], PeerCertificates: []*x509.Certificate{parsed}}
+		if _, err := verifyPeer(state, owner.PublicKey(), candidate.PublicKey(), id, now); err != nil {
+			t.Fatalf("bounded VM clock drift rejected pinned identity: %v", err)
+		}
+		if _, err := verifyPeer(state, owner.PublicKey(), candidate.PublicKey(), id, now.Add(2*MaxLifetime)); err == nil {
+			t.Fatal("certificate date bound disappeared")
+		}
 	}
 }
 

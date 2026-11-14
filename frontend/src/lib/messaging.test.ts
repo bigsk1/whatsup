@@ -115,4 +115,89 @@ describe('public conversation boundary', () => {
     expect(validMessageText('First line\nSecond line\tالعربية')).toBe(true);
     expect(validMessageText('Spoof\u202einterface')).toBe(false);
   });
+
+  it('preserves legitimate shaping, emoji tags and variation selectors in outgoing and received text', () => {
+    for (const text of [
+      'Family 👨\u200d👩\u200d👧\u200d👦 and ❤️\u200d🔥',
+      'Flag 🏳️\u200d🌈 and 🏴\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}',
+      'Scotland 🏴\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}',
+      'Wales 🏴\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f}',
+      'Bare black flag 🏴 without tags',
+      'می\u200cروم',
+      'क्\u200dष and क्\u200cष',
+      'Copy co\u00adoperate',
+      'Text \u2764\ufe0e and emoji \u2764\ufe0f',
+    ]) {
+      expect(validMessageText(text)).toBe(true);
+      const source = approved();
+      source.messages[0].text = text;
+      expect(validateConversation(source).messages[0].text).toBe(text);
+    }
+  });
+
+  it('rejects stray tags and hidden or malformed flag payloads at both boundaries', () => {
+    const tags = (ascii: string) =>
+      [...ascii]
+        .map((character) =>
+          String.fromCodePoint(0xe0000 + character.codePointAt(0)!),
+        )
+        .join('');
+    const blackFlag = '\u{1f3f4}';
+    const cancel = '\u{e007f}';
+    const england = blackFlag + tags('gbeng') + cancel;
+    const invalid = [
+      tags('synthetic text') + cancel,
+      blackFlag + tags('synthetic text') + cancel,
+      tags('gbeng') + cancel,
+      '😀' + tags('gbeng') + cancel,
+      blackFlag + tags('gbeng'),
+      blackFlag + cancel,
+      blackFlag + tags('gbe') + cancel,
+      blackFlag + tags('gbabc') + cancel,
+      blackFlag + tags('GBENG') + cancel,
+      blackFlag + tags('12345') + cancel,
+      blackFlag + tags('gb') + 'x' + tags('eng') + cancel,
+      blackFlag + tags('gb') + '\u200d' + tags('eng') + cancel,
+      blackFlag + tags('gb') + blackFlag + tags('eng') + cancel,
+      blackFlag + '\ufe0f' + tags('gbeng') + cancel,
+      blackFlag + tags('gbengx') + cancel,
+      england + tags('synthetic') + cancel,
+      england + cancel,
+      blackFlag + tags('a'.repeat(1000)) + cancel,
+    ];
+    for (let point = 0xe0020; point <= 0xe007f; point++)
+      invalid.push(`visible${String.fromCodePoint(point)}text`);
+    for (const text of invalid) {
+      expect(validMessageText(text)).toBe(false);
+      const source = approved();
+      source.messages[0].text = text;
+      expect(() => validateConversation(source)).toThrow();
+    }
+    for (const text of [
+      england + england,
+      `مرحبا ${england} hello`,
+      'x'.repeat(16 * 1024 - new TextEncoder().encode(england).length) +
+        england,
+    ]) {
+      expect(validMessageText(text)).toBe(true);
+      const source = approved();
+      source.messages[0].text = text;
+      expect(validateConversation(source).messages[0].text).toBe(text);
+    }
+  });
+
+  it('continues rejecting direction overrides, controls and invisible fillers at both boundaries', () => {
+    for (const point of [
+      0x0000, 0x001b, 0x0085, 0x009b, 0x034f, 0x061c, 0x115f, 0x1160, 0x17b4,
+      0x17b5, 0x180e, 0x200b, 0x200e, 0x200f, 0x2028, 0x2029, 0x202a, 0x202b,
+      0x202c, 0x202d, 0x202e, 0x2060, 0x2065, 0x2066, 0x2067, 0x2068, 0x2069,
+      0x3164, 0xfeff, 0xffa0, 0xfff0, 0xe0000, 0xe0001, 0xe0080, 0xe01f0,
+    ]) {
+      const text = `Synthetic${String.fromCodePoint(point)}interface label`;
+      expect(validMessageText(text)).toBe(false);
+      const source = approved();
+      source.messages[0].text = text;
+      expect(() => validateConversation(source)).toThrow();
+    }
+  });
 });

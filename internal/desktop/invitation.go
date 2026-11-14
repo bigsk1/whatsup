@@ -213,10 +213,12 @@ func deadline(ctx context.Context) time.Time {
 
 func (c *invitationControl) join(link, url string, consent bool) (pairflow.Snapshot, error) {
 	invite, err := pairing.ParseInvite(link)
-	if err != nil || !time.Now().Before(invite.ExpiresAt()) || invite.Owner().Equal(c.local.PublicKey()) {
-		return c.snapshot(), errors.New("This private invitation is invalid, expired or belongs to this device")
+	if err != nil || invite.Owner().Equal(c.local.PublicKey()) {
+		return c.snapshot(), errors.New("This private invitation is invalid or belongs to this device")
 	}
-	job, err := c.begin(consent, invite.ExpiresAt())
+	// Only the inviter's manager decides expiry. The joiner's wall clock can
+	// differ; its own deadline bounds this attempt without extending the invite.
+	job, err := c.begin(consent, time.Now().Add(pairing.DefaultLifetime))
 	if err != nil {
 		return c.snapshot(), err
 	}

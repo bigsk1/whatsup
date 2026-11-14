@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -54,12 +55,28 @@ func validateText(text string) error {
 	if len(text) == 0 || len(text) > MaxTextBytes || !utf8.ValidString(text) {
 		return ErrText
 	}
-	for _, r := range text {
-		// Peer-supplied direction overrides, format controls and invisible
-		// fillers can disguise message boundaries or impersonate interface text.
-		// Ordinary right-to-left letters and combining accents remain valid.
-		// Join controls are deliberately rejected too until a renderer can
-		// safely isolate and visibly explain them to the recipient.
+	for len(text) != 0 {
+		r, size := utf8.DecodeRuneInString(text)
+		// Unicode 18.0 defines exactly these three RGI emoji tag sequences.
+		// Accepting arbitrary tag letters, even after a black flag, would allow
+		// invisible ASCII payloads. Consume only a complete recognized flag.
+		if r == '\U0001f3f4' {
+			if length := emojiTagFlagLength(text); length != 0 {
+				text = text[length:]
+				continue
+			}
+		}
+		text = text[size:]
+		// These format characters support ordinary text shaping and optional
+		// hyphenation. They do not change bidi direction.
+		// Keep them verbatim; the renderer isolates each message from UI labels.
+		if r == '\u00ad' || r == '\u200c' || r == '\u200d' {
+			continue
+		}
+		// Continue rejecting direction overrides/embeddings, other format
+		// controls and invisible fillers that can disguise interface text.
+		// Ordinary RTL letters, combining accents and variation selectors are
+		// valid without permitting peer-controlled bidi formatting.
 		if (unicode.IsControl(r) && r != '\n' && r != '\t') ||
 			unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Zl, r) ||
 			unicode.Is(unicode.Zp, r) || unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) {
@@ -67,6 +84,19 @@ func validateText(text string) error {
 		}
 	}
 	return nil
+}
+
+func emojiTagFlagLength(text string) int {
+	for _, flag := range [...]string{
+		"\U0001f3f4\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f", // England
+		"\U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f", // Scotland
+		"\U0001f3f4\U000e0067\U000e0062\U000e0077\U000e006c\U000e0073\U000e007f", // Wales
+	} {
+		if strings.HasPrefix(text, flag) {
+			return len(flag)
+		}
+	}
+	return 0
 }
 
 func (frame Frame) Validate() error {

@@ -282,7 +282,7 @@ func validAgreement(a ContactAgreement) bool {
 func (s *Session) operation(ctx context.Context, operation func() error) error {
 	state := s.state
 	stop := context.AfterFunc(ctx, func() { _ = s.Close() })
-	deadline := state.expires
+	deadline := state.operationDeadline()
 	if requested, ok := ctx.Deadline(); ok {
 		deadline = earlier(deadline, requested)
 	}
@@ -300,7 +300,7 @@ func (s *Session) operation(ctx context.Context, operation func() error) error {
 		if errors.Is(err, ErrReservation) || errors.Is(err, ErrPersistence) || errors.Is(err, ErrDenied) || errors.Is(err, ErrFingerprint) || errors.Is(err, ErrCanceled) {
 			return err
 		}
-		if !time.Now().Before(state.expires) {
+		if !time.Now().Before(state.operationDeadline()) {
 			return ErrExpired
 		}
 		return ErrProtocol

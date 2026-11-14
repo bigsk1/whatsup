@@ -52,6 +52,12 @@ func (p *RelayProfile) Ready() bool {
 		p.state.defaultRegion.IsValid() && p.state.regions[p.state.defaultRegion] != nil
 }
 
+// ReadyFor permits worker-local reuse only for the exact consented service and
+// only until the original reviewed map expires. Reuse never extends its TTL.
+func (p *RelayProfile) ReadyFor(source string) bool {
+	return p.Ready() && p.state.source == source
+}
+
 // FetchRelayProfile contacts only an explicit HTTPS operator URL. It never
 // selects Tailcat's public default, follows redirects, uses environment proxies,
 // disables TLS checks, accepts private destinations, or returns raw HTTP errors.

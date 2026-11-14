@@ -276,6 +276,31 @@ func (c *Conversation) Outbox() []Attempt {
 	return append([]Attempt(nil), c.state.Outbox...)
 }
 
+// HasCapacity reports whether at least one more text byte can be queued. The
+// actual text and remaining byte budget are still checked atomically by Queue.
+func (c *Conversation) HasCapacity() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.failed && len(c.state.Messages) < MaxMessages && storedBytes(c.state) < MaxStoredTextBytes
+}
+
+// ResetRetries makes the durable outbox immediately eligible after a freshly
+// authenticated connection. A new session must not inherit a five-minute wait
+// accumulated while the peer was unavailable. Nothing is acknowledged/deleted.
+func (c *Conversation) ResetRetries(authenticatedPeer identity.PublicKey) error {
+	return c.withPeer(authenticatedPeer, func() error {
+		if len(c.state.Outbox) == 0 {
+			return nil
+		}
+		next := clone(c.state)
+		for index := range next.Outbox {
+			next.Outbox[index].Count = 0
+			next.Outbox[index].NextAttempt = c.now().UTC()
+		}
+		return c.commit(next)
+	})
+}
+
 func (c *Conversation) withPeer(peer identity.PublicKey, operation func() error) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

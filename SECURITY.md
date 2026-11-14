@@ -40,6 +40,8 @@ fallback or automatic replacement key for an existing vault.
 
 **Disconnect and lock** stops connections before closing storage. It preserves
 encrypted saved state and clears displayed messages, names and drafts.
+It does not require a separate application password to unlock again. It is not
+an access-control barrier against someone using the same unlocked OS session.
 **Forget contact and delete conversation** removes the selected contact's local
 credentials, history, outbox and names after stopping its work. It preserves the
 device identity and local profile.

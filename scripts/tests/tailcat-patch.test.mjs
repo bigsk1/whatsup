@@ -115,7 +115,7 @@ test('verified app replacement cannot waive embedded CLI replacements or locked 
 
 test('development subprocesses omit proxy, port-mapper and captive-portal hooks and recheck patch before work', async () => {
   const runner = await readFile(path.join(root, 'scripts/whatsup.mjs'), 'utf8');
-  for (const tag of ['ts_omit_useproxy', 'ts_omit_portmapper', 'ts_omit_captiveportal']) {
+  for (const tag of ['ts_omit_useproxy', 'ts_omit_portmapper', 'ts_omit_captiveportal', 'ts_omit_ssh']) {
     assert.ok(runner.includes(tag));
   }
   assert.match(runner, /function run\([^]*?verifyTailcatPatch\(root, policy.reviewedGoPins\);/);

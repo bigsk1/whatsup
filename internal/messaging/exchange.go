@@ -18,6 +18,7 @@ const (
 	pingPacket        byte = 2
 	pongPacket        byte = 3
 	profilePacket     byte = 4
+	capacityPacket    byte = 5
 	heartbeatInterval      = 4 * time.Second
 	peerTimeout            = 12 * time.Second
 	writeTimeout           = 8 * time.Second
@@ -39,8 +40,14 @@ func readPacket(reader io.Reader) (packet, error) {
 	}
 	p := packet{kind: kind[0]}
 	switch p.kind {
-	case dataPacket:
+	case dataPacket, capacityPacket:
 		frame, err := chat.ReadFrame(reader)
+		// A capacity refusal carries only the message ID, encoded using the
+		// canonical ID-only frame shape. Its packet kind is deliberately distinct
+		// from data/ACK: it can never mark a message delivered.
+		if err == nil && p.kind == capacityPacket && frame.Type != chat.AckFrame {
+			return packet{}, errProtocol
+		}
 		p.frame = frame
 		return p, err
 	case pingPacket, pongPacket:
@@ -73,7 +80,10 @@ func writePacket(session *sessionauth.Session, p packet) error {
 	if _, err := session.Write([]byte{p.kind}); err != nil {
 		return err
 	}
-	if p.kind == dataPacket {
+	if p.kind == dataPacket || p.kind == capacityPacket {
+		if p.kind == capacityPacket && p.frame.Type != chat.AckFrame {
+			return errProtocol
+		}
 		return chat.WriteFrame(session, p.frame)
 	}
 	if p.kind != pingPacket && p.kind != pongPacket {
@@ -149,13 +159,17 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 		return nil
 	}
 	var profileLimit profileBudget
+	sent := make(map[string]bool)
 	sendDue := func() error {
 		frame, due, err := conversation.NextAttempt(m.record.Peer)
 		if err != nil {
 			return err
 		}
 		if due {
-			return writePacket(session, packet{kind: dataPacket, frame: frame})
+			if err := writePacket(session, packet{kind: dataPacket, frame: frame}); err != nil {
+				return err
+			}
+			sent[frame.ID] = true
 		}
 		return nil
 	}
@@ -174,6 +188,11 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 				return errProtocol
 			}
 			switch got.packet.kind {
+			case capacityPacket:
+				if !sent[got.packet.frame.ID] {
+					return errProtocol
+				}
+				return errPeerCapacity
 			case profilePacket:
 				unchanged := profileLimit.seen && profileLimit.last == got.packet.name
 				if !profileLimit.accept(got.packet.name, time.Now()) || session.WithLivePeer(m.record.Peer, func() error { return nil }) != nil {
@@ -201,6 +220,12 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 				switch frame.Type {
 				case chat.MessageFrame:
 					ack, err := conversation.Receive(m.record.Peer, frame)
+					if errors.Is(err, chat.ErrCapacity) {
+						// Best-effort refusal over this exact authenticated session.
+						// Neither side acknowledges, evicts or loses the queued text.
+						_ = writePacket(session, packet{kind: capacityPacket, frame: chat.Frame{Version: chat.ProtocolVersion, Type: chat.AckFrame, ID: frame.ID}})
+						return err
+					}
 					if err != nil {
 						return err
 					}
@@ -212,6 +237,7 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 					if err := conversation.Acknowledge(m.record.Peer, frame); err != nil {
 						return err
 					}
+					delete(sent, frame.ID)
 					m.changed("connected")
 				default:
 					return errProtocol

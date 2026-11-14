@@ -42,6 +42,29 @@ func reviewedTestProfile(t *testing.T) *RelayProfile {
 	return profile
 }
 
+func TestRelayProfileReuseRequiresExactServiceAndOriginalUnexpiredLifetime(t *testing.T) {
+	var absent *RelayProfile
+	if absent.ReadyFor("https://operator.example/derp.json") || (&RelayProfile{}).ReadyFor("https://operator.example/derp.json") {
+		t.Fatal("missing or unreviewed relay configuration became reusable")
+	}
+	profile := reviewedTestProfile(t)
+	deadline := profile.state.expires
+	for range 4 {
+		if !profile.ReadyFor(profile.state.source) || profile.state.expires != deadline {
+			t.Fatal("approved profile was not reusable or reuse extended its deadline")
+		}
+	}
+	for _, changed := range []string{"https://another.example/derp.json", "https://operator.example/other.json", ""} {
+		if profile.ReadyFor(changed) {
+			t.Fatal("cached profile permitted a service substitution")
+		}
+	}
+	profile.state.expires = time.Now().Add(-time.Second)
+	if profile.ReadyFor(profile.state.source) {
+		t.Fatal("expired profile was reused")
+	}
+}
+
 func syntheticInvitationEndpoint(t *testing.T, region *tailcfg.DERPRegion, id tailcfg.DERPRegionID) address.Endpoint {
 	t.Helper()
 	ci := tailcat.ConnInfo{

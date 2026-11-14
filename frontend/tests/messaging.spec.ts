@@ -218,6 +218,88 @@ async function syntheticMessaging(
   return { state, calls, errors, external };
 }
 
+for (const state of ['authentication-failed', 'update-required'] as const) {
+  test(`${state} explains authentication without losing local history`, async ({
+    page,
+  }) => {
+    const { calls, errors, external } = await syntheticMessaging(
+      page,
+      approved({
+        state,
+        canConnect: state === 'update-required',
+        messages: [message(firstID, incomingText, 'outgoing', false)],
+      }),
+    );
+    await page.goto('/');
+    const warning = page.getByRole('alert');
+    await expect(warning).toContainText(
+      state === 'update-required'
+        ? 'Your saved contact is using an incompatible messaging protocol.'
+        : 'The saved contact could not authenticate.',
+    );
+    await expect(page.getByRole('log', { name: 'Messages' })).toContainText(
+      incomingText,
+    );
+    await expect(page.getByText('Queued', { exact: true })).toBeVisible();
+    expect(calls.some((call) => call.operation === 'ConnectContact')).toBe(
+      false,
+    );
+    if (state === 'update-required') {
+      await page.getByRole('button', { name: 'Connect', exact: true }).click();
+      await expect
+        .poll(
+          () =>
+            calls.filter((call) => call.operation === 'ConnectContact').length,
+        )
+        .toBe(1);
+    } else {
+      await expect(warning).toContainText('WhatsUp will retry');
+    }
+    expect(errors).toEqual([]);
+    expect(external).toEqual([]);
+  });
+}
+
+for (const state of ['capacity-reached', 'peer-capacity-reached'] as const) {
+  test(`${state} explains why delivery stopped while retaining queued text`, async ({
+    page,
+  }) => {
+    const { calls, errors, external } = await syntheticMessaging(
+      page,
+      approved({
+        state,
+        canSend: false,
+        canConnect: false,
+        messages: [message(firstID, incomingText, 'outgoing', false)],
+      }),
+    );
+    await page.goto('/');
+    const warning = page.getByRole('alert');
+    await expect(warning).toContainText(
+      state === 'capacity-reached'
+        ? "This preview's local message storage is full."
+        : "Your contact's message storage is full.",
+    );
+    await expect(page.getByRole('log', { name: 'Messages' })).toContainText(
+      incomingText,
+    );
+    await expect(page.getByText('Queued', { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole('textbox', { name: 'Message', exact: true }),
+    ).toBeDisabled();
+    await expect(
+      page.getByRole('button', { name: 'Send message', exact: true }),
+    ).toBeDisabled();
+    expect(
+      calls.some((call) =>
+        ['ConnectContact', 'SendMessage'].includes(call.operation),
+      ),
+    ).toBe(false);
+    expect(errors).toEqual([]);
+    expect(external).toEqual([]);
+  });
+}
+
 test('a cold-start approved contact can read history and queue while offline without connecting', async ({
   page,
 }) => {
@@ -763,6 +845,85 @@ test('forget failure shows a fixed error, clears the draft and verifies locked s
     [],
   );
   expect(errors).toEqual([]);
+});
+
+test('Unicode messages preserve emoji and shaping while isolating direction from delivery labels', async ({
+  page,
+}) => {
+  const incoming = 'می\u200cروم 👨\u200d👩\u200d👧\u200d👦 ❤️\u200d🔥';
+  const outgoing =
+    'می\u200cروم क्\u200dष co\u00adoperate 🏴\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}';
+  const { calls, errors, external } = await syntheticMessaging(
+    page,
+    approved({ messages: [message(firstID, incoming)] }),
+  );
+  await page.goto('/');
+  const received = page
+    .getByRole('article', { name: 'Contact message', exact: true })
+    .locator('.message-text');
+  await expect(received).toHaveText(incoming);
+  await expect(received).toHaveAttribute('dir', 'auto');
+  await expect(received).toHaveCSS('direction', 'rtl');
+  await expect(received).toHaveCSS('unicode-bidi', 'isolate');
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await composer.fill(outgoing);
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  const sent = page.getByRole('article', { name: 'Your message', exact: true });
+  await expect(sent.locator('.message-text')).toHaveText(outgoing);
+  await expect(sent.locator('.message-text')).toHaveCSS('direction', 'rtl');
+  await expect(sent.locator('.message-text')).toHaveCSS(
+    'unicode-bidi',
+    'isolate',
+  );
+  await expect(sent.getByText('Queued', { exact: true })).toHaveCSS(
+    'direction',
+    'ltr',
+  );
+  expect(calls.find((call) => call.operation === 'SendMessage')?.args).toEqual([
+    contactID,
+    outgoing,
+  ]);
+  await expect(page.locator('.conversation-header')).toHaveCSS(
+    'direction',
+    'ltr',
+  );
+  expect(external).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('hidden emoji tags cannot be sent outside recognized complete flags', async ({
+  page,
+}) => {
+  const { calls, errors, external } = await syntheticMessaging(page);
+  await page.goto('/');
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  const send = page.getByRole('button', { name: 'Send message', exact: true });
+  for (const text of [
+    'Synthetic\u{e0061}hidden text',
+    'Synthetic 🏴\u{e0073}\u{e0065}\u{e0063}\u{e0072}\u{e0065}\u{e0074}\u{e007f}',
+    'Incomplete 🏴\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}',
+    'Trailing 🏴\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}\u{e0061}',
+  ]) {
+    await composer.fill(text);
+    await expect(send).toBeDisabled();
+  }
+  expect(calls.some((call) => call.operation === 'SendMessage')).toBe(false);
+  const valid =
+    'Flags 🏴\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f} 🏴\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f}';
+  await composer.fill(valid);
+  await expect(send).toBeEnabled();
+  await send.click();
+  await expect(
+    page
+      .getByRole('article', { name: 'Your message', exact: true })
+      .locator('.message-text'),
+  ).toHaveText(valid);
+  expect(calls.find((call) => call.operation === 'SendMessage')?.args).toEqual([
+    contactID,
+    valid,
+  ]);
+  expect(errors).toEqual([]);
+  expect(external).toEqual([]);
 });
 
 test('message HTML is inert text and never loads a remote asset', async ({

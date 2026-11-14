@@ -443,9 +443,17 @@
         ? 'Connecting…'
         : conversation.state === 'identity-changed'
           ? 'Identity could not be verified'
-          : conversation.state === 'failed'
-            ? 'Connection unavailable'
-            : 'Offline',
+          : conversation.state === 'update-required'
+            ? 'Compatible app update needed'
+            : conversation.state === 'authentication-failed'
+              ? 'Authentication needs attention'
+              : conversation.state === 'failed'
+                ? 'Connection unavailable'
+                : conversation.state === 'capacity-reached'
+                  ? 'Local message storage full'
+                  : conversation.state === 'peer-capacity-reached'
+                    ? 'Contact message storage full'
+                    : 'Offline',
   );
 
   async function beginInvitation(url: string, consent: boolean) {
@@ -940,6 +948,29 @@
             Your contact's identity could not be verified. The connection
             stopped; your saved contact was not changed.
           </p>
+        {:else if conversation.state === 'update-required'}
+          <p class="connection-notice" role="alert">
+            Your saved contact is using an incompatible messaging protocol.
+            Update both apps to compatible builds, then choose Connect. Your
+            saved contact and queued messages are retained.
+          </p>
+        {:else if conversation.state === 'authentication-failed'}
+          <p class="connection-notice" role="alert">
+            The saved contact could not authenticate. Check that both apps use
+            compatible builds and their device clocks are correct. WhatsUp will
+            retry; your saved contact has not been replaced.
+          </p>
+        {:else if conversation.state === 'capacity-reached'}
+          <p class="connection-notice" role="alert">
+            This preview's local message storage is full. New messages cannot be
+            saved. Existing history and queued messages are retained.
+          </p>
+        {:else if conversation.state === 'peer-capacity-reached'}
+          <p class="connection-notice" role="alert">
+            Your contact's message storage is full. Automatic retries stopped.
+            Your undelivered messages remain queued on this device; they have
+            not been marked delivered.
+          </p>
         {:else if conversation.state === 'connecting'}
           <p class="connection-notice" role="status">
             Waiting for your contact. Both devices need to be unlocked and
@@ -968,7 +999,7 @@
                 ? 'Your message'
                 : 'Contact message'}
             >
-              <p class="message-text">{message.text}</p>
+              <p class="message-text" dir="auto">{message.text}</p>
               <footer>
                 <time datetime={message.createdAt}
                   >{new Date(message.createdAt).toLocaleTimeString([], {
@@ -1334,7 +1365,7 @@
     line-height: 1.7;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
-    unicode-bidi: plaintext;
+    unicode-bidi: isolate;
   }
   .message-bubble footer {
     display: flex;

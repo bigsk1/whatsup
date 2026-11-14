@@ -2,10 +2,13 @@ package sessionauth
 
 import (
 	"context"
+	"crypto"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -139,7 +142,7 @@ func TestDowngradeAndMissingClientCertificateAreRejected(t *testing.T) {
 	}
 }
 
-func TestPreviousMessagingWireVersionCannotAuthenticate(t *testing.T) {
+func TestUnsupportedHistoricalWireVersionCannotAuthenticate(t *testing.T) {
 	a, b := optionsPair(t)
 	left, right := net.Pipe()
 	defer right.Close()
@@ -159,6 +162,122 @@ func TestPreviousMessagingWireVersionCannotAuthenticate(t *testing.T) {
 	}
 	if got := <-done; got.err == nil || got.session != nil {
 		t.Fatal("old framing gained authority to exchange new metadata")
+	}
+}
+
+type corruptHandshakeSigner struct{ crypto.Signer }
+
+func (s corruptHandshakeSigner) Sign(random io.Reader, digest []byte, options crypto.SignerOpts) ([]byte, error) {
+	signature, err := s.Signer.Sign(random, digest, options)
+	if err == nil && len(signature) != 0 {
+		signature[0] ^= 1
+	}
+	return signature, err
+}
+
+func TestPreviousProtocolIsDiagnosticOnlyAfterPinnedTLSCompletes(t *testing.T) {
+	for _, newServer := range []bool{true, false} {
+		for _, kind := range []string{"valid", "wrong-key", "wrong-association", "future-certificate", "expired-certificate", "invalid-profile", "bad-handshake-signature", "prefer-current", "unsupported"} {
+			t.Run(fmt.Sprintf("server=%v/%s", newServer, kind), func(t *testing.T) {
+				current, previous := optionsPair(t)
+				current.Server = newServer
+				if kind == "wrong-key" {
+					previous.Local, _ = identity.Generate()
+				}
+				if kind == "wrong-association" {
+					previous.Association[0] ^= 1
+				}
+				now := time.Now()
+				if kind == "future-certificate" {
+					now = now.Add(MaxClockSkew + 2*time.Minute)
+				}
+				if kind == "expired-certificate" {
+					now = now.Add(-MaxLifetime - MaxClockSkew - 2*time.Minute)
+				}
+				certificate, err := newCertificate(previous.Local, now, now.Add(MaxLifetime))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if kind == "invalid-profile" {
+					template, err := x509.ParseCertificate(certificate.Certificate[0])
+					if err != nil {
+						t.Fatal(err)
+					}
+					template.RawSubject = nil
+					template.Subject.CommonName = "unsupported certificate profile"
+					signer := identitySigner{previous.Local}
+					der, err := x509.CreateCertificate(rand.Reader, template, template, signer.Public(), signer)
+					if err != nil {
+						t.Fatal(err)
+					}
+					certificate.Certificate[0] = der
+				}
+				if kind == "bad-handshake-signature" {
+					certificate.PrivateKey = corruptHandshakeSigner{certificate.PrivateKey.(crypto.Signer)}
+				}
+				association := "." + previous.ContactID + "." + base64.RawURLEncoding.EncodeToString(previous.Association[:])
+				protos := []string{diagnosticProtocol + association}
+				if kind == "prefer-current" {
+					// A current server chooses its own /3 preference even when
+					// the client offers /2 first. A current client also offers /3.
+					protos = []string{protocol + association, diagnosticProtocol + association}
+					if newServer {
+						protos[0], protos[1] = protos[1], protos[0]
+					}
+				}
+				if kind == "unsupported" {
+					protos = []string{"whatsup-contact/99" + association}
+				}
+				legacyConfig := &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
+					Certificates: []tls.Certificate{certificate}, NextProtos: protos,
+					ClientAuth: tls.RequireAnyClientCert, SessionTicketsDisabled: true,
+					VerifyConnection: func(state tls.ConnectionState) error {
+						return verifyPeer(state, previous.Peer, state.NegotiatedProtocol, time.Now())
+					}}
+				left, right := net.Pipe()
+				t.Cleanup(func() { _ = left.Close(); _ = right.Close() })
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				done := make(chan result, 1)
+				go func() { session, err := Authenticate(ctx, left, current); done <- result{session, err} }()
+				var legacy *tls.Conn
+				if newServer {
+					legacy = tls.Client(right, legacyConfig)
+				} else {
+					legacy = tls.Server(right, legacyConfig)
+				}
+				handshakeErr := legacy.HandshakeContext(ctx)
+				got := <-done
+				if kind == "prefer-current" {
+					if got.session == nil || got.err != nil || handshakeErr != nil || legacy.ConnectionState().NegotiatedProtocol != protocol+association {
+						t.Fatalf("current protocol was not selected when both support it: %v / %v", got.err, handshakeErr)
+					}
+					_ = got.session.Close()
+					return
+				}
+				if got.session != nil {
+					t.Fatal("legacy or unauthenticated peer obtained application authority")
+				}
+				want := ErrAuthentication
+				if kind == "valid" {
+					want = ErrIncompatible
+					if handshakeErr != nil || !legacy.ConnectionState().HandshakeComplete || legacy.ConnectionState().NegotiatedProtocol != diagnosticProtocol+association {
+						t.Fatalf("compatibility diagnostic preceded completed exact-context TLS: %v", handshakeErr)
+					}
+				}
+				if kind == "wrong-key" {
+					want = ErrIdentityChanged
+				}
+				if !errors.Is(got.err, want) {
+					t.Fatalf("wrong diagnostic/authentication classification: got %v, want %v", got.err, want)
+				}
+				_ = legacy.SetReadDeadline(time.Now().Add(time.Second))
+				var application [1]byte
+				if n, err := legacy.Read(application[:]); n != 0 || err == nil {
+					t.Fatal("diagnostic/rejected peer received application bytes")
+				}
+			})
+		}
 	}
 }
 
@@ -186,7 +305,7 @@ func TestPeerCertificateProfileAndResumptionFailClosed(t *testing.T) {
 			case "resumed":
 				state.DidResume = true
 			case "expired":
-				copyCert.NotAfter = time.Now().Add(-time.Second)
+				copyCert.NotAfter = time.Now().Add(-MaxClockSkew - time.Second)
 			case "not-yet-valid":
 				copyCert.NotBefore = time.Now().Add(time.Hour)
 			case "chain":
@@ -198,6 +317,82 @@ func TestPeerCertificateProfileAndResumptionFailClosed(t *testing.T) {
 			}
 			if verifyPeer(state, a.Peer, alpn, time.Now()) == nil {
 				t.Fatal("invalid peer profile accepted")
+			}
+		})
+	}
+}
+
+func TestCertificateClockSkewDoesNotChangeIdentityClassification(t *testing.T) {
+	a, b := optionsPair(t)
+	alpn := protocol + "." + a.ContactID + "." + base64.RawURLEncoding.EncodeToString(a.Association[:])
+	now := time.Now()
+	for _, skew := range []time.Duration{-4 * time.Minute, 0, 4 * time.Minute} {
+		certificate, err := newCertificate(b.Local, now.Add(skew), now.Add(skew).Add(MaxLifetime))
+		if err != nil {
+			t.Fatal(err)
+		}
+		parsed, err := x509.ParseCertificate(certificate.Certificate[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		state := tls.ConnectionState{Version: tls.VersionTLS13, NegotiatedProtocol: alpn, PeerCertificates: []*x509.Certificate{parsed}}
+		if err := verifyPeer(state, a.Peer, alpn, now); err != nil {
+			t.Fatalf("ordinary clock skew rejected: %v", err)
+		}
+		wrong, _ := identity.Generate()
+		if err := verifyPeer(state, wrong.PublicKey(), alpn, now); !errors.Is(err, ErrIdentityChanged) {
+			t.Fatalf("actual key mismatch did not stop reconnect: %v", err)
+		}
+		state.NegotiatedProtocol = "invalid"
+		if err := verifyPeer(state, a.Peer, alpn, now); !errors.Is(err, ErrAuthentication) || errors.Is(err, ErrIdentityChanged) {
+			t.Fatalf("profile failure misreported as identity change: %v", err)
+		}
+	}
+}
+
+func TestRealHandshakeDistinguishesChangedIdentityFromInvalidCertificate(t *testing.T) {
+	for _, kind := range []string{"clock-ahead", "clock-behind", "outside-skew", "wrong-key"} {
+		t.Run(kind, func(t *testing.T) {
+			a, b := optionsPair(t)
+			now := time.Now()
+			shift := 4 * time.Minute
+			if kind == "clock-behind" {
+				shift = -4 * time.Minute
+			}
+			if kind == "outside-skew" {
+				shift = MaxClockSkew + 2*time.Minute
+			}
+			if kind == "wrong-key" {
+				b.Local, _ = identity.Generate()
+			}
+			certificate, err := newCertificate(b.Local, now.Add(shift), now.Add(shift).Add(MaxLifetime))
+			if err != nil {
+				t.Fatal(err)
+			}
+			left, right := net.Pipe()
+			t.Cleanup(func() { _ = left.Close(); _ = right.Close() })
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			done := make(chan result, 1)
+			go func() { s, e := Authenticate(ctx, left, a); done <- result{s, e} }()
+			alpn := protocol + "." + a.ContactID + "." + base64.RawURLEncoding.EncodeToString(a.Association[:])
+			client := tls.Client(right, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certificate}, NextProtos: []string{alpn}})
+			_ = client.HandshakeContext(ctx)
+			got := <-done
+			switch kind {
+			case "wrong-key":
+				if got.session != nil || !errors.Is(got.err, ErrIdentityChanged) {
+					t.Fatalf("actual key mismatch not classified: %v", got.err)
+				}
+			case "outside-skew":
+				if got.session != nil || !errors.Is(got.err, ErrAuthentication) || errors.Is(got.err, ErrIdentityChanged) {
+					t.Fatalf("certificate date error falsely changed identity: %v", got.err)
+				}
+			default:
+				if got.session == nil || got.err != nil {
+					t.Fatalf("bounded clock skew broke pinned authentication: %v", got.err)
+				}
+				_ = got.session.Close()
 			}
 		})
 	}

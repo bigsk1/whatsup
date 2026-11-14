@@ -27,6 +27,7 @@ import (
 const (
 	MaxLifetime        = 10 * time.Minute
 	MaxHandshakeTime   = 15 * time.Second
+	MaxClockSkew       = 5 * time.Minute
 	maxCertificateSize = 2048
 	protocol           = "whatsup-pairing/1"
 	certificateName    = "WhatsUp pairing v1"
@@ -77,6 +78,7 @@ type sessionState struct {
 	role               Role
 	invite             [16]byte
 	expires            time.Time
+	localDeadline      time.Time
 	binding            [32]byte
 	phase              phase
 	timer              *time.Timer
@@ -192,13 +194,23 @@ func (a *Approval) WithLiveApproval(operation func() error) error {
 }
 
 func (s *sessionState) liveLocked() error {
-	if !time.Now().Before(s.expires) {
+	if !time.Now().Before(s.operationDeadline()) {
 		return ErrExpired
 	}
 	if s.phase == closed {
 		return ErrClosed
 	}
 	return nil
+}
+
+// The inviter owns invitation expiry. A joiner's clock cannot decide whether
+// its invitation is still valid; its local timeout only bounds resource use.
+// Keep expires unchanged for exact invitation/reservation association checks.
+func (s *sessionState) operationDeadline() time.Time {
+	if s.role == Joiner {
+		return s.localDeadline
+	}
+	return s.expires
 }
 
 // NewClient takes ownership of raw, including on failure, and pins the inviter's
@@ -225,20 +237,24 @@ func newSession(ctx context.Context, raw net.Conn, local *identity.Identity, exp
 		}
 	}()
 	now := time.Now()
-	if ctx == nil || local == nil || !local.PublicKey().Valid() || invitationID == [16]byte{} || (role == Joiner && (!expected.Valid() || expected.Equal(local.PublicKey()))) || expiresAt.IsZero() || expiresAt.After(now.Add(MaxLifetime)) {
+	if ctx == nil || local == nil || !local.PublicKey().Valid() || invitationID == [16]byte{} || (role == Joiner && (!expected.Valid() || expected.Equal(local.PublicKey()))) || expiresAt.IsZero() || (role == Inviter && expiresAt.After(now.Add(MaxLifetime))) {
 		return nil, ErrInvalid
 	}
-	if !now.Before(expiresAt) {
+	if role == Inviter && !now.Before(expiresAt) {
 		return nil, ErrExpired
 	}
 	if contextEnded(ctx) {
 		return nil, ErrCanceled
 	}
-	certificate, err := newCertificate(local, now, expiresAt)
+	localDeadline := expiresAt
+	if role == Joiner {
+		localDeadline = now.Add(MaxLifetime)
+	}
+	certificate, err := newCertificate(local, now, localDeadline)
 	if err != nil {
 		return nil, ErrHandshake
 	}
-	state := &sessionState{raw: raw, local: local.PublicKey(), role: role, invite: invitationID, expires: expiresAt, phase: pending}
+	state := &sessionState{raw: raw, local: local.PublicKey(), role: role, invite: invitationID, expires: expiresAt, localDeadline: localDeadline, phase: pending}
 	config := tlsConfig(certificate, state.local, expected, invitationID)
 	verify := config.VerifyConnection
 	config.VerifyConnection = func(connection tls.ConnectionState) error {
@@ -256,7 +272,7 @@ func newSession(ctx context.Context, raw net.Conn, local *identity.Identity, exp
 	} else {
 		state.tls = tls.Server(state.tlsInput, config)
 	}
-	deadline := earlier(expiresAt, now.Add(MaxHandshakeTime))
+	deadline := earlier(localDeadline, now.Add(MaxHandshakeTime))
 	if userDeadline, ok := ctx.Deadline(); ok {
 		deadline = earlier(deadline, userDeadline)
 	}
@@ -267,7 +283,7 @@ func newSession(ctx context.Context, raw net.Conn, local *identity.Identity, exp
 		if contextEnded(ctx) {
 			return nil, ErrCanceled
 		}
-		if !time.Now().Before(expiresAt) {
+		if !time.Now().Before(localDeadline) {
 			return nil, ErrExpired
 		}
 		return nil, ErrHandshake
@@ -289,17 +305,17 @@ func newSession(ctx context.Context, raw net.Conn, local *identity.Identity, exp
 		clear(state.binding[:])
 		return nil, ErrCanceled
 	}
-	if !time.Now().Before(expiresAt) {
+	if !time.Now().Before(localDeadline) {
 		clear(state.binding[:])
 		return nil, ErrExpired
 	}
-	if raw.SetDeadline(expiresAt) != nil {
+	if raw.SetDeadline(localDeadline) != nil {
 		clear(state.binding[:])
 		return nil, ErrHandshake
 	}
 	session := &Session{state: state}
 	state.mu.Lock()
-	state.timer = time.AfterFunc(time.Until(expiresAt), func() { _ = session.Close() })
+	state.timer = time.AfterFunc(time.Until(localDeadline), func() { _ = session.Close() })
 	state.mu.Unlock()
 	succeeded = true
 	return session, nil
@@ -347,7 +363,7 @@ func verifyPeer(state tls.ConnectionState, local, expected identity.PublicKey, i
 	}
 	certificate := state.PeerCertificates[0]
 	name, _ := asn1.Marshal(pkix.Name{CommonName: certificateName}.ToRDNSequence())
-	if len(certificate.Raw) == 0 || len(certificate.Raw) > maxCertificateSize || certificate.Version != 3 || certificate.SignatureAlgorithm != x509.PureEd25519 || certificate.PublicKeyAlgorithm != x509.Ed25519 || certificate.SerialNumber == nil || certificate.SerialNumber.Sign() <= 0 || certificate.SerialNumber.BitLen() > 128 || !certificate.BasicConstraintsValid || certificate.IsCA || certificate.KeyUsage != x509.KeyUsageDigitalSignature || len(certificate.ExtKeyUsage) != 2 || certificate.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth || certificate.ExtKeyUsage[1] != x509.ExtKeyUsageClientAuth || len(certificate.UnknownExtKeyUsage) != 0 || len(certificate.UnhandledCriticalExtensions) != 0 || len(certificate.DNSNames) != 0 || len(certificate.IPAddresses) != 0 || len(certificate.EmailAddresses) != 0 || len(certificate.URIs) != 0 || now.Before(certificate.NotBefore) || !now.Before(certificate.NotAfter) || certificate.NotAfter.Sub(certificate.NotBefore) > MaxLifetime+time.Minute || subtle.ConstantTimeCompare(name, certificate.RawSubject) != 1 || subtle.ConstantTimeCompare(certificate.RawSubject, certificate.RawIssuer) != 1 || certificate.CheckSignature(certificate.SignatureAlgorithm, certificate.RawTBSCertificate, certificate.Signature) != nil {
+	if len(certificate.Raw) == 0 || len(certificate.Raw) > maxCertificateSize || certificate.Version != 3 || certificate.SignatureAlgorithm != x509.PureEd25519 || certificate.PublicKeyAlgorithm != x509.Ed25519 || certificate.SerialNumber == nil || certificate.SerialNumber.Sign() <= 0 || certificate.SerialNumber.BitLen() > 128 || !certificate.BasicConstraintsValid || certificate.IsCA || certificate.KeyUsage != x509.KeyUsageDigitalSignature || len(certificate.ExtKeyUsage) != 2 || certificate.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth || certificate.ExtKeyUsage[1] != x509.ExtKeyUsageClientAuth || len(certificate.UnknownExtKeyUsage) != 0 || len(certificate.UnhandledCriticalExtensions) != 0 || len(certificate.DNSNames) != 0 || len(certificate.IPAddresses) != 0 || len(certificate.EmailAddresses) != 0 || len(certificate.URIs) != 0 || now.Add(MaxClockSkew).Before(certificate.NotBefore) || !now.Add(-MaxClockSkew).Before(certificate.NotAfter) || !certificate.NotBefore.Before(certificate.NotAfter) || certificate.NotAfter.Sub(certificate.NotBefore) > MaxLifetime+time.Minute || subtle.ConstantTimeCompare(name, certificate.RawSubject) != 1 || subtle.ConstantTimeCompare(certificate.RawSubject, certificate.RawIssuer) != 1 || certificate.CheckSignature(certificate.SignatureAlgorithm, certificate.RawTBSCertificate, certificate.Signature) != nil {
 		return peer, ErrHandshake
 	}
 	key, ok := certificate.PublicKey.(ed25519.PublicKey)
@@ -454,7 +470,7 @@ func (s *Session) decide(ctx context.Context, consent bool) error {
 	state.mu.Unlock()
 	defer clear(binding[:])
 	stop := context.AfterFunc(ctx, func() { _ = s.Close() })
-	deadline := state.expires
+	deadline := state.operationDeadline()
 	if requested, ok := ctx.Deadline(); ok {
 		deadline = earlier(deadline, requested)
 	}

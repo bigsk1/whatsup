@@ -22,6 +22,8 @@ import (
 
 var ErrUnavailable = errors.New("approved conversation is unavailable")
 
+var errPeerCapacity = errors.New("authenticated peer conversation capacity reached")
+
 type Snapshot struct {
 	State           string         `json:"state"`
 	Revision        uint64         `json:"revision"`
@@ -65,6 +67,9 @@ type Manager struct {
 	wake         chan struct{}
 	workers      sync.WaitGroup
 	factories    Factories
+	// Used only by the network worker. A successful authentication resets the
+	// transport retry schedule; approved relay maps are reused only while valid.
+	authenticated uint64
 }
 
 func (*Manager) String() string               { return "[private WhatsUp messaging coordinator]" }
@@ -189,10 +194,16 @@ func (m *Manager) snapshotLocked() Snapshot {
 		if names, err := m.application.ContactNames(m.record.ID); err == nil {
 			result.PeerDisplayName, result.LocalName = names.PeerDisplayName, names.LocalName
 		}
-		result.CanConnect = !m.running && m.state != "failed" && m.state != "identity-changed"
-		result.CanSend = m.conversation != nil && m.state != "failed"
-		if result.CanSend {
+		result.CanConnect = !m.running && m.ctx.Err() == nil && m.state != "failed" && m.state != "identity-changed"
+		result.CanSend = m.conversation != nil && m.state != "failed" && !capacityFailure(m.state)
+		if m.conversation != nil && m.state != "failed" {
 			result.Messages = append(result.Messages, m.conversation.Messages()...)
+			if !m.conversation.HasCapacity() {
+				result.CanSend = false
+				if m.state != "identity-changed" && m.state != "peer-capacity-reached" && m.state != "update-required" {
+					result.State = "capacity-reached"
+				}
+			}
 		}
 	}
 	return result
@@ -211,7 +222,7 @@ func (m *Manager) Snapshot() Snapshot {
 func (m *Manager) Connect(id string) (Snapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.refreshLocked() != nil || id == "" || m.record.ID != id || m.state == "failed" || m.state == "identity-changed" {
+	if m.refreshLocked() != nil || id == "" || m.record.ID != id || m.ctx.Err() != nil || m.state == "failed" || m.state == "identity-changed" {
 		return m.snapshotLocked(), ErrUnavailable
 	}
 	if !m.running {
@@ -226,7 +237,7 @@ func (m *Manager) Connect(id string) (Snapshot, error) {
 func (m *Manager) Send(id, text string) (Snapshot, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.refreshLocked() != nil || m.record.ID != id || m.conversation == nil || m.state == "failed" {
+	if m.refreshLocked() != nil || m.record.ID != id || m.conversation == nil || m.state == "failed" || capacityFailure(m.state) {
 		return m.snapshotLocked(), ErrUnavailable
 	}
 	if _, err := m.conversation.Queue(text); err != nil {
@@ -292,11 +303,34 @@ func terminalPersistence(err error) bool {
 	return errors.Is(err, chat.ErrStore) || errors.Is(err, chat.ErrCorrupt) || errors.Is(err, storage.ErrStateFailed) || errors.Is(err, storage.ErrStateConflict)
 }
 
+func capacityFailure(state string) bool {
+	return state == "capacity-reached" || state == "peer-capacity-reached"
+}
+
+func terminalSession(err error) bool {
+	return terminalPersistence(err) || errors.Is(err, sessionauth.ErrIdentityChanged) || errors.Is(err, sessionauth.ErrIncompatible) || errors.Is(err, chat.ErrCapacity) || errors.Is(err, errPeerCapacity)
+}
+
+func retryState(err error) string {
+	if errors.Is(err, sessionauth.ErrAuthentication) {
+		return "authentication-failed"
+	}
+	return "connecting"
+}
+
 func (m *Manager) run() {
 	defer m.workers.Done()
-	defer func() { m.mu.Lock(); m.running = false; m.mu.Unlock() }()
+	defer func() { m.mu.Lock(); m.running = false; m.revision++; m.mu.Unlock() }()
+	var profile *transport.RelayProfile
 	for attempt := 0; m.ctx.Err() == nil; attempt++ {
-		profile, err := m.factories.Profile(m.ctx, m.record.RelayServiceURL)
+		previousAuthentication := m.authenticated
+		var err error
+		if !profile.ReadyFor(m.record.RelayServiceURL) {
+			profile, err = m.factories.Profile(m.ctx, m.record.RelayServiceURL)
+			if err != nil {
+				profile = nil
+			}
+		}
 		if err == nil {
 			if m.record.Role == "inviter" {
 				err = m.serve(profile)
@@ -319,6 +353,13 @@ func (m *Manager) run() {
 			m.cancel()
 			return
 		}
+		if errors.Is(err, sessionauth.ErrIncompatible) {
+			// The exact saved identity completed TLS while selecting a known
+			// previous application protocol. Stop automatic retries, but preserve
+			// the runtime so an explicit Connect can retry after updating.
+			m.changed("update-required")
+			return
+		}
 		if terminalPersistence(err) {
 			m.mu.Lock()
 			m.state = "failed"
@@ -327,7 +368,19 @@ func (m *Manager) run() {
 			m.cancel()
 			return
 		}
-		m.changed("connecting")
+		if errors.Is(err, chat.ErrCapacity) || errors.Is(err, errPeerCapacity) {
+			state := "capacity-reached"
+			if errors.Is(err, errPeerCapacity) {
+				state = "peer-capacity-reached"
+			}
+			m.changed(state)
+			m.cancel()
+			return
+		}
+		if m.authenticated != previousAuthentication {
+			attempt = 0
+		}
+		m.changed(retryState(err))
 		// Transport failures retry automatically, never prompt for another
 		// invitation or silently choose a different relay provider.
 		timer := time.NewTimer(retryDelay(attempt))
@@ -360,13 +413,13 @@ func (m *Manager) serve(profile *transport.RelayProfile) error {
 			return err
 		}
 		err = m.session(raw)
-		if terminalPersistence(err) || errors.Is(err, sessionauth.ErrIdentityChanged) {
+		if terminalSession(err) {
 			return err
 		}
 		if m.ctx.Err() != nil {
 			return m.ctx.Err()
 		}
-		m.changed("connecting")
+		m.changed(retryState(err))
 		if !profile.Ready() {
 			return ErrUnavailable
 		}
@@ -418,6 +471,11 @@ func (m *Manager) session(raw net.Conn) error {
 		contact.Revoke()
 	}
 	conversation := m.conversation
+	if err := conversation.ResetRetries(m.record.Peer); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	m.authenticated++
 	m.state = "connected"
 	m.revision++
 	m.mu.Unlock()

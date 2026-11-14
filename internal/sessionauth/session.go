@@ -28,16 +28,26 @@ import (
 const (
 	HandshakeTimeout = 15 * time.Second
 	MaxLifetime      = 12 * time.Hour
-	certificateName  = "WhatsUp contact v1"
-	// Version 2 adds bounded authenticated profile metadata to the message
-	// stream. Do not negotiate version 1 and then send an unknown packet kind.
-	protocol = "whatsup-contact/2"
+	// Certificates prove possession of pinned keys, rather than website PKI.
+	// Permit bounded desktop/VM clock drift without changing the local session
+	// lifetime or accepting certificates with unbounded validity intervals.
+	MaxClockSkew    = 5 * time.Minute
+	certificateName = "WhatsUp contact v1"
+	// Version 3 adds an authenticated capacity refusal, distinct from delivery
+	// acknowledgement. Both peers must understand it before any text is sent.
+	// Wire protocol versions are independent of application release numbers.
+	protocol = "whatsup-contact/3"
+	// The previous protocol is recognized only to diagnose a pinned peer after
+	// TLS authentication. It never grants an application Session or permission
+	// to send legacy/new message packets.
+	diagnosticProtocol = "whatsup-contact/2"
 )
 
 var (
 	ErrAuthentication  = errors.New("saved contact authentication failed")
 	ErrClosed          = errors.New("contact session is closed")
 	ErrIdentityChanged = errors.New("saved contact identity could not be verified")
+	ErrIncompatible    = errors.New("authenticated contact uses an incompatible messaging protocol")
 )
 
 type Options struct {
@@ -99,17 +109,24 @@ func Authenticate(ctx context.Context, raw net.Conn, options Options) (*Session,
 		return nil, ErrAuthentication
 	}
 	alpn := protocol + "." + options.ContactID + "." + base64.RawURLEncoding.EncodeToString(options.Association[:])
-	var rejected atomic.Bool
+	diagnosticALPN := diagnosticProtocol + "." + options.ContactID + "." + base64.RawURLEncoding.EncodeToString(options.Association[:])
+	verify := func(state tls.ConnectionState) error {
+		if state.NegotiatedProtocol != alpn && state.NegotiatedProtocol != diagnosticALPN {
+			return ErrAuthentication
+		}
+		return verifyPeer(state, options.Peer, state.NegotiatedProtocol, time.Now())
+	}
+	var identityRejected atomic.Bool
 	config := &tls.Config{
 		MinVersion: tls.VersionTLS13, MaxVersion: tls.VersionTLS13,
-		Certificates: []tls.Certificate{certificate}, NextProtos: []string{alpn},
+		Certificates: []tls.Certificate{certificate}, NextProtos: []string{alpn, diagnosticALPN},
 		ClientAuth: tls.RequireAnyClientCert, SessionTicketsDisabled: true,
 		// A saved contact pins an identity, not a DNS name. No connection is
 		// accepted without the exact-key and certificate checks below.
 		InsecureSkipVerify: true,
 		VerifyConnection: func(state tls.ConnectionState) error {
-			if verifyPeer(state, options.Peer, alpn, time.Now()) != nil {
-				rejected.Store(true)
+			if err := verify(state); err != nil {
+				identityRejected.Store(errors.Is(err, ErrIdentityChanged))
 				// Do not block writing an alert to an uncooperative peer.
 				_ = raw.Close()
 				return ErrAuthentication
@@ -132,11 +149,18 @@ func Authenticate(ctx context.Context, raw net.Conn, options Options) (*Session,
 	stopHandshake := context.AfterFunc(work, func() { _ = raw.Close() })
 	err = connection.HandshakeContext(work)
 	stopped := stopHandshake()
-	if rejected.Load() {
+	if identityRejected.Load() {
 		return nil, ErrIdentityChanged
 	}
-	if err != nil || !stopped || work.Err() != nil || !connection.ConnectionState().HandshakeComplete || verifyPeer(connection.ConnectionState(), options.Peer, alpn, time.Now()) != nil || raw.SetDeadline(time.Time{}) != nil {
+	state := connection.ConnectionState()
+	if err != nil || !stopped || work.Err() != nil || !state.HandshakeComplete || verify(state) != nil || raw.SetDeadline(time.Time{}) != nil {
 		return nil, ErrAuthentication
+	}
+	if state.NegotiatedProtocol == diagnosticALPN {
+		// Only a completed TLS handshake proving the exact peer and contact
+		// association can establish this diagnostic. A ClientHello or an
+		// unauthenticated TLS alert is never an authoritative update signal.
+		return nil, ErrIncompatible
 	}
 	s := &Session{state: &sessionState{raw: raw, tls: connection, local: options.Local.PublicKey(), peer: options.Peer, contactID: options.ContactID, association: options.Association, expires: expires}}
 	s.state.mu.Lock()
@@ -157,12 +181,15 @@ func verifyPeer(state tls.ConnectionState, expected identity.PublicKey, alpn str
 	}
 	c := state.PeerCertificates[0]
 	name, _ := asn1.Marshal(pkix.Name{CommonName: certificateName}.ToRDNSequence())
-	if len(c.Raw) == 0 || len(c.Raw) > 2048 || c.Version != 3 || c.SignatureAlgorithm != x509.PureEd25519 || c.PublicKeyAlgorithm != x509.Ed25519 || c.SerialNumber == nil || c.SerialNumber.Sign() <= 0 || c.SerialNumber.BitLen() > 128 || !c.BasicConstraintsValid || c.IsCA || c.KeyUsage != x509.KeyUsageDigitalSignature || len(c.ExtKeyUsage) != 2 || c.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth || c.ExtKeyUsage[1] != x509.ExtKeyUsageClientAuth || len(c.UnknownExtKeyUsage) != 0 || len(c.UnhandledCriticalExtensions) != 0 || len(c.DNSNames) != 0 || len(c.IPAddresses) != 0 || len(c.EmailAddresses) != 0 || len(c.URIs) != 0 || now.Before(c.NotBefore) || !now.Before(c.NotAfter) || c.NotAfter.Sub(c.NotBefore) > MaxLifetime+time.Minute || subtle.ConstantTimeCompare(name, c.RawSubject) != 1 || subtle.ConstantTimeCompare(c.RawSubject, c.RawIssuer) != 1 || c.CheckSignature(c.SignatureAlgorithm, c.RawTBSCertificate, c.Signature) != nil {
+	if len(c.Raw) == 0 || len(c.Raw) > 2048 || c.Version != 3 || c.SignatureAlgorithm != x509.PureEd25519 || c.PublicKeyAlgorithm != x509.Ed25519 || c.SerialNumber == nil || c.SerialNumber.Sign() <= 0 || c.SerialNumber.BitLen() > 128 || !c.BasicConstraintsValid || c.IsCA || c.KeyUsage != x509.KeyUsageDigitalSignature || len(c.ExtKeyUsage) != 2 || c.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth || c.ExtKeyUsage[1] != x509.ExtKeyUsageClientAuth || len(c.UnknownExtKeyUsage) != 0 || len(c.UnhandledCriticalExtensions) != 0 || len(c.DNSNames) != 0 || len(c.IPAddresses) != 0 || len(c.EmailAddresses) != 0 || len(c.URIs) != 0 || now.Add(MaxClockSkew).Before(c.NotBefore) || !now.Add(-MaxClockSkew).Before(c.NotAfter) || !c.NotBefore.Before(c.NotAfter) || c.NotAfter.Sub(c.NotBefore) > MaxLifetime+time.Minute || subtle.ConstantTimeCompare(name, c.RawSubject) != 1 || subtle.ConstantTimeCompare(c.RawSubject, c.RawIssuer) != 1 || c.CheckSignature(c.SignatureAlgorithm, c.RawTBSCertificate, c.Signature) != nil {
 		return ErrAuthentication
 	}
 	key, ok := c.PublicKey.(ed25519.PublicKey)
-	if !ok || len(key) != len(expected) || subtle.ConstantTimeCompare(key, expected[:]) != 1 {
+	if !ok || len(key) != len(expected) {
 		return ErrAuthentication
+	}
+	if subtle.ConstantTimeCompare(key, expected[:]) != 1 {
+		return ErrIdentityChanged
 	}
 	return nil
 }
