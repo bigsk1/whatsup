@@ -24,7 +24,7 @@ jobs:
           - os: ubuntu-24.04
             platform: linux-x64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
+    timeout-minutes: 150
     permissions:
       contents: read
     steps:

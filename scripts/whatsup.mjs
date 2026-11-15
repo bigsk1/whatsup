@@ -33,8 +33,10 @@ const toolDirectory = path.join(root, '.local/tools', `${process.platform}-${pro
 const privacyTags = 'ts_omit_logtail,ts_omit_netlog,ts_omit_clientmetrics,ts_omit_usermetrics,ts_omit_runtimemetrics,ts_omit_useproxy,ts_omit_portmapper,ts_omit_captiveportal,ts_omit_ssh';
 // Hosted Windows runners take about four times longer than a developer
 // machine; the messaging package alone nears Go's default 10m binary limit.
-const goTestTimeout = '-timeout=30m';
-const goTestRunnerTimeout = 40 * 60 * 1000;
+// Hosted runners also share one slow disk: concurrent fsync-heavy storage
+// packages push wall-clock-bounded transactions past their limits there.
+const goTestFlags = ['-timeout=30m', ...(process.env.GITHUB_ACTIONS === 'true' ? ['-p=1'] : [])];
+const goTestRunnerTimeout = 60 * 60 * 1000;
 const commands = new Set([
   'doctor', 'tooling-test', 'setup', 'dev', 'test-app', 'test-credentials', 'native-check', 'wsl', 'build', 'build-review', 'check', 'update', 'package', 'verify-release',
   // Reviewed Wails Taskfiles delegate to these same cross-platform implementations.
@@ -309,11 +311,11 @@ async function implementedCheck() {
   run('go', ['vet', './...'], { timeout: 300000 });
   const race = raceAvailable();
   if (!race && process.platform !== 'win32') throw new Error('Linux application tests require CGO and a compatible C compiler for the race detector');
-  run('go', ['test', '-mod=readonly', ...(race ? ['-race'] : []), '-count=1', goTestTimeout, './...'], { timeout: goTestRunnerTimeout });
+  run('go', ['test', '-mod=readonly', ...(race ? ['-race'] : []), '-count=1', ...goTestFlags, './...'], { timeout: goTestRunnerTimeout });
   // The reviewed replacement is a nested module, so ./... does not include its
   // narrowly scoped offline regression tests. Compile it with this locked graph.
-  run('go', ['test', '-mod=readonly', ...(race ? ['-race'] : []), '-count=1', goTestTimeout, 'github.com/tailscale/tailcat'], { timeout: goTestRunnerTimeout });
-  run('go', ['test', '-mod=readonly', ...(race ? ['-race'] : []), '-count=1', goTestTimeout, '-run', '^TestWhatsUp',
+  run('go', ['test', '-mod=readonly', ...(race ? ['-race'] : []), '-count=1', ...goTestFlags, 'github.com/tailscale/tailcat'], { timeout: goTestRunnerTimeout });
+  run('go', ['test', '-mod=readonly', ...(race ? ['-race'] : []), '-count=1', ...goTestFlags, '-run', '^TestWhatsUp',
     'github.com/wailsapp/wails/v3/pkg/application', 'github.com/wailsapp/wails/v3/internal/assetserver/webview',
     ...(process.platform === 'win32' ? ['github.com/wailsapp/wails/v3/internal/webview2/pkg/edge'] : [])], { timeout: goTestRunnerTimeout });
   if (!race) console.log('Windows Go unit tests passed WITHOUT the race detector: no configured CGO C compiler. Ubuntu race validation remains required.');
@@ -362,7 +364,7 @@ async function applicationCheck() {
   // runners have no interactive Secret Service session or graphical desktop.
   const race = raceAvailable();
   if (!race && process.platform !== 'win32') throw new Error('Linux preview checks require the race detector');
-  run('go', ['test', '-mod=readonly', ...(race ? ['-race'] : []), '-count=1', goTestTimeout, `-tags=integration,${privacyTags}`, './tests/integration/...'], { timeout: goTestRunnerTimeout });
+  run('go', ['test', '-mod=readonly', ...(race ? ['-race'] : []), '-count=1', ...goTestFlags, `-tags=integration,${privacyTags}`, './tests/integration/...'], { timeout: goTestRunnerTimeout });
   const nativeBinary = await nativeBuild({ staged: true });
   const source = await captureReviewSource(root);
   const report = await readJson(path.join(root, '.local', `validation-${process.platform}-${process.arch}.json`));
