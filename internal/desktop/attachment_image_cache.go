@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 
 	"whatsup/internal/media"
 )
@@ -13,6 +14,8 @@ const (
 	attachmentImageCacheEntries = 64
 	attachmentImageCacheBytes   = 16 << 20
 )
+
+var errAttachmentImageRetired = errors.New("attachment image cache generation retired")
 
 type attachmentImage struct {
 	data []byte
@@ -33,7 +36,7 @@ type attachmentImageCache struct {
 	building map[attachmentReference]chan struct{}
 	bytes    int
 	clock    uint64
-	epoch    uint64
+	epoch    atomic.Uint64
 }
 
 func newAttachmentImageCache() *attachmentImageCache {
@@ -43,7 +46,7 @@ func newAttachmentImageCache() *attachmentImageCache {
 func (c *attachmentImageCache) invalidate(contactID, transferID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.epoch++ // In-flight results from the retired generation cannot repopulate.
+	c.epoch.Add(1) // In-flight results from the retired generation cannot repopulate.
 	for key, value := range c.entries {
 		if contactID == "" || key.contactID == contactID && (transferID == "" || key.transferID == transferID) {
 			clear(value.image.data)
@@ -54,11 +57,26 @@ func (c *attachmentImageCache) invalidate(contactID, transferID string) {
 }
 
 func (c *attachmentImageCache) load(ctx context.Context, key attachmentReference, build func() (attachmentImage, error)) (attachmentImage, error) {
+	// Keep the generation of this invocation across mutex and coalesced-build
+	// waits. A waiter must not acquire a newer generation by looping after the
+	// build it joined was invalidated. The scalar never retains retired IDs.
+	epoch := c.epoch.Load()
 	for {
 		if err := ctx.Err(); err != nil {
 			return attachmentImage{}, err
 		}
 		c.mu.Lock()
+		// Cancellation can occur after the fast check above while this call is
+		// waiting for the guard. Recheck before serving cached pixels or admitting
+		// another decode, rather than relying only on the post-build cache gate.
+		if err := ctx.Err(); err != nil {
+			c.mu.Unlock()
+			return attachmentImage{}, err
+		}
+		if epoch != c.epoch.Load() {
+			c.mu.Unlock()
+			return attachmentImage{}, errAttachmentImageRetired
+		}
 		if value, ok := c.entries[key]; ok {
 			c.clock++
 			value.used = c.clock
@@ -78,12 +96,11 @@ func (c *attachmentImageCache) load(ctx context.Context, key attachmentReference
 		}
 		done := make(chan struct{})
 		c.building[key] = done
-		epoch := c.epoch
 		c.mu.Unlock()
 		image, err := build()
 		c.mu.Lock()
 		delete(c.building, key)
-		if epoch == c.epoch && ctx.Err() == nil && (err == nil || errors.Is(err, media.ErrImage)) && len(image.data) <= attachmentImageCacheBytes {
+		if epoch == c.epoch.Load() && ctx.Err() == nil && (err == nil || errors.Is(err, media.ErrImage)) && len(image.data) <= attachmentImageCacheBytes {
 			for len(c.entries) >= attachmentImageCacheEntries || c.bytes+len(image.data) > attachmentImageCacheBytes {
 				var oldest attachmentReference
 				var used uint64

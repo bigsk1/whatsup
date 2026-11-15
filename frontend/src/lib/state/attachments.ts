@@ -269,6 +269,7 @@ const bridge: AttachmentBridge = {
 
 const empty = () => ({
   contactID: '',
+  inputReady: false,
   items: [] as AttachmentItem[],
   drafts: [] as AttachmentDraft[],
   autoAcceptImages: false,
@@ -301,18 +302,50 @@ export function createAttachments(api: AttachmentBridge = bridge) {
     again = false;
   let desiredTarget = '',
     targetVersion = 0;
-  let targetTail: Promise<void> = Promise.resolve();
-  function setTarget(id: string): Promise<void> {
+  let targetTail: Promise<unknown> = Promise.resolve();
+  function setTarget(id: string): Promise<boolean> {
     desiredTarget = id;
     const version = ++targetVersion;
     const pending = targetTail
       .catch(() => {})
       .then(async () => {
-        if (version !== targetVersion) return;
-        await api.target(desiredTarget);
+        if (version !== targetVersion) return false;
+        await api.target(id);
+        return version === targetVersion && desiredTarget === id;
       });
     targetTail = pending;
     return pending;
+  }
+  async function bindInput(id: string, epoch: number): Promise<boolean> {
+    try {
+      const accepted = await setTarget(id);
+      if (!accepted || epoch !== generation || current.contactID !== id)
+        return false;
+      publish({
+        inputReady: true,
+        ...(current.notice === 'File input is unavailable for this contact.'
+          ? { notice: '' }
+          : {}),
+      });
+      return true;
+    } catch {
+      if (epoch === generation && current.contactID === id)
+        publish({
+          inputReady: false,
+          notice: 'File input is unavailable for this contact.',
+        });
+      return false;
+    }
+  }
+  // Native drop selection belongs to the backend runtime generation. Reassert
+  // the exact selected contact on explicit/focus refresh, even when the ID did
+  // not change: Clear history and security operations can retire that runtime.
+  async function refreshInput() {
+    const id = current.contactID,
+      epoch = generation;
+    if (!validID(id)) return;
+    publish({ inputReady: false });
+    if (await bindInput(id, epoch)) await reload();
   }
   function stopRequests() {
     generation++;
@@ -369,11 +402,15 @@ export function createAttachments(api: AttachmentBridge = bridge) {
     if (!timer)
       timer = setTimeout(() => {
         timer = undefined;
-        void reload();
+        if (current.inputReady) void reload();
+        else void refreshInput();
       }, 150);
   }
   async function select(id: string) {
-    if (id === current.contactID) return;
+    if (id === current.contactID) {
+      if (validID(id) && !current.inputReady) await refreshInput();
+      return;
+    }
     stopRequests();
     current = empty();
     current.contactID = id;
@@ -388,13 +425,7 @@ export function createAttachments(api: AttachmentBridge = bridge) {
       state.set(current);
       return;
     }
-    try {
-      await setTarget(id);
-      if (epoch === generation) void reload();
-    } catch {
-      if (epoch === generation)
-        publish({ notice: 'File input is unavailable for this contact.' });
-    }
+    if (await bindInput(id, epoch)) void reload();
   }
   async function action(
     run: (id: string) => Promise<void>,
@@ -422,7 +453,7 @@ export function createAttachments(api: AttachmentBridge = bridge) {
   return {
     state,
     select,
-    reload,
+    reload: refreshInput,
     setConnection(state: string, peerProtocol: number) {
       stageAllowed = state !== 'peer-removed';
       wireAllowed =
@@ -465,7 +496,7 @@ export function createAttachments(api: AttachmentBridge = bridge) {
       current = empty();
       current.contactID = id;
       state.set(current);
-      void reload();
+      void refreshInput();
     },
     stop() {
       stop?.();

@@ -8,10 +8,12 @@
     contacts,
     selectedID,
     onselect,
+    photoURLs = {},
   }: {
     contacts: ContactSummary[];
     selectedID: string;
     onselect: (contactID: string) => void;
+    photoURLs?: Record<string, string>;
   } = $props();
 </script>
 
@@ -30,6 +32,7 @@
         name={contactLabel(contact)}
         seed={contact.peerFingerprint}
         presence={presenceTone(contact.state)}
+        photoURL={photoURLs[contact.contactID] ?? ''}
       />
       <span class="contact-details">
         <strong>{contactLabel(contact)}</strong>

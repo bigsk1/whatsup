@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "observedOn": "2026-11-15",
+  "tools": {
+    "nsis": {
+      "version": "3.13",
+      "win32-x64": {
+        "url": "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip",
+        "sha256": "ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8",
+        "executable": "nsis-3.13/makensis.exe"
+      }
+    },
+    "nfpm": {
+      "kind": "source",
+      "version": "2.49.0",
+      "module": "github.com/goreleaser/nfpm/v2",
+      "package": ".",
+      "linux-x64": {
+        "executable": "nfpm"
+      }
+    },
+    "cyclonedx-gomod": {
+      "kind": "source",
+      "version": "1.12.0",
+      "module": "github.com/CycloneDX/cyclonedx-gomod",
+      "package": "github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod",
+      "win32-x64": {
+        "executable": "cyclonedx-gomod.exe"
+      },
+      "linux-x64": {
+        "executable": "cyclonedx-gomod"
+      }
+    }
+  }
+}

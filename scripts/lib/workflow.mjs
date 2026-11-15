@@ -114,6 +114,14 @@ export function requireFrontendScripts(manifest, names) {
 }
 
 export async function requireFullReadiness(root, policy) {
+  if (policy.unsignedPreview?.enabled === true) {
+    if (policy.unsignedPreview.signing !== 'none' || policy.unsignedPreview.inAppUpdatesEnabled !== false) {
+      throw new Error('Unsigned previews cannot enable signing claims or in-app updates');
+    }
+    const tests = await collectSourceFiles(path.join(root, 'tests/integration'), '.go');
+    if (!tests.some((file) => file.endsWith('_test.go'))) throw new Error('Preview checks require real integration test sources');
+    return;
+  }
   if (policy.applicationReady !== true) {
     throw new Error('Full application checks and packaging remain blocked: product/security gates are incomplete. Use npm run test:app for the implemented components. See README.md and SECURITY.md for the supported scope.');
   }

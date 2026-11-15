@@ -45,6 +45,7 @@
   import { createProfile } from './lib/state/profile';
   import { createContactStorage } from './lib/state/storage';
   import { createFileDrag } from './lib/state/file-drag';
+  import { createAvatars } from './lib/state/avatars';
   import type { LocalProfile } from './lib/profile';
 
   const appPreferences = createAppPreferences();
@@ -77,6 +78,18 @@
     apply: (value) => contacts.apply(value),
   });
   const profileState = profiles.state;
+  const avatars = createAvatars();
+  const avatarState = avatars.state;
+  const contactPhotos = $derived(
+    Object.fromEntries(
+      $avatarState.snapshot?.showContactPhotos
+        ? $avatarState.snapshot.contacts.map((contact) => [
+            contact.contactID,
+            contact.url,
+          ])
+        : [],
+    ),
+  );
   const profile = $derived($profileState.profile);
   const profileLoading = $derived($profileState.loading);
   const profileSaving = $derived($profileState.saving);
@@ -125,6 +138,12 @@
     inspect: () => void relayChange.inspectCarry(),
   };
   const contactsState = contacts.state;
+  $effect(() =>
+    avatars.scope(
+      mounted && native && !busy && status.storageState === 'unlocked',
+      $contactsState.contacts.map((contact) => contact.contactID),
+    ),
+  );
   const conversation = $derived(selectedConversation($contactsState));
   const attachmentsSelected = $derived(
     $attachmentsState.contactID === conversation.contactID,
@@ -172,18 +191,22 @@
   const attachmentStageAllowed = $derived(
     conversation.state !== 'peer-removed',
   );
+  let dragInputEligible = false;
   $effect(() => {
-    fileDrag.select(
-      conversation.contactID,
+    const allowed =
       native &&
-        status.storageState === 'unlocked' &&
-        status.attachmentsAvailable &&
-        attachmentStageAllowed &&
-        $sessionState.windowVisible &&
-        !settingsOpen &&
-        !$attachmentsState.deleteTarget &&
-        !busy,
-    );
+      status.storageState === 'unlocked' &&
+      status.attachmentsAvailable &&
+      attachmentStageAllowed &&
+      attachmentsSelected &&
+      $attachmentsState.inputReady &&
+      $sessionState.windowVisible &&
+      !settingsOpen &&
+      !$attachmentsState.deleteTarget &&
+      !busy;
+    fileDrag.select(conversation.contactID, allowed);
+    if (allowed && !dragInputEligible) void fileDrag.ready();
+    dragInputEligible = allowed;
   });
   $effect(() => {
     attachments.setConnection(conversation.state, conversation.peerProtocol);
@@ -228,7 +251,10 @@
     profiles.resetContact();
   }
 
-  const clearProfile = () => profiles.stop();
+  const clearProfile = () => {
+    profiles.stop();
+    avatars.stop();
+  };
   const refreshLocalProfile = () => profiles.refresh();
   const updateProfile = (value: LocalProfile) => profiles.save(value);
   const updateContactName = (id: string, name: string) =>
@@ -241,6 +267,7 @@
     );
     if (open) {
       void refreshLocalProfile();
+      void avatars.reload();
       if (native) void appPreferences.load();
       if (native) void security.load();
       if (native && conversation.contactID) void relayChange.reload();
@@ -482,6 +509,7 @@
           if (visible && conversationEnabled()) void relayChange.reload();
           if (visible && conversationEnabled()) void contactStorage.reload();
           if (visible && conversationEnabled()) void fileDrag.ready();
+          if (visible && conversationEnabled()) void avatars.reload();
         },
       },
     );
@@ -505,6 +533,7 @@
         void relayChange.reload();
         void contactStorage.reload();
         void fileDrag.ready();
+        void avatars.reload();
       }
     };
     window.addEventListener('focus', recoverContacts);
@@ -620,6 +649,7 @@
           contacts={matchingContacts}
           selectedID={conversation.contactID}
           onselect={selectConversation}
+          photoURLs={contactPhotos}
         />
       {:else}
         <div class="empty-contacts">
@@ -648,10 +678,11 @@
         seed={status.identityFingerprint || ownName}
         size="small"
         presence={selfTone}
+        photoURL={$avatarState.snapshot?.ownURL ?? ''}
       />
       <div class="me">
         <strong>{ownName}</strong>
-        <span>{native ? 'Desktop development build' : 'Browser preview'}</span>
+        <span>{native ? 'This device' : 'Browser preview'}</span>
       </div>
       <button
         class="icon-button"
@@ -671,6 +702,7 @@
             seed={conversation.peerFingerprint}
             size="large"
             presence={headerTone}
+            photoURL={contactPhotos[conversation.contactID] ?? ''}
           />
         {:else}
           <span class="header-logo"><Logo size="2.75rem" /></span>
@@ -816,9 +848,9 @@
         {:else if conversation.state === 'update-required'}
           <p class="connection-notice tone-danger" role="alert">
             <Icon name="reload" /><span
-              >Your saved contact is using an incompatible messaging protocol.
-              Update both apps to compatible builds, then choose Connect. Your
-              saved contact and queued messages are retained.</span
+              >Update required: update both devices to the latest WhatsUp
+              preview, then choose Connect. Your saved contact and queued
+              messages are retained.</span
             >
           </p>
         {:else if conversation.state === 'route-unavailable'}
@@ -963,6 +995,7 @@
           {#key conversation.contactID}
             <AttachmentPanel
               inlineMedia={true}
+              dragActive={$fileDragState}
               items={attachmentsSelected ? $attachmentsState.items : []}
               wireAllowed={attachmentWireAllowed}
               stageAllowed={attachmentStageAllowed}
@@ -1123,7 +1156,7 @@
         {storageLabel}</span
       ><span class="build-label"
         >{native
-          ? `Development · v${status.version}`
+          ? `v${status.version} preview`
           : 'Browser preview · desktop actions unavailable'}</span
       >
     </footer>
@@ -1137,13 +1170,6 @@
   onconfirm={() => void attachments.confirmDelete()}
   oncancel={() => attachments.cancelDelete()}
 />
-
-{#if $fileDragState}
-  <div class="file-drag-highlight" role="status" aria-live="polite">
-    <span>Drop files to prepare an attachment</span>
-    <small>You choose Send after the preview.</small>
-  </div>
-{/if}
 
 <SettingsDialog
   bind:this={settings}
@@ -1172,6 +1198,11 @@
   {profileSaving}
   {profileNotice}
   onsaveprofile={(value) => void updateProfile(value)}
+  avatars={$avatarState}
+  onchooseavatar={() => void avatars.choose()}
+  onremoveavatar={() => void avatars.remove()}
+  onavatarpreferences={(share, show) => void avatars.preferences(share, show)}
+  onreloadavatars={() => void avatars.reload(true)}
   {conversation}
   {contactSaving}
   {contactNotice}
@@ -1282,7 +1313,7 @@
     <div class="build-notice">
       <Icon name="info" />
       <p>
-        This is a development build. Pairing requires your chosen connection
+        This is an unsigned preview. Pairing requires your chosen connection
         service and explicit consent. Messages and attachments use approved
         contact credentials. Files require receiver approval and are never
         opened automatically. Strict direct-only delivery is unavailable.
@@ -1313,7 +1344,7 @@
     >
   </div>
   <div class="dialog-footer">
-    <span class="muted small">Version {status.version}</span><button
+    <span class="muted small">v{status.version} preview</span><button
       class="primary-button compact"
       onclick={() => aboutDialog.close()}>Got it</button
     >

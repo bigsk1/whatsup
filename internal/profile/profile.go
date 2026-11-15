@@ -17,11 +17,17 @@ const (
 var ErrName = errors.New("display name is invalid")
 
 // Local is encrypted local profile state. Revision changes only when the owner
-// saves a different name or sharing preference; sharing is off for a new profile.
+// saves different profile metadata; both sharing choices are off for a new
+// profile. AvatarRevision is a local change trigger, never a peer-supplied floor
+// or a counter shared across independent authenticated TLS sessions.
 type Local struct {
-	DisplayName      string `json:"displayName"`
-	ShareDisplayName bool   `json:"shareDisplayName"`
-	Revision         uint64 `json:"revision"`
+	DisplayName       string `json:"displayName"`
+	ShareDisplayName  bool   `json:"shareDisplayName"`
+	Revision          uint64 `json:"revision"`
+	Avatar            string `json:"avatar,omitempty"`
+	ShareAvatar       bool   `json:"shareAvatar,omitempty"`
+	HideContactPhotos bool   `json:"hideContactPhotos,omitempty"`
+	AvatarRevision    uint64 `json:"avatarRevision,omitempty"`
 }
 
 // Contact labels are scoped to an exact locally approved contact association.

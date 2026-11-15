@@ -70,7 +70,8 @@ export function connectionLabel(state: ConversationSnapshot['state']): string {
         connected: 'Connected',
         connecting: 'Waiting for their device',
         'identity-changed': 'Identity could not be verified',
-        'update-required': 'Compatible app update needed',
+        'update-required':
+          'Update required: update both devices to the latest WhatsUp preview.',
         'route-unavailable':
           'Approved connection route unavailable — choose Connect to retry',
         'authentication-failed': 'Authentication needs attention',

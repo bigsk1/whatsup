@@ -136,6 +136,12 @@ func consumeInitialProfile(t *testing.T, session *sessionauth.Session) {
 	if err != nil || got.kind != profilePacket || got.name != "" {
 		t.Fatal("default profile sharing emitted a name or invalid packet")
 	}
+	if session.Capabilities().Avatars {
+		got, err := readPacket(session)
+		if err != nil || got.kind != avatarPacket || got.avatar.revision != 1 || len(got.avatar.data) != 0 {
+			t.Fatal("default avatar sharing emitted data or invalid packet")
+		}
+	}
 }
 
 func waitExchange(t *testing.T, result <-chan error) {

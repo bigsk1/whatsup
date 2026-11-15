@@ -10,6 +10,11 @@ import { captureReviewSource } from './lib/review-source.mjs';
 import { verifyTailcatPatch } from './lib/tailcat-patch.mjs';
 import { ensureWailsPatch, prepareOfficialToolModule, retainReplacementSums, verifyWailsDefinition, verifyWailsPatch } from './lib/wails-patch.mjs';
 import { replacementAdvisories } from './lib/replacement-advisories.mjs';
+import { installPackagingTools, packagingTool } from './lib/packaging-tools.mjs';
+import { evaluateNpmAudit } from './lib/npm-advisories.mjs';
+import { arWriterAdvisories } from './lib/ar-writer-advisories.mjs';
+import { createPreviewSBOM, nativeInstaller, previewArtifactName } from './lib/preview-package.mjs';
+import { releasePreflight, releaseCollect, releasePublish } from './lib/release-ci.mjs';
 import {
   assertNodeRuntime, assertReviewedGoGraph, assertToolBuildInfo, atLeast, checksums, collectArtifacts, collectSourceFiles,
   latestLtsNode, parseVersion, privateToolEnvironment, readJson, requireApp, requireFrontendScripts, requireFullReadiness,
@@ -30,9 +35,10 @@ const commands = new Set([
   'doctor', 'tooling-test', 'setup', 'dev', 'test-app', 'test-credentials', 'native-check', 'wsl', 'build', 'build-review', 'check', 'update', 'package', 'verify-release',
   // Reviewed Wails Taskfiles delegate to these same cross-platform implementations.
   'native-build', 'native-package', 'frontend-dev', 'frontend-build', 'generate-bindings', 'run-native',
+  'release-preflight', 'release-collect', 'release-publish',
 ]);
 
-function run(executable, args, { cwd = root, capture = false, timeout = 120000, env = {}, mutableGo = false } = {}) {
+function run(executable, args, { cwd = root, capture = false, timeout = 120000, env = {}, mutableGo = false, acceptedStatuses = [0] } = {}) {
   verifyTailcatPatch(root, policy.reviewedGoPins);
   verifyWailsDefinition(root);
   const toolchainOnly = path.basename(executable).replace(/\.exe$/i, '') === 'go' && ['version', 'env', 'telemetry'].includes(args[0]);
@@ -48,7 +54,7 @@ function run(executable, args, { cwd = root, capture = false, timeout = 120000, 
     env: childEnvironment, stdio: capture ? 'pipe' : 'inherit', maxBuffer: 32 * 1024 * 1024,
   });
   if (result.error) throw new Error(`${path.basename(executable)}: ${result.error.message}`);
-  if (result.status !== 0) {
+  if (!acceptedStatuses.includes(result.status)) {
     // Do not echo child output into exception strings; dependencies may print secrets.
     throw Object.assign(new Error(`${path.basename(executable)} failed (exit ${result.status ?? 'unknown'}). Review its output locally.`), { exitCode: result.status });
   }
@@ -230,11 +236,25 @@ async function setup() {
   await frozenInstall();
   await installTool('github.com/wailsapp/wails/v3/cmd/wails3', policy.wailsVersion, 'wails3');
   await installTool('golang.org/x/vuln/cmd/govulncheck', policy.govulncheckVersion, 'govulncheck');
+  await installPackagingTools({ root, run });
   const playwright = path.join(frontendDirectory, 'node_modules/@playwright/test/cli.js');
   if (!existsSync(playwright)) throw new Error('The committed frontend graph must include the pinned Playwright test CLI');
   // Explicitly reviewed browser installation, not arbitrary npm lifecycle scripts.
   run(process.execPath, [playwright, 'install', 'chromium'], { cwd: frontendDirectory, timeout: 600000 });
-  console.log('Frozen dependencies, platform-specific pinned tools, and pinned Playwright Chromium installed. Npm lifecycle scripts remained disabled.');
+  console.log('Frozen dependencies, pinned native/packaging/SBOM tools and pinned Playwright Chromium installed. Npm lifecycle scripts remained disabled.');
+}
+
+async function npmAdvisoryScan(frontend) {
+  const cwd = frontend ? frontendDirectory : root;
+  const raw = npm(['audit', '--json', '--audit-level=low'], { cwd, capture: true, acceptedStatuses: [0, 1], timeout: 120000 });
+  let report;
+  try { report = JSON.parse(raw); } catch { throw new Error('npm audit did not return valid JSON'); }
+  await mkdir(path.join(root, '.local'), { recursive: true });
+  await writeJson(path.join(root, '.local', `npm-audit-${frontend ? 'frontend' : 'root'}-${process.platform}-${process.arch}.json`), report);
+  const result = evaluateNpmAudit(report, { frontend, exception: await readJson(path.join(root, 'config/advisory-exception.json')),
+    lock: await readJson(path.join(cwd, 'package-lock.json')) });
+  if (result.exceptions.length) console.log(`Reviewed development-only advisory exception: ${result.exceptions[0].advisory}; expires ${result.exceptions[0].expiresOn}. Raw audit retained locally.`);
+  return result;
 }
 
 async function frontendScript(name) {
@@ -295,13 +315,13 @@ async function implementedCheck() {
   if (!race) console.log('Windows Go unit tests passed WITHOUT the race detector: no configured CGO C compiler. Ubuntu race validation remains required.');
   const scans = [];
   for (const [name, scan] of [
-    ['root npm audit', () => npm(['audit', '--audit-level=low'], { timeout: 120000 })],
-    ['frontend npm audit', () => npm(['audit', '--audit-level=low'], { cwd: frontendDirectory, timeout: 120000 })],
+    ['root npm audit', () => npmAdvisoryScan(false)],
+    ['frontend npm audit', () => npmAdvisoryScan(true)],
     ['govulncheck', () => run(scanner, ['-test', './...'], { timeout: 600000 })],
     ['Wails CLI binary', () => run(scanner, ['-mode=binary', wails], { timeout: 600000 })],
     ['govulncheck binary', () => run(scanner, ['-mode=binary', scanner], { timeout: 600000 })],
   ]) {
-    try { await scan(); scans.push({ name, passed: true }); }
+    try { const result = await scan(); scans.push({ name, passed: true, ...(result?.exceptions ? { exceptions: result.exceptions } : {}) }); }
     catch (error) { scans.push({ name, passed: false, error: error.message }); }
   }
   try {
@@ -323,19 +343,35 @@ async function implementedCheck() {
     source: sourceBefore && sourceAfter ? { commit: sourceAfter.sourceCommit, dirty: sourceAfter.sourceDirty, digestSHA256: sourceAfter.sourceDigest } : null,
     scans, patches: patchEvidence(), applicationReady: false, transportIntegrationVerified: false,
   });
-  if (scans.some((scan) => !scan.passed)) throw new Error(`Security scans failed: ${scans.filter((scan) => !scan.passed).map((scan) => scan.name).join(', ')}. No advisory exception was applied. Local report: ${report}`);
+  if (scans.some((scan) => !scan.passed)) throw new Error(`Security scans failed: ${scans.filter((scan) => !scan.passed).map((scan) => scan.name).join(', ')}. Only the exact documented unexpired development advisory can be excepted. Local report: ${report}`);
   console.log('Implemented-component checks completed. These do not establish native two-machine messaging, complete transport security verification, or release readiness.');
 }
 
 async function applicationCheck() {
   await requireApp(root);
   await requireFullReadiness(root, policy);
+  // Full checks/package require current provenance before doing expensive work.
+  // A stale derived snapshot must not spend minutes testing without evidence.
+  const sourceBefore = await captureReviewSource(root);
   await implementedCheck();
-  await credentialCheck();
-  if (!raceAvailable()) throw new Error('Full application verification requires race-enabled Go tests on this platform');
-  run('go', ['test', '-mod=readonly', '-race', '-count=1', `-tags=integration,${privacyTags}`, './tests/integration/...'], { timeout: 600000 });
-  await nativeBuild();
-  console.log('Full application checks completed. Signing, SBOM, and signed-update verification remain separate release gates.');
+  // Native OS credential/tray/playback acceptance is recorded separately. CI
+  // runners have no interactive Secret Service session or graphical desktop.
+  const race = raceAvailable();
+  if (!race && process.platform !== 'win32') throw new Error('Linux preview checks require the race detector');
+  run('go', ['test', '-mod=readonly', ...(race ? ['-race'] : []), '-count=1', `-tags=integration,${privacyTags}`, './tests/integration/...'], { timeout: 600000 });
+  const nativeBinary = await nativeBuild({ staged: true });
+  const source = await captureReviewSource(root);
+  const report = await readJson(path.join(root, '.local', `validation-${process.platform}-${process.arch}.json`));
+  if (sourceBefore.sourceDigest !== source.sourceDigest || sourceBefore.sourceCommit !== source.sourceCommit
+      || !report.functionalChecksPassed || !validSecurityScans(report.scans) || !report.scans.every((scan) => scan.passed)
+      || report.source?.digestSHA256 !== source.sourceDigest) throw new Error('The completed checks do not match the native build source');
+  await writeJson(path.join(root, '.local', `check-${process.platform}-${process.arch}.json`), {
+    recordedAt: new Date().toISOString(), source, functionalChecksPassed: true, integrationChecksPassed: true,
+    nativeBuildPassed: true, goRaceEnabled: race, scans: report.scans, unsignedPreview: true,
+    nativeBinary, nativeBinarySHA256: createHash('sha256').update(await readFile(nativeBinary)).digest('hex'),
+    nativeUIAcceptance: 'not-run-by-this-command', authenticode: false, inAppUpdatesEnabled: false,
+  });
+  console.log('Unsigned-preview checks and native build passed. Native desktop acceptance and Authenticode remain separate; in-app updates stay disabled.');
 }
 
 async function credentialCheck() {
@@ -352,10 +388,10 @@ async function wslCheck() {
   if (process.platform !== 'win32') throw new Error('The WSL bridge runs from the authoritative Windows workspace');
   const requested = flags[0] ?? 'doctor';
   const task = ({ 'test:app': 'test-app', 'test:credentials': 'test-credentials', 'test:native': 'native-check', 'build:review': 'build-review', test: 'tooling-test' })[requested] ?? requested;
-  if (!['doctor', 'setup', 'tooling-test', 'test-app', 'test-credentials', 'native-check', 'build', 'build-review'].includes(task)) {
+  if (!['doctor', 'setup', 'tooling-test', 'test-app', 'test-credentials', 'native-check', 'build', 'build-review', 'check', 'package'].includes(task)) {
     throw new Error('WSL supports doctor, setup, test, test:app, test:credentials, test:native, build or build:review; use Ubuntu Desktop for native UI testing');
   }
-  if (['build-review', 'test-app'].includes(task)) {
+  if (['build-review', 'test-app', 'check', 'package'].includes(task)) {
     await mkdir(path.join(root, '.local'), { recursive: true });
     await writeJson(path.join(root, '.local/review-source.json'), await captureReviewSource(root));
   }
@@ -473,7 +509,7 @@ async function generateBindings() {
   }
 }
 
-async function nativeBuild() {
+async function nativeBuild({ staged = false } = {}) {
   await requireApp(root);
   requireNativePlatform();
   requireGo();
@@ -491,9 +527,10 @@ async function nativeBuild() {
   await generateBindings();
   await frontendScript(process.env.WHATSUP_DEV === 'true' ? 'build:dev' : 'build');
   if (!existsSync(path.join(frontendDirectory, 'dist/index.html'))) throw new Error('The frontend build did not produce real bundled application assets');
-  await mkdir(path.join(root, 'build/bin'), { recursive: true });
+  const outputDirectory = staged ? path.join(root, '.local/native-package', `${process.platform}-${process.arch}`) : path.join(root, 'build/bin');
+  await mkdir(outputDirectory, { recursive: true });
   const windows = process.platform === 'win32';
-  const output = path.join(root, 'build/bin', windows ? 'whatsup.exe' : 'whatsup');
+  const output = path.join(outputDirectory, windows ? 'whatsup.exe' : 'whatsup');
   const syso = path.join(root, `wails_windows_${process.arch === 'x64' ? 'amd64' : process.arch}.syso`);
   if (windows) run(cli, ['generate', 'syso', '-arch', process.arch === 'x64' ? 'amd64' : process.arch,
     '-icon', 'build/windows/icon.ico', '-manifest', 'build/windows/wails.exe.manifest',
@@ -509,6 +546,7 @@ async function nativeBuild() {
   }
   patchApprovals();
   console.log(`Native development candidate: ${output}. This unsigned build is not approved for distribution.`);
+  return output;
 }
 
 async function build() {
@@ -595,37 +633,75 @@ async function buildReview() {
 
 async function nativePackage() {
   await requireFullReadiness(root, policy);
-  cleanGitCommit();
   requireNativePlatform();
-  // Direct Wails tasks cannot bypass the application/packaging gate.
-  throw new Error('Native installer recipes require reviewed packaging tools, dependency notices/SBOM, and publisher signing configuration. See README.md and SECURITY.md for the supported scope.');
+  if (process.env.GITHUB_ACTIONS === 'true') cleanGitCommit();
+  const source = await captureReviewSource(root);
+  const receipt = await readJson(path.join(root, '.local', `check-${process.platform}-${process.arch}.json`));
+  if (!receipt.functionalChecksPassed || !receipt.integrationChecksPassed || !receipt.nativeBuildPassed
+      || !validSecurityScans(receipt.scans) || !receipt.scans.every((scan) => scan.passed)
+      || receipt.source?.sourceDigest !== source.sourceDigest || receipt.source?.sourceCommit !== source.sourceCommit
+      || !Number.isFinite(Date.parse(receipt.recordedAt)) || Date.parse(receipt.recordedAt) > Date.now()
+      || Date.now() - Date.parse(receipt.recordedAt) > 2 * 60 * 60 * 1000
+      || receipt.scans.some((scan) => scan.exceptions?.some((exception) => !Number.isFinite(Date.parse(exception.expiresOn)) || Date.now() >= Date.parse(exception.expiresOn)))) {
+    throw new Error('Native packaging requires fresh source-bound checks; run npm run package');
+  }
+  const version = (await readJson(path.join(root, 'package.json'))).version;
+  previewArtifactName(version);
+  const nativeBinary = path.join(root, '.local/native-package', `${process.platform}-${process.arch}`, process.platform === 'win32' ? 'whatsup.exe' : 'whatsup');
+  if (receipt.nativeBinary !== nativeBinary || receipt.nativeBinarySHA256 !== createHash('sha256').update(await readFile(nativeBinary)).digest('hex')) {
+    throw new Error('The checked native package executable changed');
+  }
+  const destination = path.join(root, 'artifacts', version, `${process.platform}-${process.arch}`);
+  if (!within(path.join(root, 'artifacts'), destination)) throw new Error('Artifact destination escapes the project');
+  if (existsSync(destination)) throw new Error('This versioned package output already exists; preserve or set it aside before retrying');
+  await mkdir(destination, { recursive: true });
+  try {
+    const toolScans = [];
+    const upstreamAr = await arWriterAdvisories(root);
+    await writeJson(path.join(root, '.local', `packaging-ar-upstream-${process.platform}-${process.arch}.json`), upstreamAr);
+    const scanner = requirePinnedTool('govulncheck', 'golang.org/x/vuln', policy.govulncheckVersion);
+    for (const name of ['cyclonedx-gomod', ...(process.platform === 'linux' ? ['nfpm'] : [])]) {
+      const tool = await packagingTool({ root, name, run });
+      run(scanner, ['-mode=binary', tool.executable], { timeout: 600000 });
+      toolScans.push({ name, version: tool.version, binarySHA256: tool.binarySHA256, passed: true, upstreamAr });
+    }
+    if (process.platform === 'linux') await buildNativeProbe();
+    const installer = await nativeInstaller({ root, destination, version, binary: nativeBinary, run });
+    const sbom = await createPreviewSBOM({ root, destination, version, binary: nativeBinary, source, patches: patchEvidence(), run });
+    const compiler = await packagingTool({ root, name: process.platform === 'win32' ? 'nsis' : 'nfpm', run });
+    const manifest = {
+      schemaVersion: 1, version, platform: process.platform, arch: process.arch,
+      sourceCommit: source.sourceCommit, sourceDigestSHA256: source.sourceDigest, sourceDirty: source.sourceDirty,
+      unsignedPreview: true, signed: false, authenticode: false, inAppUpdatesEnabled: false, releaseEligible: false,
+      go: requireGo(), node: process.versions.node, wails: policy.wailsVersion,
+      checks: { functional: 'passed', integration: 'passed', nativeBuild: 'passed', goRaceEnabled: receipt.goRaceEnabled,
+        nativeUIAcceptance: 'not-run-by-this-command', recordedAt: receipt.recordedAt, scans: receipt.scans },
+      patches: patchEvidence(), packagingToolScans: toolScans,
+      packaging: { name: process.platform === 'win32' ? 'nsis' : 'nfpm', version: compiler.version, kind: compiler.kind,
+        ...(compiler.kind === 'source' ? { lockSHA256: compiler.lockSHA256, binarySHA256: compiler.binarySHA256,
+          compilerGo: compiler.compilerGo, scanPassed: true } : { archiveSHA256: compiler.archiveSHA256 }) }, sbom,
+      files: [{ name: installer.name, size: installer.size, sha256: installer.sha256 }],
+    };
+    await writeJson(path.join(destination, 'build-manifest.json'), manifest);
+    const checksumFiles = await Promise.all([installer.name, 'sbom.cdx.json', 'build-manifest.json'].map(async (name) => ({
+      name, sha256: createHash('sha256').update(await readFile(path.join(destination, name))).digest('hex'),
+    })));
+    await writeFile(path.join(destination, 'SHA256SUMS'), checksumFiles.map(({ name, sha256 }) => `${sha256}  ${name}`).join('\n') + '\n', 'utf8');
+    const after = await captureReviewSource(root);
+    if (after.sourceDigest !== source.sourceDigest || after.sourceCommit !== source.sourceCommit) throw new Error('Source changed during packaging');
+    console.log(`Unsigned preview installer, SBOM and SHA256SUMS: ${destination}. No upload, publication or unsigned updater was performed.`);
+  } catch (error) {
+    // Keep failed output for diagnosis, with no plausible successful manifest.
+    await writeFile(path.join(destination, 'PACKAGE_FAILED'), 'Packaging failed. Do not distribute this directory.\n', 'utf8');
+    throw error;
+  }
 }
 
 async function packageApp() {
   await requireApp(root);
   await requireFullReadiness(root, policy);
-  const commit = cleanGitCommit();
   await applicationCheck();
-  run(wailsPath(), ['package'], { timeout: 600000 });
-  const version = (await readJson(path.join(frontendDirectory, 'package.json'))).version;
-  parseVersion(version);
-  const source = path.join(root, 'build/bin');
-  const files = await collectArtifacts(source);
-  const destination = path.join(root, 'artifacts', version, `${process.platform}-${process.arch}`);
-  if (!within(path.join(root, 'artifacts'), destination)) throw new Error('Artifact destination escapes the project output directory');
-  if (existsSync(destination)) throw new Error('Artifact destination already exists. Preserve it or choose a new app version.');
-  await mkdir(destination, { recursive: true });
-  for (const file of files) await cp(file.filename, path.join(destination, file.name), { force: false, errorOnExist: true });
-  const copied = await collectArtifacts(destination);
-  await writeFile(path.join(destination, 'SHA256SUMS'), await checksums(copied), 'utf8');
-  await writeJson(path.join(destination, 'build-manifest.json'), {
-    version, platform: process.platform, arch: process.arch, commit,
-    go: requireGo(), node: process.versions.node, wails: policy.wailsVersion,
-    releaseEligible: false,
-    reason: 'Local package only. SBOM, native signatures, and signed updater verification must pass release CI.',
-    files: copied.map(({ name, size }) => ({ name, size })),
-  });
-  console.log(`Local artifacts: ${destination}\nChecksums are integrity metadata, not signatures. Nothing was uploaded or published.`);
+  await nativePackage();
 }
 
 try {
@@ -667,6 +743,9 @@ try {
     requireNativePlatform();
     run(path.join(root, 'build/bin', process.platform === 'win32' ? 'whatsup.exe' : 'whatsup'), [], { timeout: 0 });
   }
+  if (command === 'release-preflight') await releasePreflight(root);
+  if (command === 'release-collect') await releaseCollect(root);
+  if (command === 'release-publish') await releasePublish(root);
   if (command === 'verify-release') throw new Error('Release verification is unavailable until SBOM, platform signing, and signed-update verification are implemented. No release is approved.');
 } catch (error) {
   console.error(`WhatsUp: ${error.message}`);

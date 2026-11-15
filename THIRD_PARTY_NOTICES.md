@@ -2,7 +2,8 @@
 
 This file records third-party material retained in this source tree. It does not
 select a license for WhatsUp's original code or grant rights to third-party marks.
-No public license for WhatsUp has been selected.
+WhatsUp's original code is covered by the [MIT license](LICENSE), copyright
+bigsk1. The third-party terms and notices below remain separate.
 
 ## Wails
 
@@ -87,10 +88,20 @@ The Arcade and Terminal looks use path data adapted from pixelarticons version
 `frontend/src/lib/icons/pixel-paths.ts`. The full notice is retained at
 [third_party/licenses/pixelarticons-MIT.txt](third_party/licenses/pixelarticons-MIT.txt).
 
+## Debian build-tool archive writer
+
+The isolated packaging tool retains a writer-only subset of
+`github.com/blakesmith/ar` at `v0.0.0-20190502131153-809d4375e1fb`. It contains
+the upstream header and writer with formatting changes, its unchanged
+[MIT notice](third_party/ar-writer/COPYING), and a local module declaration.
+The archive reader is not retained. This subset is used only to produce Debian
+packages, not by the WhatsUp application. Exact retained bytes and their source
+are recorded in [config/nfpm-ar-writer.json](config/nfpm-ar-writer.json).
+
 ## Dependency and binary distribution boundary
 
 Go/npm dependencies are resolved through their manifests, lockfiles and checksum
-records. Apart from the reviewed Tailcat library copy above, their full source is
+records. Apart from the reviewed Tailcat and build-tool subsets above, their full source is
 not vendored here. Other dependencies retain their own licenses. This source
 notice is not a complete binary license inventory or SBOM. Before distributing binaries, inventory direct
 and transitive dependencies, retain all required copyright/license notices, and

@@ -127,11 +127,21 @@ func decodePortableApplication(payload []byte) (portableApplication, error) {
 		if decodeCanonical(payload, &old) != nil {
 			return portableApplication{}, ErrRecovery
 		}
-		return portableApplication{Version: old.Version, RequiresPassphrase: old.RequiresPassphrase, State: upgradeEnvelopeV7(old.State)}, nil
+		upgraded := upgradeEnvelopeV7(old.State)
+		if !legacyAvatarEnvelope(upgraded) {
+			return portableApplication{}, ErrRecovery
+		}
+		return portableApplication{Version: old.Version, RequiresPassphrase: old.RequiresPassphrase, State: upgraded}, nil
 	}
 	var current portableApplication
 	if decodeCanonical(payload, &current) != nil {
 		return portableApplication{}, ErrRecovery
+	}
+	if version.State.Version == 8 {
+		if !legacyAvatarEnvelope(current.State) {
+			return portableApplication{}, ErrRecovery
+		}
+		current.State.Version = ApplicationSchemaVersion
 	}
 	return current, nil
 }

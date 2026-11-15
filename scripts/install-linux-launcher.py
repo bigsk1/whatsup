@@ -143,12 +143,12 @@ def desktop_entry(software: bool, icon: Path, *, hidden: bool = False) -> str:
     options = " --software-rendering" if software else ""
     icon_value = str(icon).replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
     return (
-        "[Desktop Entry]\nVersion=1.0\nName=WhatsUp (Development)\n"
-        "Comment=Private WhatsUp native startup and storage review\n"
+        "[Desktop Entry]\nVersion=1.0\nName=WhatsUp\n"
+        "Comment=Private one-to-one desktop messenger\n"
         f"Exec=/opt/whatsup-development/whatsup{options}\n"
         f"TryExec=/opt/whatsup-development/whatsup\nIcon={icon_value}\n"
         "Terminal=false\nType=Application\nCategories=Network;InstantMessaging;\n"
-        "StartupWMClass=whatsup\n"
+        "StartupWMClass=whatsup\nX-WhatsUp-Package-Launcher=true\n"
         + ("NoDisplay=true\n" if hidden else "")
     )
 
@@ -231,8 +231,10 @@ def main() -> int:
     content = desktop_entry(options.software_rendering, icon)
     install_entry(applications / "whatsup.desktop", content, 0o644)
     result["menuLauncherInstalled"] = True
-    install_entry(applications / "whatsup-development.desktop", desktop_entry(options.software_rendering, icon, hidden=True), 0o644)
-    result["compatibilityAliasInstalled"] = True
+    legacy = applications / "whatsup-development.desktop"
+    regular_target(legacy)
+    legacy.unlink(missing_ok=True)
+    result["compatibilityAliasRemoved"] = True
     for enabled, operation in [(options.desktop_shortcut, lambda: install_desktop_shortcut(content, result)),
                                (options.pin_to_dock, lambda: pin_to_dock(result))]:
         if enabled:

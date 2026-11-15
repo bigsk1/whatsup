@@ -59,7 +59,7 @@ func TestRouteSchemaSevenUpgradePreservesSQLiteAndProtection(t *testing.T) {
 			}
 			_, app = openProtectedTest(t, dir, keys, secret)
 			identity, _ = app.Identity()
-			if app.state.Version != 8 || app.state.MessageStoreState != "ready" || identity.Seed() != seed || !bytes.Equal(app.vault.master, master) || len(app.state.Routes) != 0 {
+			if app.state.Version != ApplicationSchemaVersion || app.state.MessageStoreState != "ready" || identity.Seed() != seed || !bytes.Equal(app.vault.master, master) || len(app.state.Routes) != 0 {
 				t.Fatal("metadata migration changed hierarchy/history state")
 			}
 			backup, err := os.ReadFile(filepath.Join(dir, app.state.MigrationBackup))
@@ -133,7 +133,7 @@ func TestRouteRecoveryAcceptsPhaseFiveSchemaSevenArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer staged.Close()
-	if staged.portable.State.Version != 8 || staged.portable.State.Routes == nil {
+	if staged.portable.State.Version != ApplicationSchemaVersion || staged.portable.State.Routes == nil {
 		t.Fatal("old archive was not normalized after authentication")
 	}
 	if err := staged.Commit(context.Background(), keys, nil, false); err != nil {

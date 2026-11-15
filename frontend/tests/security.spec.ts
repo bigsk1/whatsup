@@ -1,4 +1,7 @@
-import { serveDefaultNotificationActivation } from './contact-events';
+import {
+  serveDefaultNotificationActivation,
+  serveDefaultAvatars,
+} from './contact-events';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
@@ -71,6 +74,7 @@ async function desktop(page: Page, required = true) {
     pairingAvailable: state.storage === 'unlocked',
   });
   await page.route('**/wails/runtime', async (route) => {
+    if (await serveDefaultAvatars(route)) return;
     if (await serveDefaultNotificationActivation(route)) return;
     const body = route.request().postDataJSON(),
       operation = methods.get(body.args?.methodID),

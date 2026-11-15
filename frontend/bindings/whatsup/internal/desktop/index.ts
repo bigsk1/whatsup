@@ -11,6 +11,8 @@ export type {
     AttachmentDraft,
     AttachmentView,
     Attachments,
+    AvatarContact,
+    AvatarState,
     ContactStorage,
     InvitationInspection,
     InvitationShare,

@@ -42,6 +42,19 @@ export interface Attachments {
     "hasMore": boolean;
 }
 
+export interface AvatarContact {
+    "contactID": string;
+    "url": string;
+}
+
+export interface AvatarState {
+    "revision": number;
+    "ownURL": string;
+    "shareAvatar": boolean;
+    "showContactPhotos": boolean;
+    "contacts": AvatarContact[] | null;
+}
+
 /**
  * ContactStorage exposes only logical quota counters for an approved contact.
  * Reservations/tombstones count; this is neither OS free space nor exact disk use.

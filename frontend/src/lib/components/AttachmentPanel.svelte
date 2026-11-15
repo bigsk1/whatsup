@@ -27,6 +27,7 @@
     stageAllowed,
     wireNotice,
     inlineMedia = false,
+    dragActive = false,
   }: {
     items: AttachmentItem[];
     drafts: AttachmentDraft[];
@@ -51,11 +52,15 @@
     stageAllowed: boolean;
     wireNotice: string;
     inlineMedia?: boolean;
+    dragActive?: boolean;
   } = $props();
   let original = $state(false);
   let relay = $state<Record<string, boolean>>({});
   const contentID = $props.id();
   let expanded = $state(false);
+  $effect(() => {
+    if (dragActive) expanded = true;
+  });
   let previousTasks = new Set<string>();
   $effect(() => {
     const tasks = [
@@ -101,7 +106,12 @@
           : 'tone-idle';
 </script>
 
-<section class="attachments" aria-label="Attachments">
+<section
+  class="attachments"
+  class:drag-active={dragActive}
+  data-drop-active={dragActive}
+  aria-label="Attachments"
+>
   <button
     type="button"
     class="attachment-toggle"
@@ -146,10 +156,18 @@
           /> Send as file (keep original bytes)</label
         >
       </div>
-      <div class="drop-hint">
+      <div
+        class="drop-hint"
+        class:drag-active={dragActive}
+        role={dragActive ? 'status' : undefined}
+      >
         <Icon name="dragDrop" size="1.6em" />
         <p>
-          <strong>Drop a file anywhere in this window.</strong>
+          <strong
+            >{dragActive
+              ? 'Drop a file to prepare an attachment.'
+              : 'Drop a file anywhere in this window.'}</strong
+          >
           Images are re-encoded to remove metadata by default. Files stay local until
           you choose Send. One file per drop, up to 2 GiB.
         </p>
@@ -413,6 +431,9 @@
     text-align: left;
     border-radius: var(--radius-sm);
   }
+  .attachments.drag-active {
+    border-color: var(--accent);
+  }
   .toggle-icon {
     display: grid;
     place-items: center;
@@ -485,6 +506,10 @@
     font-size: 0.82rem;
     line-height: 1.45;
     color: var(--muted);
+  }
+  .drop-hint.drag-active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
   }
   .drop-hint strong {
     display: block;

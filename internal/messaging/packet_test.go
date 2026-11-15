@@ -24,7 +24,7 @@ func (r *headerOnlyReader) Read(p []byte) (int, error) {
 }
 
 func TestMessagingPacketRejectsUnknownTypesAndOversizeBeforeBodyRead(t *testing.T) {
-	for _, kind := range []byte{0, 8, 255} {
+	for _, kind := range []byte{0, 9, 255} {
 		reader := bytes.NewReader([]byte{kind, 1, 2, 3})
 		if _, err := readPacket(reader); !errors.Is(err, errProtocol) || reader.Len() != 3 {
 			t.Fatal("unknown packet type consumed payload or was accepted")

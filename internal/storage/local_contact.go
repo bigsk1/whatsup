@@ -194,6 +194,7 @@ func (r *LocalContactReceipt) WithLocalApproval(operation func() error) error {
 }
 
 func (a *ApplicationState) removeConversationLocked(next *applicationEnvelope, id string) {
+	a.retireAvatarSessionLocked(id)
 	for i, r := range next.Routes {
 		if r.ContactID == id {
 			copy(next.Routes[i:], next.Routes[i+1:])

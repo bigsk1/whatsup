@@ -39,6 +39,7 @@ func (a *ApplicationState) ForgetCommittedContact(record PendingRecord, stop fun
 		a.commitReceipts[record.ID] = state
 	}
 	state.canceling = true
+	a.retireAvatarSessionLocked(record.ID)
 	delete(a.localReceipts, record.ID)
 	if a.attachments != nil {
 		for _, contact := range a.state.Contacts {

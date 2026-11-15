@@ -1,26 +1,114 @@
-# Retained native packaging metadata. Packaging stays blocked until reviewed
-# installer tools, owner identity, notices/SBOM and signing are configured.
+# Compiled only through scripts/whatsup.mjs with pinned nFPM and checked sources.
 name: whatsup
 arch: ${GOARCH}
 platform: linux
-version: 0.0.17
+version: 0.1.0
+maintainer: bigsk1
 section: net
 priority: optional
-description: Private one-to-one desktop messenger
-# No public license or publisher has been selected.
-license: UNLICENSED
+description: Private one-to-one desktop messenger (unsigned preview)
+license: MIT
 contents:
-  - src: ./build/bin/whatsup
+  - src: ${WHATSUP_BINARY}
+    expand: true
+    dst: /opt/whatsup-development/whatsup
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+  - src: ${WHATSUP_PROBE}
+    expand: true
+    dst: /opt/whatsup-development/whatsup-webview-check
+    file_info:
+      mode: 0755
+  - src: ./scripts/migrate-linux-launchers.py
+    dst: /opt/whatsup-development/migrate-launchers.py
+    file_info:
+      mode: 0644
+  - src: /opt/whatsup-development/whatsup
     dst: /usr/bin/whatsup
+    type: symlink
   - src: ./build/appicon.png
     dst: /usr/share/icons/hicolor/1024x1024/apps/whatsup.png
+    file_info:
+      mode: 0644
+  - src: ./build/appicon.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/whatsup.svg
+    file_info:
+      mode: 0644
   - src: ./build/linux/desktop
     dst: /usr/share/applications/whatsup.desktop
+    file_info:
+      mode: 0644
+  - src: ./build/linux/apparmor/whatsup-development
+    dst: /etc/apparmor.d/whatsup-development
+    file_info:
+      mode: 0644
+  - src: ./LICENSE
+    dst: /usr/share/doc/whatsup/copyright
+    file_info:
+      mode: 0644
+  - src: ./THIRD_PARTY_NOTICES.md
+    dst: /usr/share/doc/whatsup/THIRD_PARTY_NOTICES.md
+    file_info:
+      mode: 0644
+  - src: ./third_party/licenses/wails-MIT.txt
+    dst: /usr/share/doc/whatsup/third_party/licenses/wails-MIT.txt
+    file_info:
+      mode: 0644
+  - src: ./third_party/licenses/tink-Apache-2.0.txt
+    dst: /usr/share/doc/whatsup/third_party/licenses/tink-Apache-2.0.txt
+    file_info:
+      mode: 0644
+  - src: ./third_party/licenses/phosphor-MIT.txt
+    dst: /usr/share/doc/whatsup/third_party/licenses/phosphor-MIT.txt
+    file_info:
+      mode: 0644
+  - src: ./third_party/licenses/pixelarticons-MIT.txt
+    dst: /usr/share/doc/whatsup/third_party/licenses/pixelarticons-MIT.txt
+    file_info:
+      mode: 0644
+  - src: ./third_party/licenses/fonts/jetbrains-mono-OFL-1.1.txt
+    dst: /usr/share/doc/whatsup/third_party/licenses/fonts/jetbrains-mono-OFL-1.1.txt
+    file_info:
+      mode: 0644
+  - src: ./third_party/licenses/fonts/nunito-OFL-1.1.txt
+    dst: /usr/share/doc/whatsup/third_party/licenses/fonts/nunito-OFL-1.1.txt
+    file_info:
+      mode: 0644
+  - src: ./third_party/licenses/fonts/orbitron-OFL-1.1.txt
+    dst: /usr/share/doc/whatsup/third_party/licenses/fonts/orbitron-OFL-1.1.txt
+    file_info:
+      mode: 0644
+  - src: ./third_party/licenses/fonts/press-start-2p-OFL-1.1.txt
+    dst: /usr/share/doc/whatsup/third_party/licenses/fonts/press-start-2p-OFL-1.1.txt
+    file_info:
+      mode: 0644
+  - src: ./third_party/licenses/fonts/rajdhani-OFL-1.1.txt
+    dst: /usr/share/doc/whatsup/third_party/licenses/fonts/rajdhani-OFL-1.1.txt
+    file_info:
+      mode: 0644
+  - src: ./third_party/licenses/fonts/vt323-OFL-1.1.txt
+    dst: /usr/share/doc/whatsup/third_party/licenses/fonts/vt323-OFL-1.1.txt
+    file_info:
+      mode: 0644
+  - src: ./third_party/tailcat/LICENSE
+    dst: /usr/share/doc/whatsup/third_party/tailcat/LICENSE
+    file_info:
+      mode: 0644
+  - src: ./third_party/ar-writer/COPYING
+    dst: /usr/share/doc/whatsup/third_party/ar-writer/COPYING
+    file_info:
+      mode: 0644
 depends:
   - libgtk-4-1
   - libwebkitgtk-6.0-4
-overrides:
-  rpm:
-    depends: [gtk4, webkitgtk6.0]
+  - apparmor (>= 4.0)
+  - python3
+  - desktop-file-utils
+  - libglib2.0-bin
 scripts:
+  preinstall: ./build/linux/nfpm/scripts/preinstall.sh
   postinstall: ./build/linux/nfpm/scripts/postinstall.sh
+  preremove: ./build/linux/nfpm/scripts/preremove.sh
+  postremove: ./build/linux/nfpm/scripts/postremove.sh

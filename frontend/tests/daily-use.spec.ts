@@ -1,4 +1,7 @@
-import { serveDefaultNotificationActivation } from './contact-events';
+import {
+  serveDefaultNotificationActivation,
+  serveDefaultAvatars,
+} from './contact-events';
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 import { unavailableStatus } from '../src/lib/backend';
@@ -76,6 +79,7 @@ async function fixture(page: Page) {
     host._wails.environment = { OS: 'windows', Arch: 'amd64', Debug: false };
   });
   await page.route('**/wails/runtime', async (route) => {
+    if (await serveDefaultAvatars(route)) return;
     if (await serveDefaultNotificationActivation(route)) return;
     if (await serveDefaultRelayChange(route)) return;
     const request = route.request().postDataJSON();

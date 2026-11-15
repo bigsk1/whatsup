@@ -18,8 +18,8 @@
     "Expanded native platform, accessibility, delayed-peer, in-flight lock and adversarial identity verification",
     "Packet-boundary direct-only support and real direct/forced-relay/path-change tests",
     "Real forced-direct/forced-relay and NAT/path-change failure tests beyond disposable loopback integration",
-    "Unpatched development dependency advisory GHSA-gcqx-w48m-w2h4 (deepmerge via Svelte Vite plugin)",
-    "Bounded file transfer, tray/notifications, backups, native installers, SBOM/signatures and updater verification"
+    "Expanded native installer, desktop and large-transfer acceptance across supported environments",
+    "Windows Authenticode signing; native installer acceptance and expanded platform/transport QA remain separate from unsigned preview checks"
   ],
   "govulncheckVersion": "v1.9.0",
   "frontendMajorConstraints": {
@@ -31,5 +31,10 @@
     "github.com/tailscale/tailcat": "v0.7.1-0.20261105151022-e00cdde6ff78",
     "github.com/tailscale/wireguard-go": "v0.0.0-20260928213353-e61b6b78110b"
   },
-  "transportIntegrationVerified": false
+  "transportIntegrationVerified": false,
+  "unsignedPreview": {
+    "enabled": true,
+    "signing": "none",
+    "inAppUpdatesEnabled": false
+  }
 }

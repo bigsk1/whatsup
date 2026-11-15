@@ -42,6 +42,27 @@ const relayID = Number(
     /export function GetRelayChange\([\s\S]*?\$Call\.ByID\((\d+)/,
   )?.[1],
 );
+const avatarStateID = Number(
+  generated.match(
+    /export function GetAvatarState\([\s\S]*?\$Call\.ByID\((\d+)/,
+  )?.[1],
+);
+// A narrowly scoped default for fixtures whose subject is preferences, relay
+// consent or recovery. Do not intercept any operation those fixtures exercise.
+export async function serveDefaultAvatars(route: Route): Promise<boolean> {
+  if (route.request().postDataJSON().args?.methodID !== avatarStateID)
+    return false;
+  await route.fulfill({
+    json: {
+      revision: 0,
+      ownURL: '',
+      shareAvatar: false,
+      showContactPhotos: true,
+      contacts: [],
+    },
+  });
+  return true;
+}
 export async function serveDefaultRelayChange(route: Route): Promise<boolean> {
   const body = route.request().postDataJSON();
   if (body.args?.methodID !== relayID) return false;
@@ -67,6 +88,7 @@ export async function serveDefaultRelayChange(route: Route): Promise<boolean> {
 export async function serveDefaultAppPreferences(
   route: Route,
 ): Promise<boolean> {
+  if (await serveDefaultAvatars(route)) return true;
   if (await serveDefaultNotificationActivation(route)) return true;
   if (await serveDefaultRelayChange(route)) return true;
   if (route.request().postDataJSON().args?.methodID === contactStorageID) {

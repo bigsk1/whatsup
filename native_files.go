@@ -25,6 +25,19 @@ func (h *nativeHost) configureFiles() error {
 			}
 			return path, err
 		},
+		PickAvatar: func(ctx context.Context) (string, error) {
+			if ctx.Err() != nil || h.windowValue() == nil {
+				return "", nativefiles.ErrUnavailable
+			}
+			dialog := h.app.Dialog.OpenFile().SetTitle("Choose your profile photo").
+				SetMessage("Choose a static PNG, JPEG or WebP image, up to 16 MiB.").
+				AttachToWindow(h.windowValue()).AddFilter("Profile photos (PNG, JPEG, WebP)", "*.png;*.jpg;*.jpeg;*.webp")
+			path, err := dialog.PromptForSingleSelection()
+			if ctx.Err() != nil {
+				return "", nativefiles.ErrUnavailable
+			}
+			return path, err
+		},
 		Clipboard: func(ctx context.Context) ([]byte, error) {
 			if ctx.Err() != nil {
 				return nil, nativefiles.ErrUnavailable

@@ -1,0 +1,44 @@
+name: Bug report
+description: Report a problem with WhatsUp.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a security vulnerability, use Security → Advisories → Report a vulnerability instead of a public issue.
+        Do not attach live logs, invitations, fingerprints, vaults, databases, recovery exports, message contents, contact photos, or personal endpoints. Logs and screenshots may contain personal data. Use synthetic data and inspect every attachment before posting.
+  - type: input
+    id: version
+    attributes:
+      label: WhatsUp version
+      placeholder: "For example: v0.1.0 preview"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and desktop
+      description: Windows version, or Linux distribution/version and desktop environment. No computer name or account name is needed.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Use invented contact names and synthetic files.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I checked this report and its attachments for personal data and secrets.
+          required: true

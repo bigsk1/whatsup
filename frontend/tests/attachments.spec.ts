@@ -70,6 +70,7 @@ async function desktop(
     hasMore: false,
     peer,
     protocol,
+    nativeTarget: '',
     dragHint: { active: false, revision: 0 },
   };
   let draftSequence = 0;
@@ -164,6 +165,14 @@ async function desktop(
         break;
       case 'SetAttachmentInputContact':
         if (args[0] === secondContactID) await second?.holdTarget?.();
+        state.nativeTarget = args[0] as string;
+        break;
+      case 'ClearHistory':
+        state.items = [];
+        state.drafts = [];
+        state.nativeTarget = '';
+        state.revision++;
+        result = conversation(args[0] as string);
         break;
       case 'GetAttachments':
       case 'GetAttachmentHistory':
@@ -909,16 +918,28 @@ test('single attachment deletion needs confirmation, removes only its local card
   expect(errors).toEqual([]);
 });
 
-test('native drag hints highlight eligible chat and clear on leave, Settings and lock without selecting any path', async ({
+test('native drag hints stay within the attachment panel and clear on leave, Settings and lock without selecting any path', async ({
   page,
 }) => {
   const { calls, state, errors } = await desktop(page);
-  const overlay = page.getByText('Drop files to prepare an attachment', {
+  const panel = page.getByRole('region', { name: 'Attachments', exact: true });
+  const hint = panel.getByText('Drop a file to prepare an attachment.', {
     exact: true,
   });
   state.dragHint = { active: true, revision: 1 };
   await nativeHint(page, 'whatsup:file-drag', state.dragHint);
-  await expect(overlay).toBeVisible();
+  await expect(hint).toBeVisible();
+  await expect(panel).toHaveAttribute('data-drop-active', 'true');
+  await expect(page.locator('.file-drag-highlight')).toHaveCount(0);
+  await expect(
+    page.getByRole('textbox', { name: 'Message', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Open settings', exact: true }),
+  ).toBeVisible();
+  expect(
+    await panel.evaluate((node) => getComputedStyle(node).position),
+  ).not.toBe('fixed');
   expect(
     calls.some(
       (call) =>
@@ -927,27 +948,109 @@ test('native drag hints highlight eligible chat and clear on leave, Settings and
   ).toBe(false);
   state.dragHint = { active: false, revision: 2 };
   await nativeHint(page, 'whatsup:file-drag', state.dragHint);
-  await expect(overlay).toHaveCount(0);
+  await expect(hint).toHaveCount(0);
   await nativeHint(page, 'whatsup:file-drag', { active: true, revision: 1 });
-  await expect(overlay).toHaveCount(0);
+  await expect(hint).toHaveCount(0);
   await page
     .getByRole('button', { name: 'Open settings', exact: true })
     .click();
   state.dragHint = { active: true, revision: 3 };
   await nativeHint(page, 'whatsup:file-drag', state.dragHint);
-  await expect(overlay).toHaveCount(0);
+  await expect(hint).toHaveCount(0);
   await page
     .getByRole('button', { name: 'Back to chats', exact: true })
     .click();
   state.dragHint = { active: true, revision: 4 };
   await nativeHint(page, 'whatsup:file-drag', state.dragHint);
-  await expect(overlay).toBeVisible();
+  await expect(hint).toBeVisible();
   state.storage = 'locked';
   await nativeHint(page, 'whatsup:storage-changed', { state: 'locked' });
-  await expect(overlay).toHaveCount(0);
+  await expect(hint).toHaveCount(0);
   state.dragHint = { active: true, revision: 5 };
   await nativeHint(page, 'whatsup:file-drag', state.dragHint);
-  await expect(overlay).toHaveCount(0);
+  await expect(hint).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('Clear history rebinds native drop input for the same selected contact and its staged draft appears through a hint', async ({
+  page,
+}) => {
+  const { state, calls, errors } = await desktop(page, [item], 'connected', 4);
+  await expect.poll(() => state.nativeTarget).toBe(contactID);
+  const before = calls.filter(
+    (call) => call.name === 'SetAttachmentInputContact',
+  ).length;
+  await page
+    .getByRole('button', { name: 'Clear history…', exact: true })
+    .click();
+  const confirmation = page.getByRole('dialog', {
+    name: 'Clear local history?',
+    exact: true,
+  });
+  await confirmation
+    .getByRole('button', { name: 'Clear history', exact: true })
+    .click();
+  await expect(confirmation).not.toBeVisible();
+  await expect
+    .poll(
+      () =>
+        calls.filter((call) => call.name === 'SetAttachmentInputContact')
+          .length,
+    )
+    .toBeGreaterThan(before);
+  await expect.poll(() => state.nativeTarget).toBe(contactID);
+  // Model the opaque draft and revision hint emitted after Go stages the native
+  // drop. Real filesystem staging is exercised separately by Go tests.
+  state.dragHint = { active: true, revision: 1 };
+  await nativeHint(page, 'whatsup:file-drag', state.dragHint);
+  const panel = page.getByRole('region', { name: 'Attachments', exact: true });
+  await expect(panel).toHaveAttribute('data-drop-active', 'true');
+  state.drafts = [{ ...draft, size: 42, requiresRelayWarning: false }];
+  state.revision++;
+  state.dragHint = { active: false, revision: 2 };
+  await nativeHint(page, 'whatsup:file-drag', state.dragHint);
+  await contactHint(page, contactID, state.revision);
+  await expect(
+    panel.getByRole('article', { name: 'Attachment preview', exact: true }),
+  ).toBeVisible();
+  await expect(panel).toHaveAttribute('data-drop-active', 'false');
+  expect(
+    calls.some(
+      (call) =>
+        call.name === 'ChooseAttachment' || call.name === 'SendAttachment',
+    ),
+  ).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test('drag feedback waits for the exact selected contact target acknowledgement and then shows the current native hint', async ({
+  page,
+}) => {
+  let release!: () => void;
+  const pending = new Promise<void>((done) => {
+    release = done;
+  });
+  const { state, errors } = await desktop(page, [], 'connected', 4, {
+    items: [],
+    holdTarget: () => pending,
+  });
+  await expect.poll(() => state.nativeTarget).toBe(contactID);
+  await page
+    .getByRole('button', {
+      name: 'Conversation with Synthetic second',
+      exact: true,
+    })
+    .click();
+  state.dragHint = { active: true, revision: 1 };
+  await nativeHint(page, 'whatsup:file-drag', state.dragHint);
+  const panel = page.getByRole('region', { name: 'Attachments', exact: true });
+  await expect(panel).toHaveAttribute('data-drop-active', 'false');
+  release();
+  await expect.poll(() => state.nativeTarget).toBe(secondContactID);
+  await expect(panel).toHaveAttribute('data-drop-active', 'true');
+  await expect(
+    panel.getByText('Drop a file to prepare an attachment.', { exact: true }),
+  ).toBeVisible();
   expect(errors).toEqual([]);
 });
 

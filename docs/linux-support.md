@@ -19,7 +19,27 @@ Secret Service session.
 Running a supplied preview executable does not require Go, Node.js, a development
 server or a separate browser.
 
-## Install a supplied preview bundle
+## Install the Ubuntu preview
+
+Install the downloaded unsigned preview package with the system package manager:
+
+    sudo apt install ./whatsup_0.1.0_amd64.deb
+
+The package installs runtime dependencies, one application-menu entry and the
+scoped AppArmor compatibility profile. Quit WhatsUp from its tray before an
+upgrade or uninstall. Upgrades preserve identity, contacts, history and WebView
+data. Removing the package keeps personal data and Secret Service credentials:
+
+    sudo apt remove whatsup
+
+The existing /opt/whatsup-development executable path and AppArmor attachment
+name are retained for compatibility; neither is the displayed application name.
+Known older review launchers are migrated to **WhatsUp**, retaining the canonical
+desktop ID and existing software-rendering choice. The app's data/profile
+directories do not move. Uninstall removes managed launchers and start-at-login
+integration without deleting those directories.
+
+## Older supplied preview bundles
 
 From the supplied preview bundle, run its setup command in your normal graphical
 desktop terminal. For a bundle containing the Linux integration directory:
@@ -35,8 +55,8 @@ The optional setup flags **--desktop-shortcut** and **--pin-to-dock** create a
 desktop shortcut and a GNOME dock entry. Other dock entries are preserved. Other
 desktop environments can use the standard application-menu entry.
 
-Launch **WhatsUp (Development)** from the menu or installed shortcut. This preview
-label identifies the unsigned preview build. Closing the window keeps the app in
+Launch **WhatsUp** from the menu or installed shortcut. The About page identifies
+the version as a preview. Closing the window keeps the app in
 the tray by default when a tray is available; without one, closing quits the app.
 Choose Quit from its tray menu to exit; no terminal needs to remain open. Start
 at login is optional under Settings → App behavior. If a tray icon cannot be
@@ -50,7 +70,8 @@ late tray startup is allowed a grace period. Startup without a compatible host
 shows a window rather than relying on an unreachable tray. Support for a
 graphical desktop does not guarantee that every tray implementation is available.
 
-No universal Linux package, signed DEB/RPM or Flatpak release is available yet.
+The Ubuntu DEB is unsigned preview software. No universal Linux package, RPM or
+Flatpak release is provided.
 
 ## WebKit sandbox compatibility
 

@@ -1,16 +1,16 @@
 version: '3'
 
-# Development metadata only. No publisher, public license, or signing identity
-# has been selected. Regenerating upstream build assets would overwrite reviewed
-# recipes and must be treated as a deliberate source change.
+# Preview metadata: MIT, copyright bigsk1. Authenticode is not configured.
+# Regenerating upstream build assets would overwrite reviewed recipes; review
+# that as a deliberate source change.
 info:
-  companyName: ''
+  companyName: bigsk1
   productName: WhatsUp
   productIdentifier: local.whatsup.desktop
   description: Private one-to-one desktop messenger
-  copyright: ''
-  comments: Unsigned development candidate
-  version: 0.0.17
+  copyright: Copyright (c) 2026 bigsk1
+  comments: Unsigned preview
+  version: 0.1.0
 
 dev_mode:
   root_path: .

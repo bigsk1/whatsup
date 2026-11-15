@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	ApplicationSchemaVersion = 8
+	ApplicationSchemaVersion = 9
 	MaxContacts              = 32
 	maxChatBytes             = 2 << 20
 	maxChatMessages          = 256
@@ -42,15 +42,17 @@ type identitySection struct {
 // A pin records only local approval metadata. It cannot restore a Contact,
 // transport credentials, reciprocal authentication, or live session authority.
 type contactSection struct {
-	Version    int                `json:"version"`
-	Local      identity.PublicKey `json:"local"`
-	Peer       identity.PublicKey `json:"peer"`
-	ContactID  string             `json:"contactID,omitempty"`
-	Chat       json.RawMessage    `json:"chat,omitempty"`
-	LocalName  string             `json:"localName,omitempty"`
-	PeerName   string             `json:"peerDisplayName,omitempty"`
-	StoreID    string             `json:"storeID"`
-	generation uint64
+	Version            int                `json:"version"`
+	Local              identity.PublicKey `json:"local"`
+	Peer               identity.PublicKey `json:"peer"`
+	ContactID          string             `json:"contactID,omitempty"`
+	Chat               json.RawMessage    `json:"chat,omitempty"`
+	LocalName          string             `json:"localName,omitempty"`
+	PeerName           string             `json:"peerDisplayName,omitempty"`
+	PeerAvatar         string             `json:"peerAvatar,omitempty"`
+	PeerAvatarRevision uint64             `json:"peerAvatarRevision,omitempty"`
+	StoreID            string             `json:"storeID"`
+	generation         uint64
 }
 
 // Schema 6 has no SQLite scopes or migration state. Decode its exact shape;
@@ -186,6 +188,7 @@ type ApplicationState struct {
 	localReceipts        map[string]*localContactReceiptState
 	messages             *messagestore.DB
 	attachments          *attachmentstore.Store
+	avatarSessions       map[string]*peerAvatarSessionState
 }
 
 func (a ApplicationState) String() string   { return "[private WhatsUp application state]" }
@@ -313,6 +316,13 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 			a.state = upgradeEnvelopeV7(old)
 			write = true
 			metadataMigration = true
+		case 8:
+			if decodeCanonical(payload, &a.state) != nil || !legacyAvatarEnvelope(a.state) {
+				return nil, ErrState
+			}
+			a.state.Version = ApplicationSchemaVersion
+			write = true
+			metadataMigration = true
 		case ApplicationSchemaVersion:
 			currentSchema = true
 			if decodeCanonical(payload, &a.state) != nil {
@@ -320,6 +330,10 @@ func OpenApplication(vault *Vault) (*ApplicationState, error) {
 				return nil, ErrState
 			}
 		default:
+			return nil, ErrState
+		}
+		if version.Version < ApplicationSchemaVersion && !legacyAvatarEnvelope(a.state) {
+			a.clearLocked()
 			return nil, ErrState
 		}
 		oldSchema = version.Version <= 6
@@ -564,6 +578,10 @@ func (a *ApplicationState) commitLocked(next applicationEnvelope) error {
 }
 
 func (a *ApplicationState) clearLocked() {
+	for id := range a.avatarSessions {
+		a.retireAvatarSessionLocked(id)
+	}
+	a.avatarSessions = nil
 	clear(a.state.Identity.Seed)
 	for index := range a.state.Contacts {
 		clear(a.state.Contacts[index].Chat)
@@ -591,7 +609,7 @@ func validateEnvelope(state applicationEnvelope) error {
 			return ErrState
 		}
 	}
-	if state.Profile.Revision == 0 || profile.ValidateName(state.Profile.DisplayName) != nil {
+	if state.Profile.Revision == 0 || profile.ValidateName(state.Profile.DisplayName) != nil || validateAvatarEncoded(state.Profile.Avatar) != nil || state.Profile.AvatarRevision > maxAvatarRevision || (state.Profile.Avatar != "" && state.Profile.AvatarRevision == 0) {
 		return ErrState
 	}
 	local, err := identity.FromSeed(state.Identity.Seed)
@@ -609,7 +627,7 @@ func validateEnvelope(state applicationEnvelope) error {
 			return ErrState
 		}
 		seen[contact.Peer] = true
-		if profile.ValidateName(contact.LocalName) != nil || profile.ValidateName(contact.PeerName) != nil || (contact.Version != 2 && (contact.LocalName != "" || contact.PeerName != "")) {
+		if profile.ValidateName(contact.LocalName) != nil || profile.ValidateName(contact.PeerName) != nil || validateAvatarEncoded(contact.PeerAvatar) != nil || contact.PeerAvatarRevision > maxAvatarRevision || (contact.PeerAvatar != "" && contact.PeerAvatarRevision == 0) || (contact.Version != 2 && (contact.LocalName != "" || contact.PeerName != "" || contact.PeerAvatar != "" || contact.PeerAvatarRevision != 0)) {
 			return ErrState
 		}
 		if len(contact.Chat) != 0 && (state.MessageStoreState != "pending" || validateChat(contact.Chat, contact.Local, contact.Peer) != nil) {

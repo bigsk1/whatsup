@@ -57,6 +57,10 @@ export function ChooseAttachment(id: string, sendAsFile: boolean): $CancellableP
     return $Call.ByID(145270285, id, sendAsFile);
 }
 
+export function ChooseProfileAvatar(): $CancellablePromise<$models.AvatarState> {
+    return $Call.ByID(2798975156);
+}
+
 export function ClearHistory(contactID: string): $CancellablePromise<messaging$0.Snapshot> {
     return $Call.ByID(2511817842, contactID);
 }
@@ -143,6 +147,14 @@ export function GetAttachments(id: string): $CancellablePromise<$models.Attachme
     return $Call.ByID(1522039443, id);
 }
 
+/**
+ * The avatar bridge returns local opaque capabilities only. It never returns
+ * raw image data, native paths, identity claims or a peer-controlled URL.
+ */
+export function GetAvatarState(): $CancellablePromise<$models.AvatarState> {
+    return $Call.ByID(1498623443);
+}
+
 export function GetContactStorage(contactID: string): $CancellablePromise<$models.ContactStorage> {
     return $Call.ByID(2752863434, contactID);
 }
@@ -227,6 +239,10 @@ export function ProposeRelayChange(id: string, serviceURL: string, consent: bool
     return $Call.ByID(4083933878, id, serviceURL, consent);
 }
 
+export function RemoveProfileAvatar(): $CancellablePromise<$models.AvatarState> {
+    return $Call.ByID(3680742983);
+}
+
 export function ResumeAttachment(id: string, attachment: string): $CancellablePromise<void> {
     return $Call.ByID(4042520743, id, attachment);
 }
@@ -265,6 +281,10 @@ export function SetAttachmentInputContact(id: string): $CancellablePromise<void>
 
 export function SetAutoAcceptImages(id: string, enabled: boolean): $CancellablePromise<void> {
     return $Call.ByID(134676394, id, enabled);
+}
+
+export function SetAvatarPreferences(shareAvatar: boolean, showContactPhotos: boolean): $CancellablePromise<$models.AvatarState> {
+    return $Call.ByID(4288652872, shareAvatar, showContactPhotos);
 }
 
 export function SetContactName(contactID: string, localName: string): $CancellablePromise<messaging$0.Snapshot> {

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "reviewedOn": "2026-11-15",
+  "expiresOn": "2026-12-15",
+  "advisory": "https://github.com/advisories/GHSA-gcqx-w48m-w2h4",
+  "package": "deepmerge",
+  "version": "4.3.1",
+  "parent": "@sveltejs/vite-plugin-svelte",
+  "parentVersion": "7.3.1",
+  "scope": "frontend development/build dependency only",
+  "reason": "No patched release exists. The plugin merges trusted local build configuration; peer traffic never reaches it. deepmerge is absent from the production bundle. This exception does not cover untrusted build configuration, a different dependency version, new advisories, production use or increased severity.",
+  "removal": "Remove immediately when a compatible patched upstream release is available; expiration fails the gate even if the advisory remains LOW."
+}

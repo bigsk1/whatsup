@@ -26,6 +26,17 @@ func validMessage(m message.Message) bool {
 }
 
 func (s *Scope) insert(ctx context.Context, tx *sql.Tx, m *metadata, metaID string, r record) error {
+	if err := s.insertRecord(ctx, tx, m, r); err != nil {
+		return err
+	}
+	return s.db.saveMeta(ctx, tx, s.id, metaID, *m)
+}
+
+// insertRecord changes one encrypted row and the transaction-local counters.
+// A normal single-message write saves metadata immediately through insert;
+// atomic legacy import saves the final counters once after its entire batch.
+// Pending caches still become visible only after the transaction commits.
+func (s *Scope) insertRecord(ctx context.Context, tx *sql.Tx, m *metadata, r record) error {
 	if m.NextSequence >= math.MaxInt64 {
 		return ErrCapacity
 	}
@@ -49,9 +60,6 @@ func (s *Scope) insert(ctx context.Context, tx *sql.Tx, m *metadata, metaID stri
 	}
 	if !r.Hidden && r.Message.Direction == message.Incoming && sequence > m.ReadThroughSequence {
 		m.Unread++
-	}
-	if err = s.db.saveMeta(ctx, tx, s.id, metaID, *m); err != nil {
-		return err
 	}
 	if r.Pending {
 		s.db.afterCommit = append(s.db.afterCommit, func() { s.db.contacts[s.id].pending[r.Message.ID] = sequence })
@@ -387,7 +395,7 @@ func (d *DB) ImportLegacy(contact string, messages []message.Message) error {
 			input.CreatedAt = input.CreatedAt.UTC()
 			input.Sequence = 0
 			r := record{Version: 1, Message: input, Pending: input.Direction == message.Outgoing && !input.Delivered, Digest: digest(input.Text)}
-			if err = scope.insert(ctx, tx, &m, key, r); err != nil {
+			if err = scope.insertRecord(ctx, tx, &m, r); err != nil {
 				return err
 			}
 		}

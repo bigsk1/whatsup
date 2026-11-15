@@ -21,6 +21,15 @@ inside authenticated connections, after pairing. They do not enter invitations
 or diagnostics. A private contact nickname stays local. Disabling sharing clears
 the peer's shared label when connected, but cannot erase independent copies.
 
+Profile pictures follow separate controls. **Share my profile photo** starts
+off; your own picture still shows locally. **Show contact photos** controls local
+display and starts on. Pictures are decoded, cropped, scaled and re-encoded in
+Go with bounded size and no source metadata, then stored encrypted with profile
+data. Only authenticated, approved peers with compatible photo support receive
+them. Disabling sharing sends an explicit clear on the next connection. Forget
+removes the contact's stored picture; neither action erases independent copies.
+The WebView receives only opaque local-media URLs, never paths or remote URLs.
+
 Invitations are temporary bearer links held in memory. Copying one places it on
 the OS clipboard; it can remain there or in clipboard history until removed.
 Cancellation, expiry and restart invalidate its authority. Links are not
@@ -57,8 +66,10 @@ Image sends apply EXIF orientation, re-encode and strip metadata by default. JPE
 photos remain JPEG. Full-size previews are sanitized on demand and use a bounded
 session cache cleared on retirement. Send as file retains original bytes and
 metadata as a save-only object, without image preview or automatic image acceptance. Copy/paste uses the OS clipboard and its retention policy.
-Recovery exports contain identity, contacts, history and attachments, encrypted
-under a separate recovery passphrase. Keep exports and secrets private.
+Recovery exports contain identity, profile, contacts, history and attachments,
+encrypted under a separate recovery passphrase. Import restores the saved
+profile's sharing choices as well as its pictures. Keep exports and secrets
+private.
 
 Clear history keeps the contact and cancels unfinished attachments. Queued text
 continues until acknowledged. Forget deletes one contact's local state while
@@ -123,6 +134,15 @@ Linux start at login uses `$XDG_CONFIG_HOME/autostart/whatsup.desktop`, normally
 `~/.config/autostart/whatsup.desktop`. Disabling it removes the app-managed entry.
 Installation may also create a menu/desktop launcher and optional dock entry.
 Notifications use the desktop notification service over the user's session bus.
+
+The Windows preview installer adds files under `%LOCALAPPDATA%\Programs\WhatsUp`,
+a Start Menu shortcut and its own per-user uninstall registration. Uninstall
+removes those files and the matching start-at-login value, preserving local data
+and OS credentials. Notification registration/history artifacts can remain under
+the separate OS retention rules described above. The Ubuntu package retains the
+established executable path and AppArmor name for compatibility while displaying
+one WhatsUp menu entry. Managed menu, desktop and autostart entries are removed
+on uninstall. Neither installer moves the application data or WebView profile.
 Action and dismissal signals must come from its current unique bus owner; IDs
 from a replaced service are not reused as conversation authority.
 

@@ -3,6 +3,7 @@
   import { tick } from 'svelte';
   import Icon from '../icons/Icon.svelte';
   import Logo from '../brand/Logo.svelte';
+  import Avatar from './Avatar.svelte';
   import type { Status } from '../backend';
   import type { ConversationSnapshot } from '../messaging';
   import { validDisplayName, type LocalProfile } from '../profile';
@@ -22,6 +23,7 @@
   import type { RelayChangeState } from '../state/relay';
   import ContactStorage from './ContactStorage.svelte';
   import type { ContactStorageState } from '../state/storage';
+  import type { AvatarState } from '../state/avatars';
 
   type Page =
     'profile' | 'contact' | 'appearance' | 'privacy' | 'app' | 'security';
@@ -40,6 +42,11 @@
     profileSaving,
     profileNotice,
     onsaveprofile,
+    avatars,
+    onchooseavatar,
+    onremoveavatar,
+    onavatarpreferences,
+    onreloadavatars,
     conversation,
     contactSaving,
     contactNotice,
@@ -70,6 +77,11 @@
     profileSaving: boolean;
     profileNotice: string;
     onsaveprofile: (value: LocalProfile) => void;
+    avatars: AvatarState;
+    onchooseavatar: () => void;
+    onremoveavatar: () => void;
+    onavatarpreferences: (share: boolean, show: boolean) => void;
+    onreloadavatars: () => void;
     conversation: ConversationSnapshot;
     contactSaving: boolean;
     contactNotice: string;
@@ -264,6 +276,116 @@
           </div>
 
           {#if selected === 'profile'}
+            <section
+              class="settings-card"
+              aria-labelledby="profile-picture-heading"
+            >
+              <div class="settings-card-heading">
+                <div>
+                  <h2 id="profile-picture-heading">Your profile picture</h2>
+                  <p class="muted small">
+                    Saved encrypted on this device. A picture is a label, not
+                    identity verification.
+                  </p>
+                </div>
+                <Avatar
+                  name={profile?.displayName || 'Your device'}
+                  seed={status.identityFingerprint}
+                  photoURL={unlocked ? (avatars.snapshot?.ownURL ?? '') : ''}
+                  size="large"
+                />
+              </div>
+              <p class="muted small">
+                Choose a still PNG, JPEG or WebP. WhatsUp crops it to a bounded
+                square and removes metadata. Your picture always shows to you,
+                even when sharing is off.
+              </p>
+              <div class="settings-save-row">
+                <button
+                  class="secondary-button compact"
+                  disabled={!unlocked ||
+                    busy ||
+                    avatars.busy ||
+                    avatars.loading ||
+                    !avatars.snapshot}
+                  onclick={onchooseavatar}
+                  >{avatars.snapshot?.ownURL
+                    ? 'Replace profile picture…'
+                    : 'Choose profile picture…'}</button
+                >
+                <button
+                  class="text-button"
+                  disabled={!unlocked ||
+                    busy ||
+                    avatars.busy ||
+                    avatars.loading ||
+                    !avatars.snapshot?.ownURL}
+                  onclick={onremoveavatar}>Remove profile picture</button
+                >
+                <button
+                  class="text-button"
+                  disabled={!unlocked ||
+                    busy ||
+                    avatars.busy ||
+                    avatars.loading}
+                  onclick={onreloadavatars}>Refresh pictures</button
+                >
+              </div>
+              <label class="settings-toggle-row" for="share-avatar"
+                ><span
+                  ><strong>Share my profile picture</strong><small
+                    >Off by default. Turning this off clears your shared picture
+                    on each contact's device when it next connects with photo
+                    support.</small
+                  ></span
+                ><input
+                  id="share-avatar"
+                  type="checkbox"
+                  checked={avatars.snapshot?.shareAvatar ?? false}
+                  disabled={!unlocked ||
+                    busy ||
+                    avatars.busy ||
+                    avatars.loading ||
+                    !avatars.snapshot}
+                  onchange={(event) =>
+                    onavatarpreferences(
+                      event.currentTarget.checked,
+                      avatars.snapshot?.showContactPhotos ?? true,
+                    )}
+                /><span class="toggle-track" aria-hidden="true"></span></label
+              >
+              <label class="settings-toggle-row" for="show-contact-photos"
+                ><span
+                  ><strong>Show contact photos</strong><small
+                    >Use shared pictures for your contacts. When off, or no
+                    picture was shared, their letter avatar stays.</small
+                  ></span
+                ><input
+                  id="show-contact-photos"
+                  type="checkbox"
+                  checked={avatars.snapshot?.showContactPhotos ?? true}
+                  disabled={!unlocked ||
+                    busy ||
+                    avatars.busy ||
+                    avatars.loading ||
+                    !avatars.snapshot}
+                  onchange={(event) =>
+                    onavatarpreferences(
+                      avatars.snapshot?.shareAvatar ?? false,
+                      event.currentTarget.checked,
+                    )}
+                /><span class="toggle-track" aria-hidden="true"></span></label
+              >
+              {#if avatars.notice}<p
+                  class="settings-inline-notice"
+                  role="status"
+                >
+                  {avatars.notice}
+                </p>{/if}
+              {#if avatars.loading}<p class="muted small" role="status">
+                  Loading profile pictures…
+                </p>{/if}
+            </section>
             <section class="settings-card" aria-labelledby="profile-heading">
               <div class="settings-card-heading">
                 <div>
@@ -388,7 +510,15 @@
                       Your saved contact on this device.
                     </p>
                   </div>
-                  <Icon name="contact" />
+                  <Avatar
+                    name={contactName}
+                    seed={conversation.peerFingerprint}
+                    photoURL={avatars.snapshot?.showContactPhotos
+                      ? (avatars.snapshot.contacts.find(
+                          (contact) => contact.contactID === selectedContactID,
+                        )?.url ?? '')
+                      : ''}
+                  />
                 </div>
                 <form
                   onsubmit={(event) => {

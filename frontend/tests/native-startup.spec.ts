@@ -186,7 +186,7 @@ test('detects runtime configuration already present before the app mounts', asyn
   const { calls, errors } = await syntheticDesktop(page);
   await page.addInitScript(injectRuntime, 'windows' as Platform);
   await page.goto('/');
-  await expect(page.getByText('Desktop development build')).toBeVisible();
+  await expect(page.getByText('This device', { exact: true })).toBeVisible();
   await expect(
     page.getByText('Local storage locked', { exact: true }),
   ).toBeVisible();
@@ -206,7 +206,7 @@ test('keeps desktop retry available after the first status request fails', async
   await expect(page.getByRole('alert')).toContainText(
     'The desktop could not report its status.',
   );
-  await expect(page.getByText('Desktop development build')).toBeVisible();
+  await expect(page.getByText('This device', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Try again', exact: true }).click();
   await expect(
     page.getByText('Local storage locked', { exact: true }),

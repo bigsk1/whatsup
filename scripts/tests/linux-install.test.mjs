@@ -132,12 +132,13 @@ with patch.object(m,'command',side_effect=command), patch.object(m.Path,'home',r
 installed=data/'icons/whatsup-development.png'
 assert installed.read_bytes()==(root/'build/appicon.png').read_bytes()
 assert stat.S_IMODE(installed.stat().st_mode)==0o644 and installed.stat().st_uid==os.getuid()
-for relative in ['applications/whatsup.desktop','applications/whatsup-development.desktop']:
+for relative in ['applications/whatsup.desktop']:
  entry=(data/relative).read_text()
  assert 'Icon='+str(installed)+'\\n' in entry and 'internet-chat' not in entry
  assert 'Exec=/opt/whatsup-development/whatsup --software-rendering\\n' in entry
  assert 'StartupWMClass=whatsup\\n' in entry
-assert 'NoDisplay=true\\n' in (data/'applications/whatsup-development.desktop').read_text()
+assert not (data/'applications/whatsup-development.desktop').exists()
+assert 'Name=WhatsUp\\n' in (data/'applications/whatsup.desktop').read_text()
 assert (desktop/'whatsup.desktop').read_text()==(data/'applications/whatsup.desktop').read_text()
 assert stat.S_IMODE((desktop/'whatsup.desktop').stat().st_mode)==0o755
 assert ['/usr/bin/gsettings','set','org.gnome.shell','favorite-apps',"['org.gnome.Terminal.desktop', 'whatsup.desktop']"] in calls

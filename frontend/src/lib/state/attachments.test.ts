@@ -161,7 +161,7 @@ describe('attachment state boundary', () => {
     await vi.waitFor(() => expect(get(store.state).items).toHaveLength(1));
     api.list = vi.fn(() => held.promise);
     const listing = store.reload();
-    expect(get(store.state).loading).toBe(true);
+    await vi.waitFor(() => expect(get(store.state).loading).toBe(true));
     api.decision = vi.fn().mockRejectedValue(new Error('Deletion failed'));
     store.requestDelete(item);
     await store.confirmDelete();
@@ -302,6 +302,135 @@ describe('attachment state boundary', () => {
     expect(get(store.state).contactID).toBe(other);
     store.stop();
     await vi.waitFor(() => expect(api.target).toHaveBeenLastCalledWith(''));
+  });
+  it('rebinds the exact native input contact after history invalidation even though selection did not change', async () => {
+    const api = mock();
+    let nativeTarget = '';
+    api.target = vi.fn(async (value) => {
+      nativeTarget = value;
+    });
+    const store = createAttachments(api);
+    await store.select(id);
+    expect(nativeTarget).toBe(id);
+    expect(get(store.state).inputReady).toBe(true);
+    nativeTarget = ''; // Clear history retires the backend contact's input lease.
+    store.invalidate();
+    expect(get(store.state).inputReady).toBe(false);
+    await vi.waitFor(() => expect(nativeTarget).toBe(id));
+    await vi.waitFor(() => expect(get(store.state).inputReady).toBe(true));
+    expect(vi.mocked(api.target).mock.calls.map(([value]) => value)).toEqual([
+      id,
+      id,
+    ]);
+    store.stop();
+  });
+  it('retries a failed same-contact target and reasserts it on explicit focus recovery after backend reset', async () => {
+    const api = mock();
+    let nativeTarget = '';
+    api.target = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('synthetic target unavailable'))
+      .mockImplementation(async (value: string) => {
+        nativeTarget = value;
+      });
+    const store = createAttachments(api);
+    await store.select(id);
+    expect(get(store.state).inputReady).toBe(false);
+    expect(get(store.state).notice).toBe(
+      'File input is unavailable for this contact.',
+    );
+    await store.select(id);
+    expect(nativeTarget).toBe(id);
+    expect(get(store.state).inputReady).toBe(true);
+    nativeTarget = ''; // A missed security lifecycle hint must be recoverable.
+    await store.reload();
+    expect(nativeTarget).toBe(id);
+    expect(get(store.state).inputReady).toBe(true);
+    expect(vi.mocked(api.target).mock.calls.map(([value]) => value)).toEqual([
+      id,
+      id,
+      id,
+    ]);
+    store.stop();
+  });
+  it('a held invalidation rebind cannot mark a replacement contact ready or rebind it after stop', async () => {
+    const api = mock(),
+      pending = deferred<void>(),
+      other = 'E'.repeat(21) + 'A';
+    let nativeTarget = '',
+      calls = 0;
+    api.list = vi.fn(async (selected) => ({
+      ...snapshot(),
+      contactID: selected,
+    }));
+    api.target = vi.fn(async (selected) => {
+      if (++calls === 2) await pending.promise;
+      nativeTarget = selected;
+    });
+    const store = createAttachments(api);
+    await store.select(id);
+    store.invalidate();
+    await vi.waitFor(() => expect(api.target).toHaveBeenCalledTimes(2));
+    const switching = store.select(other);
+    expect(get(store.state).inputReady).toBe(false);
+    pending.resolve();
+    await switching;
+    expect(nativeTarget).toBe(other);
+    expect(get(store.state).contactID).toBe(other);
+    expect(get(store.state).inputReady).toBe(true);
+    store.stop();
+    await vi.waitFor(() => expect(nativeTarget).toBe(''));
+    expect(get(store.state).inputReady).toBe(false);
+    expect(vi.mocked(api.target).mock.calls.map(([value]) => value)).toEqual([
+      id,
+      id,
+      other,
+      '',
+    ]);
+  });
+  it('retires stale readiness throughout a held same-contact target acknowledgement after backend reset', async () => {
+    const api = mock(),
+      pending = deferred<void>();
+    let nativeTarget = '',
+      calls = 0;
+    api.target = vi.fn(async (selected) => {
+      if (++calls === 2) await pending.promise;
+      nativeTarget = selected;
+    });
+    const store = createAttachments(api);
+    await store.select(id);
+    expect(get(store.state).inputReady).toBe(true);
+    nativeTarget = '';
+    const recovering = store.reload();
+    expect(get(store.state).inputReady).toBe(false);
+    await vi.waitFor(() => expect(api.target).toHaveBeenCalledTimes(2));
+    expect(nativeTarget).toBe('');
+    expect(get(store.state).inputReady).toBe(false);
+    pending.resolve();
+    await recovering;
+    expect(nativeTarget).toBe(id);
+    expect(get(store.state).inputReady).toBe(true);
+    store.stop();
+  });
+  it('stopping while a native target rebind is held retires readiness and sends the final empty target', async () => {
+    const api = mock(),
+      pending = deferred<void>();
+    let calls = 0,
+      nativeTarget = '';
+    api.target = vi.fn(async (selected) => {
+      if (++calls === 2) await pending.promise;
+      nativeTarget = selected;
+    });
+    const store = createAttachments(api);
+    await store.select(id);
+    store.invalidate();
+    await vi.waitFor(() => expect(api.target).toHaveBeenCalledTimes(2));
+    store.stop();
+    pending.resolve();
+    await vi.waitFor(() => expect(nativeTarget).toBe(''));
+    await vi.waitFor(() => expect(api.target).toHaveBeenLastCalledWith(''));
+    expect(get(store.state).contactID).toBe('');
+    expect(get(store.state).inputReady).toBe(false);
   });
   it('does not restore a delayed older attachment page after Clear history', async () => {
     const api = mock(),

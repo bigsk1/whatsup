@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "module": "github.com/blakesmith/ar",
+  "upstreamVersion": "v0.0.0-20190502131153-809d4375e1fb",
+  "upstreamModuleSum": "h1:m935MPodAbYS46DG4pJSv7WO+VECIWUQ7OJYSoTrMh4=",
+  "purpose": "Build-time Debian archive writer only; no archive reader is retained or compiled.",
+  "changes": "Upstream common.go and writer.go receive gofmt formatting only; local go.mod declares the retained package. COPYING is unchanged.",
+  "upstreamFilesSHA256": {
+    "common.go": "541fd07315ab5872d780da40e0514cc57ea89e0c2e8780f4f18beb4fee49e802",
+    "writer.go": "5ea0c52a1fcb0636b25d13c002105f21a120104eb0afedd1b1db600ecc7655ab",
+    "COPYING": "1a14eaa119dcfcb812d54ef951a72f6c72b2bac2dd247f376010303d73bfc54b"
+  },
+  "filesSHA256": {
+    "common.go": "25fe735fe8b288a65e1501ef15910c001ca32b2b2118c9d8240d42629c4f1865",
+    "writer.go": "90f4c5927e3eadda207eda7087852fde3d42f630c56a4a720264aac5c6e5819f",
+    "COPYING": "1a14eaa119dcfcb812d54ef951a72f6c72b2bac2dd247f376010303d73bfc54b",
+    "go.mod": "2d6f8fdb6b9b5da8c78207754128cc4ef02d7f7a38c02c6cfdde4479dd6e440d"
+  },
+  "removedAdvisory": {
+    "id": "GO-2026-6905",
+    "aliases": [],
+    "officialSource": "https://vuln.go.dev/ID/GO-2026-6905.json",
+    "package": "github.com/blakesmith/ar",
+    "symbols": [
+      "Reader.Read"
+    ],
+    "justification": "The entire archive Reader implementation and API are absent from the exact retained writer-only source inventory. nFPM uses NewWriter/Header only. This classification covers only the listed reader symbol; new IDs, aliases, writer symbols or incomplete classifications fail packaging."
+  }
+}

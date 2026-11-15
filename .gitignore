@@ -11,6 +11,7 @@ frontend/node_modules/
 !/docs/privacy.md
 !/docs/linux-support.md
 !/docs/versioning.md
+!/docs/images/
 /notes/
 /dev-notes/
 artifacts/

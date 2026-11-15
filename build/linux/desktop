@@ -2,7 +2,8 @@
 Version=1.0
 Name=WhatsUp
 Comment=Private one-to-one desktop messenger
-Exec=/usr/bin/whatsup
+Exec=/opt/whatsup-development/whatsup
+TryExec=/opt/whatsup-development/whatsup
 Terminal=false
 Type=Application
 Icon=whatsup

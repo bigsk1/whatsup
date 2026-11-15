@@ -1,9 +1,18 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import test from 'node:test';
 import { digestReviewFiles, verifyDerivedReviewSource } from '../lib/review-source.mjs';
+
+test('all source-bound WSL commands refresh the derived provenance handoff', async () => {
+  const bridge = await readFile(new URL('../wsl-run.sh', import.meta.url), 'utf8');
+  const guard = bridge.match(/if (\[\[[^\n]+\]\]); then\n\s+mkdir -p -m 700 "\$snapshot\/\.local"/);
+  assert.ok(guard, 'The source-metadata copy must remain a guarded handoff');
+  for (const task of ['build-review', 'test-app', 'check', 'package']) {
+    assert.match(guard[1], new RegExp(`\\$task = ${task}(?: |\\])`), `${task} must not retain metadata from an earlier build`);
+  }
+});
 
 test('derived source provenance rejects changed bytes and unsafe inventory paths', async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'whatsup-source-'));

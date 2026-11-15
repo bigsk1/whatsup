@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"errors"
 	"io"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"whatsup/internal/chat"
 	"whatsup/internal/profile"
 	"whatsup/internal/sessionauth"
+	"whatsup/internal/storage"
 	"whatsup/internal/transfer"
 )
 
@@ -33,12 +35,13 @@ type packet struct {
 	name       string
 	attachment transfer.Frame
 	control    controlFrame
+	avatar     avatarFrame
 }
 
 var errProtocol = errors.New("authenticated messaging protocol failed")
 
 func readPacket(reader io.Reader) (packet, error) {
-	return readPacketFor(reader, sessionauth.Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true})
+	return readPacketFor(reader, sessionauth.Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true, Avatars: true})
 }
 
 func readPacketFor(reader io.Reader, capabilities sessionauth.Capabilities) (packet, error) {
@@ -48,6 +51,13 @@ func readPacketFor(reader io.Reader, capabilities sessionauth.Capabilities) (pac
 	}
 	p := packet{kind: kind[0]}
 	switch p.kind {
+	case avatarPacket:
+		if !capabilities.Avatars {
+			return packet{}, errProtocol
+		}
+		frame, err := readAvatar(reader)
+		p.avatar = frame
+		return p, err
 	case controlPacket:
 		if !capabilities.Control {
 			return packet{}, errProtocol
@@ -89,6 +99,20 @@ func readPacketFor(reader io.Reader, capabilities sessionauth.Capabilities) (pac
 
 func writePacket(session *sessionauth.Session, p packet) error {
 	caps := session.Capabilities()
+	if p.kind == avatarPacket {
+		if !caps.Avatars {
+			return errProtocol
+		}
+		wire, err := encodeAvatar(p.avatar)
+		if err != nil || session.SetWriteDeadline(time.Now().Add(writeTimeout)) != nil {
+			return errProtocol
+		}
+		n, err := session.Write(wire)
+		if err != nil || n != len(wire) {
+			return errProtocol
+		}
+		return nil
+	}
 	if p.kind == transferPacket && !caps.Attachments || p.kind == controlPacket && !caps.Control {
 		return errProtocol
 	}
@@ -235,6 +259,8 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 	var pendingNonce [16]byte
 	var pingAt time.Time
 	var sentRevision uint64
+	var sentAvatarRevision uint64
+	var avatarWireRevision uint64
 	sendProfile := func() error {
 		local, err := m.application.Profile()
 		if err != nil {
@@ -250,10 +276,34 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 		if profile.ValidateName(name) != nil || writePacket(session, packet{kind: profilePacket, name: name}) != nil {
 			return errProtocol
 		}
+		if caps.Avatars && (avatarWireRevision == 0 || local.AvatarRevision != sentAvatarRevision) {
+			var data []byte
+			if local.ShareAvatar {
+				data, err = base64.StdEncoding.Strict().DecodeString(local.Avatar)
+				if err != nil {
+					return errProtocol
+				}
+			}
+			if avatarWireRevision >= maxAvatarRevision {
+				return errProtocol
+			}
+			avatarWireRevision++
+			if writePacket(session, packet{kind: avatarPacket, avatar: avatarFrame{avatarWireRevision, data}}) != nil {
+				return errProtocol
+			}
+			sentAvatarRevision = local.AvatarRevision
+		}
 		sentRevision = local.Revision
 		return nil
 	}
 	var profileLimit profileBudget
+	var avatarLimit avatarBudget
+	var avatarWriter *storage.PeerAvatarSession
+	defer func() {
+		if avatarWriter != nil {
+			avatarWriter.Close()
+		}
+	}()
 	sent := make(map[string]bool)
 	sendDue := func() (bool, error) {
 		m.mu.Lock()
@@ -288,6 +338,27 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 			return errProtocol
 		}
 		switch got.packet.kind {
+		case avatarPacket:
+			if !caps.Avatars || !avatarLimit.accept(got.packet.avatar, time.Now()) || session.WithLivePeer(m.record.Peer, func() error { return nil }) != nil {
+				return errProtocol
+			}
+			if avatarWriter == nil {
+				if control.proof == nil {
+					return errProtocol
+				}
+				var err error
+				avatarWriter, err = m.application.OpenPeerAvatarSession(work, *control.proof)
+				if err != nil {
+					return err
+				}
+			}
+			changed, err := avatarWriter.Apply(got.packet.avatar.revision, got.packet.avatar.data)
+			if err != nil {
+				return err
+			}
+			if changed {
+				m.changed("connected")
+			}
 		case controlPacket:
 			if !caps.Control {
 				return errProtocol

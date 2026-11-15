@@ -45,4 +45,4 @@ elif ! /opt/whatsup-development/whatsup-webview-check --accelerated; then
 fi
 if [[ -n $launch_options ]]; then launcher_options+=(--software-rendering); fi
 /usr/bin/python3 -I -B "$stage_dir/scripts/install-linux-launcher.py" "${launcher_options[@]}"
-printf 'Setup and native runtime check passed. Launch WhatsUp (Development) from the application menu.\nRendering options:%s\n' "${launch_options:- accelerated}"
+printf 'Setup and native runtime check passed. Launch WhatsUp from the application menu.\nRendering options:%s\n' "${launch_options:- accelerated}"

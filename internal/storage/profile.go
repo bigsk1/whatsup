@@ -43,7 +43,7 @@ func (a *ApplicationState) SetProfile(name string, share bool) (profile.Local, e
 		return profile.Local{}, ErrCapacity
 	}
 	next := a.cloneLocked()
-	next.Profile = profile.Local{DisplayName: name, ShareDisplayName: share, Revision: current.Revision + 1}
+	next.Profile.DisplayName, next.Profile.ShareDisplayName, next.Profile.Revision = name, share, current.Revision+1
 	if err := a.commitLocked(next); err != nil {
 		return profile.Local{}, err
 	}

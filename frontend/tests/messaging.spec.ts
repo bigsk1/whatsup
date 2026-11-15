@@ -411,7 +411,7 @@ for (const state of ['authentication-failed', 'update-required'] as const) {
     const warning = page.getByRole('alert');
     await expect(warning).toContainText(
       state === 'update-required'
-        ? 'Your saved contact is using an incompatible messaging protocol.'
+        ? 'Update required: update both devices to the latest WhatsUp preview'
         : 'The saved contact could not authenticate.',
     );
     await expect(page.getByRole('log', { name: 'Messages' })).toContainText(

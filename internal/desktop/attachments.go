@@ -43,12 +43,13 @@ func attachmentActionError(err error) error {
 // AttachmentRuntimeOptions is construction input for Go only. Paths and native
 // capabilities are never exposed through the bound Service or renderer events.
 type AttachmentRuntimeOptions struct {
-	Life      context.Context
-	Pick      func(context.Context) (string, error)
-	Clipboard func(context.Context) ([]byte, error)
-	Save      func(context.Context, string) (string, error)
-	Reveal    func(context.Context, string) error
-	Serve     func(http.ResponseWriter, *http.Request, io.ReadSeekCloser, int64) error
+	Life       context.Context
+	Pick       func(context.Context) (string, error)
+	PickAvatar func(context.Context) (string, error)
+	Clipboard  func(context.Context) ([]byte, error)
+	Save       func(context.Context, string) (string, error)
+	Reveal     func(context.Context, string) error
+	Serve      func(http.ResponseWriter, *http.Request, io.ReadSeekCloser, int64) error
 }
 
 type attachmentControl struct {
@@ -58,16 +59,19 @@ type attachmentControl struct {
 }
 
 type attachmentSession struct {
-	application *storage.ApplicationState
-	messages    *messaging.Registry
-	life        context.Context
-	cancel      context.CancelFunc
-	contacts    map[string]*attachmentContact
-	selected    string
-	drafts      map[string]attachmentReference
-	assets      map[string]attachmentReference
-	saved       map[string]savedAttachment
-	images      *attachmentImageCache
+	application     *storage.ApplicationState
+	messages        *messaging.Registry
+	life            context.Context
+	cancel          context.CancelFunc
+	contacts        map[string]*attachmentContact
+	selected        string
+	drafts          map[string]attachmentReference
+	assets          map[string]attachmentReference
+	saved           map[string]savedAttachment
+	images          *attachmentImageCache
+	avatarTokens    map[string]avatarReference
+	avatarRevision  uint64
+	avatarSignature [32]byte
 }
 
 type attachmentContact struct {
@@ -220,6 +224,11 @@ func (s *Service) retireAttachmentsLocked(id string) {
 	for handle, ref := range g.assets {
 		if ref.contactID == id {
 			delete(g.assets, handle)
+		}
+	}
+	for token, ref := range g.avatarTokens {
+		if ref.contactID == id {
+			delete(g.avatarTokens, token)
 		}
 	}
 	for handle, saved := range g.saved {
@@ -952,6 +961,11 @@ func ServeAttachment(s *Service, w http.ResponseWriter, r *http.Request) bool {
 	if s.attachments == nil || s.attachments.session == nil {
 		s.mu.Unlock()
 		deny()
+		return true
+	}
+	if data, mime, ok := s.avatarDataLocked(token); ok {
+		s.mu.Unlock()
+		serveAvatar(w, r, data, mime)
 		return true
 	}
 	ref, ok := s.attachments.session.assets[token]

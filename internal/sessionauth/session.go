@@ -41,6 +41,7 @@ const (
 	// Cancellation has durable, idempotent request/receipt semantics. Older
 	// wire-4 peers retain their original attachment grammar.
 	withdrawProtocol = "whatsup-contact/4-control2"
+	avatarProtocol   = "whatsup-contact/4-control3-avatar1"
 	// Previous protocol framing is selected only after exact-contact mutual TLS.
 	previousProtocol = "whatsup-contact/3"
 	// Wire 2 is diagnostic-only: authenticate its exact pin and context before
@@ -74,6 +75,7 @@ type Capabilities struct {
 	Attachments bool
 	Control     bool
 	Withdrawals bool
+	Avatars     bool
 }
 
 func (s *Session) Capabilities() Capabilities {
@@ -84,17 +86,18 @@ func (s *Session) Capabilities() Capabilities {
 }
 
 type sessionState struct {
-	mu           sync.Mutex
-	raw          net.Conn
-	tls          *tls.Conn
-	local, peer  identity.PublicKey
-	contactID    string
-	association  [32]byte
-	capabilities Capabilities
-	expires      time.Time
-	closed       bool
-	stop         func() bool
-	timer        *time.Timer
+	mu                 sync.Mutex
+	raw                net.Conn
+	tls                *tls.Conn
+	local, peer        identity.PublicKey
+	contactID          string
+	association        [32]byte
+	capabilities       Capabilities
+	expires            time.Time
+	closed             bool
+	avatarScopeClaimed bool
+	stop               func() bool
+	timer              *time.Timer
 }
 
 func (Session) String() string               { return "[private authenticated WhatsUp contact session]" }
@@ -160,6 +163,7 @@ func authenticate(ctx context.Context, raw net.Conn, options Options, associatio
 		name string
 		caps Capabilities
 	}{
+		{avatarProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true, Avatars: true}},
 		{withdrawProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true}},
 		{controlProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true}},
 		{protocol, Capabilities{WireVersion: 4, Attachments: true}},
@@ -305,6 +309,23 @@ func (s *Session) WithLivePeer(peer identity.PublicKey, operation func() error) 
 		return ErrClosed
 	}
 	return operation()
+}
+
+// ClaimAvatarScope spends this fresh TLS session's single avatar-snapshot
+// scope. Copies share state, so copying a Session or reopening a storage lease
+// cannot manufacture another authoritative first snapshot on the same stream.
+// This is backend-only lifetime bookkeeping, not a durable identity grant.
+func (s *Session) ClaimAvatarScope() error {
+	if s == nil || s.state == nil {
+		return ErrAuthentication
+	}
+	s.state.mu.Lock()
+	defer s.state.mu.Unlock()
+	if s.state.closed || !time.Now().Before(s.state.expires) || !s.state.capabilities.Avatars || s.state.avatarScopeClaimed {
+		return ErrAuthentication
+	}
+	s.state.avatarScopeClaimed = true
+	return nil
 }
 
 func (s *Session) Read(p []byte) (int, error)         { return s.state.tls.Read(p) }

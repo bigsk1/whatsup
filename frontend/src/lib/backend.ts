@@ -11,7 +11,7 @@ export interface Status {
 }
 
 export const unavailableStatus: Status = Object.freeze({
-  version: '0.0.17',
+  version: '0.1.0',
   identityFingerprint: '',
   storageState: 'unavailable',
   networkState: 'unavailable',

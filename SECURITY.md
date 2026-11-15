@@ -1,6 +1,6 @@
 # Security information
 
-WhatsUp 0.0.17 is unsigned preview software, not a supported public release.
+WhatsUp 0.1.0 is unsigned preview software, not a stable release.
 It has not undergone an independent security audit or certification. Do not
 rely on the preview for sensitive communication.
 
@@ -130,15 +130,41 @@ Notification names/previews are opt-in and may persist in OS notification histor
 WebView2 has vendor diagnostics outside this policy. See [privacy](docs/privacy.md)
 for data paths, registry/autostart artifacts and notification behavior.
 
-Signed installers, signed update verification, SBOM/distribution checks and a
-private reporting route are incomplete. There is no automatic updater. Version
-numbers, passing tests and successful connections do not certify security.
+Preview packages include checksums and an SBOM. Pushing a version tag runs GitHub
+release CI, which repeats the checks, generates build-provenance attestations and
+publishes the release. It never replaces an existing release.
+An attestation identifies the source/workflow; it is not Authenticode signing,
+a security audit or a guarantee that a package is safe. Windows previews remain
+unsigned. Authenticode is the next Windows release gate; SignPath Foundation is
+a candidate after this repository becomes public, subject to its acceptance.
+In-app updates remain disabled. Version numbers, passing tests and successful
+connections do not certify security.
 Older executables cannot necessarily read upgraded storage.
+
+## Build dependency exception
+
+The LOW [deepmerge advisory GHSA-gcqx-w48m-w2h4](https://github.com/advisories/GHSA-gcqx-w48m-w2h4)
+has no patched upstream release at the time of review. An explicit exception
+covers only deepmerge 4.3.1 through @sveltejs/vite-plugin-svelte 7.3.1 in the
+frontend development/build graph. It expires on **2026-12-15** and must be removed
+when a compatible patch is available. The plugin processes trusted local build
+configuration; deepmerge is absent from the shipped frontend bundle and receives
+no peer input. Do not build untrusted configuration under this exception.
+
+Audit results remain visible. Expiration, a changed dependency chain, production
+use, another advisory or a higher severity fails the gate. The exact policy is
+in config/advisory-exception.json. This exception does not suppress other scans.
 
 ## Reporting a security issue
 
-No private security-reporting address is published yet. A reporting route and
-supported-version policy are required before public distribution. Do not post
-live invitations, private keys, fingerprints, history, vaults, credentials or
-personal endpoints publicly. Describe the version, platform, affected action and
-a redacted reproduction. See [third-party notices](THIRD_PARTY_NOTICES.md).
+Use this repository's **Security → Advisories → Report a vulnerability** to
+send a private report through GitHub. See GitHub's [private reporting instructions](https://docs.github.com/en/code-security/security-advisories/working-with-repository-security-advisories/privately-reporting-a-security-vulnerability).
+The repository administrator must enable private vulnerability reporting before
+sharing downloads. If the private button is unavailable, do not post details in
+a public issue; wait for the private route to be enabled.
+
+Only the current preview series receives fixes; there is no support or response
+time guarantee. Describe the version, platform, affected action and a synthetic
+or redacted reproduction. Never attach live invitations, keys, fingerprints,
+message history, vaults, recovery exports, contact photos, credentials or personal
+endpoints to a public report. See [third-party notices](THIRD_PARTY_NOTICES.md).

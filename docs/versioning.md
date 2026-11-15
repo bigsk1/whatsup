@@ -1,6 +1,6 @@
 # Versions and compatibility
 
-WhatsUp's current preview series uses versions such as **0.0.17**. A version
+WhatsUp's current friend-testing preview is **0.1.0**. A version
 identifies an application revision; it does not certify security, completeness
 or release approval.
 
@@ -40,6 +40,9 @@ association and conversation. Creating a new identity produces a new fingerprint
 
 ## Preview status
 
-Signed installers and automatic updates are not available yet. Preview builds
-are unsigned and are not release-approved merely because they have a version
-number or installer metadata.
+Windows NSIS and Ubuntu DEB packages are unsigned previews. Release titles use
+**vX.Y.Z (unsigned preview)**. SHA-256 checksums identify file bytes, while GitHub
+build attestations identify the source and workflow. Neither is Authenticode
+signing or a security certification. Signing is the next Windows release gate;
+SignPath Foundation is a candidate once the repository is public. Automatic
+updates remain disabled.

@@ -37,7 +37,7 @@ verify_snapshot() {
   fi
 }
 verify_snapshot
-if [[ $task = build-review || $task = test-app ]]; then
+if [[ $task = build-review || $task = test-app || $task = check || $task = package ]]; then
   mkdir -p -m 700 "$snapshot/.local"
   [[ -f "$source_dir/.local/review-source.json" && ! -L "$source_dir/.local/review-source.json" ]] || exit 2
   cp -- "$source_dir/.local/review-source.json" "$snapshot/.local/review-source.json"
