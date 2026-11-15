@@ -227,7 +227,7 @@ func (e *Engine) receive(frame Frame) error {
 // until a capable peer reconnects, without disrupting its text conversation.
 func (e *Engine) terminalNotice(record Record) error {
 	if e.withdrawals && record.PendingWithdrawal {
-		return e.emit(control(WithdrawFrame, record.Offer, 0, 0))
+		return e.queueWithdrawal(record)
 	}
 	if record.Direction == Incoming {
 		return e.emit(control(DeclineFrame, record.Offer, 0, ReasonDeclined))

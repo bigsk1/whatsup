@@ -43,6 +43,13 @@ at login is optional under Settings → App behavior. If a tray icon cannot be
 confirmed, the window is shown. A second launch can also reveal the window while
 its interface is still loading.
 
+Tray behavior depends on a compatible desktop status-icon service. WhatsUp uses
+the native backend's StatusNotifierItem integration, including common KDE and
+GNOME AppIndicator hosts. It detects registration and host changes while running;
+late tray startup is allowed a grace period. Startup without a compatible host
+shows a window rather than relying on an unreachable tray. Support for a
+graphical desktop does not guarantee that every tray implementation is available.
+
 No universal Linux package, signed DEB/RPM or Flatpak release is available yet.
 
 ## WebKit sandbox compatibility

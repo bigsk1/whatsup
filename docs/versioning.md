@@ -1,6 +1,6 @@
 # Versions and compatibility
 
-WhatsUp's current preview series uses versions such as **0.0.13**. A version
+WhatsUp's current preview series uses versions such as **0.0.14**. A version
 identifies an application revision; it does not certify security, completeness
 or release approval.
 
@@ -25,7 +25,9 @@ the previous messaging protocol; attachment and contact-control features need
 compatible current builds. Older incompatible peers receive an authenticated
 update notice instead of silently changing identity pins. Refresh both builds
 for permanent attachment cancellation: an older build can retain its own
-unfinished transfer until cleared locally.
+unfinished transfer until cleared locally. Acknowledged cancellation requires
+0.0.13 or later on both devices; 0.0.11 and 0.0.12 have no durable cancellation
+receipt, so a pending cancellation can remain across reconnects with those peers.
 
 An application version is separate from the format of local encrypted data and
 the network protocol. A newer version may upgrade local data. An older executable

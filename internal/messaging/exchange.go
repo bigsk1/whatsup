@@ -348,7 +348,7 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 		case transferPacket:
 			// The session guard is bounded and performs no file IO. The
 			// attachment actor rechecks it before each repository operation.
-			if session.WithLivePeer(m.record.Peer, func() error { return nil }) != nil || engine.Submit(epoch, got.packet.attachment) != nil {
+			if session.WithLivePeer(m.record.Peer, func() error { return nil }) != nil || engine.SubmitContext(ctx, epoch, got.packet.attachment) != nil {
 				return errProtocol
 			}
 		case dataPacket:
@@ -444,7 +444,7 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 				if err := writePacket(session, packet{kind: transferPacket, attachment: pendingTransfer.Frame}); err != nil {
 					return err
 				}
-				if err := engine.Written(epoch, pendingTransfer.Frame); err != nil {
+				if err := engine.WrittenContext(ctx, epoch, pendingTransfer.Frame); err != nil {
 					return err
 				}
 			}

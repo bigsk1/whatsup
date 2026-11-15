@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 
 	"whatsup/internal/keymaterial"
 )
@@ -26,6 +25,7 @@ type ProtectionStatus struct {
 type ManagedCopyError struct {
 	RelativePath string
 	Cause        error
+	Digest       [32]byte
 }
 
 func (e *ManagedCopyError) Error() string {
@@ -38,7 +38,11 @@ func managedCopyError(v *Vault, path string, err error) error {
 	if relativeErr != nil {
 		return err
 	}
-	return &ManagedCopyError{RelativePath: rel, Cause: err}
+	result := &ManagedCopyError{RelativePath: rel, Cause: err}
+	if data, readErr := readCipherFile(path, maxManagedRootBytes); readErr == nil {
+		result.Digest = sha256.Sum256(data)
+	}
+	return result
 }
 
 // Per-call filesystem fault boundary, matching rootBackupIO. Production always
@@ -412,17 +416,10 @@ func rewrapReadableManagedRoot(v *Vault, data []byte) ([]byte, bool, error) {
 	return sealed, true, err
 }
 
-// Rewrapping changes protection, not snapshot age. Retention must continue to
-// order historical snapshots by their original time after the atomic replace.
+// Protection does not depend on mutable filesystem timestamps. The optional
+// authenticated catalog preserves creation order through a tracked rewrap.
 func replaceManagedRoot(path string, sealed []byte) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if err := atomicCipherReplace(path, sealed); err != nil {
-		return err
-	}
-	return os.Chtimes(path, info.ModTime(), info.ModTime())
+	return atomicCipherReplace(path, sealed)
 }
 
 // Recovery moves roots and migration backups one level below the profile. Keep
@@ -457,7 +454,7 @@ func managedRootPaths(v *Vault) ([]string, error) {
 			}
 			path := filepath.Join(directory, entry.Name())
 			info, err := os.Lstat(path)
-			if err != nil || !info.Mode().IsRegular() || !recoveryOwned(info) || info.Size() < 0 || info.Size() > maxRootFileBytes || regular(path) != nil {
+			if err != nil || !info.Mode().IsRegular() || !recoveryOwned(info) || info.Size() < 0 || info.Size() > maxManagedRootBytes || regular(path) != nil {
 				return nil, managedCopyError(v, path, ErrUnsafePath)
 			}
 			if temporary {
@@ -483,29 +480,48 @@ func protectManagedCopiesLocked(v *Vault, currentSecrets ...[]byte) error {
 }
 
 func protectManagedCopiesWithIOLocked(v *Vault, operations managedCopyIO, currentSecrets ...[]byte) error {
+	return protectManagedCopiesWithPolicyLocked(v, operations, managedCopyPolicy{}, currentSecrets...)
+}
+
+func protectManagedCopiesWithPolicyLocked(v *Vault, operations managedCopyIO, policy managedCopyPolicy, currentSecrets ...[]byte) error {
 	paths, err := managedRootPaths(v)
 	if err != nil {
 		return err
 	}
 	for _, path := range paths {
-		data, err := readCipherFile(path, maxRootFileBytes)
+		data, err := readCipherFile(path, maxManagedRootBytes)
 		if os.IsNotExist(err) {
 			continue
 		}
 		if err != nil {
 			return managedCopyError(v, path, err)
 		}
+		if bytes.HasPrefix(data, preservedRootHeader) {
+			plain, err := openPreservedRoot(v, path, data)
+			clear(plain)
+			if err != nil {
+				if err := preserveManagedRoot(v, path, data, operations, policy, err); err != nil {
+					return err
+				}
+			}
+			continue
+		}
 		if bytes.HasPrefix(data, rootHeader) {
 			root, err := decodeRoot(data[len(rootHeader):])
 			if err != nil {
-				return managedCopyError(v, path, err)
+				if err := preserveManagedRoot(v, path, data, operations, policy, err); err != nil {
+					return err
+				}
+				continue
 			}
 			if root.Mode == "os-plus-passphrase" {
 				if rootUsesCurrentProtection(v, root) {
 					plain, err := managedPayload(root, v.master)
 					clear(plain)
 					if err != nil {
-						return managedCopyError(v, path, ErrCorrupt)
+						if err := preserveManagedRoot(v, path, data, operations, policy, ErrCorrupt); err != nil {
+							return err
+						}
 					}
 					continue
 				}
@@ -520,7 +536,7 @@ func protectManagedCopiesWithIOLocked(v *Vault, operations managedCopyIO, curren
 					}
 				}
 				if same {
-					if err := operations.replaceRoot(path, sealed); err != nil {
+					if err := replaceManagedRootTracked(v, path, sealed, operations); err != nil {
 						return managedCopyError(v, path, err)
 					}
 				}
@@ -534,7 +550,7 @@ func protectManagedCopiesWithIOLocked(v *Vault, operations managedCopyIO, curren
 						if err != nil {
 							return err
 						}
-						if err := operations.replaceRoot(path, sealed); err != nil {
+						if err := replaceManagedRootTracked(v, path, sealed, operations); err != nil {
 							return managedCopyError(v, path, err)
 						}
 						same = true
@@ -548,11 +564,24 @@ func protectManagedCopiesWithIOLocked(v *Vault, operations managedCopyIO, curren
 				// an unknown historical passphrase is not evidence of a different
 				// master. Keep the bytes and require explicit repair instead.
 				if !same && !knownRootInaccessibleWithOSKey(v, data) {
-					return managedCopyError(v, path, ErrCorrupt)
+					if err := preserveManagedRoot(v, path, data, operations, policy, ErrCorrupt); err != nil {
+						return err
+					}
 				}
 				continue
 			}
 			if v.protectionMode != "os-plus-passphrase" {
+				if policy.preserveOpaque {
+					scratch := scratchVault(v)
+					plain, err := decodeRootWithSecret(scratch, data, nil)
+					clear(plain)
+					clearScratch(scratch)
+					if err != nil && !knownRootInaccessibleWithOSKey(v, data) {
+						if err := preserveManagedRoot(v, path, data, operations, policy, err); err != nil {
+							return err
+						}
+					}
+				}
 				continue // Already in the desired mode; preserve exact migration bytes.
 			}
 		}
@@ -567,7 +596,10 @@ func protectManagedCopiesWithIOLocked(v *Vault, operations managedCopyIO, curren
 				continue
 			}
 			clearScratch(scratch)
-			return managedCopyError(v, path, err)
+			if err := preserveManagedRoot(v, path, data, operations, policy, err); err != nil {
+				return err
+			}
+			continue
 		}
 		if len(scratch.master) != 32 {
 			scratch.master, err = keymaterial.RandomKey()
@@ -583,7 +615,7 @@ func protectManagedCopiesWithIOLocked(v *Vault, operations managedCopyIO, curren
 		if err != nil {
 			return err
 		}
-		if err := operations.replaceRoot(path, sealed); err != nil {
+		if err := replaceManagedRootTracked(v, path, sealed, operations); err != nil {
 			return managedCopyError(v, path, err)
 		}
 	}
@@ -609,61 +641,7 @@ func (a *ApplicationState) pruneManagedCopiesLocked(operations managedCopyIO) er
 	if _, err := os.Lstat(filepath.Join(a.vault.directory, recoveryJournalFilename)); !os.IsNotExist(err) {
 		return err
 	}
-	paths, err := managedRootPaths(a.vault)
-	if err != nil {
-		return err
-	}
-	type backup struct {
-		path string
-		info os.FileInfo
-	}
-	var backups []backup
-	pinned := filepath.Join(a.vault.directory, a.state.MigrationBackup)
-	for _, path := range paths {
-		if filepath.Dir(path) != a.vault.directory || !migrationBackupName.MatchString(filepath.Base(path)) || path == pinned {
-			continue
-		}
-		info, err := os.Lstat(path)
-		if err != nil || !info.Mode().IsRegular() || !recoveryOwned(info) || regular(path) != nil {
-			return ErrUnsafePath
-		}
-		data, err := readCipherFile(path, maxRootFileBytes)
-		if err != nil {
-			continue
-		}
-		scratch := scratchVault(a.vault)
-		scratch.passSalt, scratch.passKey = bytes.Clone(a.vault.passSalt), bytes.Clone(a.vault.passKey)
-		var plain []byte
-		if bytes.HasPrefix(data, rootHeader) {
-			plain, err = scratch.loadRootLocked(data[len(rootHeader):])
-		} else {
-			err = ErrCorrupt
-		}
-		readable := err == nil && bytes.Equal(scratch.master, a.vault.master)
-		clear(plain)
-		clearScratch(scratch)
-		if !readable {
-			continue
-		}
-		backups = append(backups, backup{path, info})
-	}
-	sort.Slice(backups, func(i, j int) bool {
-		if backups[i].info.ModTime().Equal(backups[j].info.ModTime()) {
-			return backups[i].path < backups[j].path
-		}
-		return backups[i].info.ModTime().After(backups[j].info.ModTime())
-	})
-	for index := maxRetainedMigrationBackups; index < len(backups); index++ {
-		item := backups[index]
-		info, err := os.Lstat(item.path)
-		if err != nil || !os.SameFile(info, item.info) || regular(item.path) != nil {
-			return ErrUnsafePath
-		}
-		if operations.removeRoot(item.path) != nil || syncDirectory(filepath.Dir(item.path)) != nil {
-			return ErrState
-		}
-	}
-	return nil
+	return pruneCatalogedManagedCopies(a, operations)
 }
 
 func knownRootInaccessibleWithOSKey(v *Vault, data []byte) bool {

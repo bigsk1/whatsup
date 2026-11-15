@@ -11,6 +11,7 @@ import (
 	"whatsup/internal/desktop"
 	"whatsup/internal/lifecycle"
 	"whatsup/internal/messaging"
+	"whatsup/internal/notify"
 	"whatsup/internal/preferences"
 )
 
@@ -134,6 +135,60 @@ func TestNativeForegroundSuppressesIncomingWithoutDecryptingContent(t *testing.T
 	h.enqueueIncoming(messaging.Incoming{ContactID: "not a contact", MessageID: "private text is not an ID"})
 	if deliveries.Load() != 0 || len(h.incoming) != 0 {
 		t.Fatal("foreground or invalid notice reached the content lookup")
+	}
+}
+
+type nativePurgeNotifier struct{ contacts []string }
+
+func (*nativePurgeNotifier) Start(context.Context) error                       { return nil }
+func (*nativePurgeNotifier) Send(context.Context, notify.Notice) error         { return nil }
+func (*nativePurgeNotifier) SendApproved(context.Context, notify.Notice) error { return nil }
+func (*nativePurgeNotifier) Close() error                                      { return nil }
+func (n *nativePurgeNotifier) ForgetContact(_ context.Context, id string) error {
+	n.contacts = append(n.contacts, id)
+	return nil
+}
+
+func TestNativeForgetPurgesPendingActivationOnlyForSelectedContact(t *testing.T) {
+	h := newNativeTasks(nil)
+	t.Cleanup(h.stopTasks)
+	notifier := &nativePurgeNotifier{}
+	h.notifier = notifier
+	first, second := "AQEBAQEBAQEBAQEBAQEBAQ", "AgICAgICAgICAgICAgICAg"
+	h.activation = second
+	h.forgetContact(first)
+	if h.takeNotificationActivation() != second {
+		t.Fatal("Forget cleared another contact's pending selection")
+	}
+	h.activation = first
+	h.forgetContact(first)
+	if h.takeNotificationActivation() != "" || len(notifier.contacts) != 2 {
+		t.Fatal("Forget retained activation or omitted notifier purge")
+	}
+}
+
+func TestTrayLossRevealsHiddenButNotMerelyMinimizedWindow(t *testing.T) {
+	h := newNativeTasks(nil)
+	t.Cleanup(h.stopTasks)
+	shown := 0
+	h.controller = lifecycle.New(lifecycle.Actions{Show: func() { shown++; h.hiddenToTray.Store(false) }})
+	h.controller.NativeReady()
+	h.hiddenToTray.Store(true)
+	h.trayUnavailable()
+	if shown != 0 {
+		t.Fatal("initial tray absence bypassed startup grace")
+	}
+	h.trayGraceElapsed.Store(true)
+	h.hiddenToTray.Store(false)
+	h.trayUnavailable()
+	if shown != 0 {
+		t.Fatal("ordinary minimization was mistaken for an unreachable tray window")
+	}
+	h.hiddenToTray.Store(true)
+	h.trayUnavailable()
+	h.trayUnavailable()
+	if shown != 1 {
+		t.Fatal("lost tray did not reveal hidden window exactly once")
 	}
 }
 

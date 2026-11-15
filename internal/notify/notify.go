@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 	"unicode"
@@ -61,11 +62,14 @@ type backend interface {
 	start(context.Context) error
 	send(context.Context, Notice) error
 	close() error
+	forget(string) error
 }
 type request struct {
-	ctx    context.Context
-	notice Notice
-	done   chan error
+	ctx      context.Context
+	notice   Notice
+	done     chan error
+	forget   string
+	approved bool
 }
 type Notifier struct{ *state }
 type state struct {
@@ -80,15 +84,35 @@ type state struct {
 	done            chan struct{}
 	sent            map[string]bool
 	order           []string
+	retired         map[string]bool
+	retiredOrder    []string
 }
 
 func (Notifier) String() string               { return "[private WhatsUp native notifier]" }
 func (Notifier) GoString() string             { return "[private WhatsUp native notifier]" }
 func (Notifier) MarshalJSON() ([]byte, error) { return nil, ErrUnavailable }
 
-func New(onActivate func(contactID string)) *Notifier { return newNotifier(newBackend(onActivate)) }
+func New(onActivate func(contactID string)) *Notifier {
+	n := newNotifier(nil)
+	n.backend = newBackend(func(id string) {
+		n.dispatchActivation(id, onActivate)
+	})
+	return n
+}
+
+func (n *Notifier) dispatchActivation(id string, onActivate func(string)) {
+	if !canonicalID(id, true) {
+		return
+	}
+	// Serialize activation publication with Forget's local retirement.
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if !n.closed && !n.retired[id] && onActivate != nil {
+		onActivate(id)
+	}
+}
 func newNotifier(native backend) *Notifier {
-	return &Notifier{&state{backend: native, requests: make(chan request), done: make(chan struct{}), sent: map[string]bool{}}}
+	return &Notifier{&state{backend: native, requests: make(chan request), done: make(chan struct{}), sent: map[string]bool{}, retired: map[string]bool{}}}
 }
 
 func (n *Notifier) Start(ctx context.Context) error {
@@ -159,10 +183,33 @@ func (n *Notifier) run(ready chan error) {
 				r.done <- ErrUnavailable
 				continue
 			}
+			if r.forget != "" {
+				r.done <- n.backend.forget(r.forget)
+				continue
+			}
 			id := r.notice.ContactID + "/" + r.notice.ID
 			n.mu.Lock()
 			duplicate := n.sent[id]
+			retired := n.retired[r.notice.ContactID]
 			n.mu.Unlock()
+			if retired {
+				if !r.approved || n.backend.forget(r.notice.ContactID) != nil || r.ctx.Err() != nil {
+					r.done <- ErrUnavailable
+					continue
+				}
+				// Only the current service's approved-message boundary can revive
+				// this exact ID after recovery. Never revive old issued proofs.
+				n.mu.Lock()
+				delete(n.retired, r.notice.ContactID)
+				kept := n.retiredOrder[:0]
+				for _, id := range n.retiredOrder {
+					if id != r.notice.ContactID {
+						kept = append(kept, id)
+					}
+				}
+				n.retiredOrder = kept
+				n.mu.Unlock()
+			}
 			if duplicate {
 				r.done <- nil
 				continue
@@ -185,7 +232,70 @@ func (n *Notifier) run(ready chan error) {
 	}
 }
 
-func (n *Notifier) Send(ctx context.Context, notice Notice) error {
+// ForgetContact is Go-only lifecycle cleanup. Retirement happens immediately;
+// platform deletion is serialized after any in-flight notice and is bounded.
+func (n *Notifier) ForgetContact(ctx context.Context, contactID string) error {
+	if n == nil || n.state == nil || ctx == nil || ctx.Err() != nil || !canonicalID(contactID, true) {
+		return ErrUnavailable
+	}
+	n.mu.Lock()
+	if !n.retired[contactID] {
+		n.retired[contactID] = true
+		n.retiredOrder = append(n.retiredOrder, contactID)
+		if len(n.retiredOrder) > maxNoticeReceipts {
+			delete(n.retired, n.retiredOrder[0])
+			n.retiredOrder = n.retiredOrder[1:]
+		}
+	}
+	kept := n.order[:0]
+	for _, id := range n.order {
+		if strings.HasPrefix(id, contactID+"/") {
+			delete(n.sent, id)
+		} else {
+			kept = append(kept, id)
+		}
+	}
+	n.order = kept
+	live := n.available && !n.closed
+	life := n.life
+	n.mu.Unlock()
+	if !live {
+		return ErrUnavailable
+	}
+	bounded, cancel := context.WithTimeout(ctx, CallTimeout)
+	defer cancel()
+	r := request{ctx: bounded, forget: contactID, done: make(chan error, 1)}
+	select {
+	case <-bounded.Done():
+		return ErrUnavailable
+	case <-life.Done():
+		return ErrUnavailable
+	case <-n.done:
+		return ErrUnavailable
+	case n.requests <- r:
+	}
+	select {
+	case err := <-r.done:
+		return err
+	case <-bounded.Done():
+		return ErrUnavailable
+	case <-life.Done():
+		return ErrUnavailable
+	case <-n.done:
+		return ErrUnavailable
+	}
+}
+
+func (n *Notifier) Send(ctx context.Context, notice Notice) error { return n.send(ctx, notice, false) }
+
+// SendApproved is used only inside desktop.WithIncomingNotification, which
+// validates the current stored contact/message while serializing with Forget.
+// That Go-only authority can restore notices for a contact recovered in-process.
+func (n *Notifier) SendApproved(ctx context.Context, notice Notice) error {
+	return n.send(ctx, notice, true)
+}
+
+func (n *Notifier) send(ctx context.Context, notice Notice, approved bool) error {
 	if n == nil || n.state == nil || ctx == nil || ctx.Err() != nil || !canonicalID(notice.ID, false) || !canonicalID(notice.ContactID, true) || !safeText(notice.Title, 160) || !safeText(notice.Body, 1024) {
 		return ErrUnavailable
 	}
@@ -198,7 +308,7 @@ func (n *Notifier) Send(ctx context.Context, notice Notice) error {
 	}
 	bounded, cancel := context.WithTimeout(ctx, CallTimeout)
 	defer cancel()
-	r := request{ctx: bounded, notice: notice, done: make(chan error, 1)}
+	r := request{ctx: bounded, notice: notice, done: make(chan error, 1), approved: approved}
 	select {
 	case <-bounded.Done():
 		return ErrUnavailable

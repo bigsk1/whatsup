@@ -42,9 +42,10 @@ type securityImport struct {
 }
 
 type StorageSecurity struct {
-	RequiresPassphrase bool `json:"requiresPassphrase"`
-	RecoveryAvailable  bool `json:"recoveryAvailable"`
-	Busy               bool `json:"busy"`
+	RequiresPassphrase bool   `json:"requiresPassphrase"`
+	RecoveryAvailable  bool   `json:"recoveryAvailable"`
+	Busy               bool   `json:"busy"`
+	BackupAttention    string `json:"backupAttention"`
 }
 type RecoveryExportResult struct {
 	Saved bool `json:"saved"`
@@ -81,6 +82,9 @@ func (s *Service) GetStorageSecurity() StorageSecurity {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	result := StorageSecurity{RequiresPassphrase: s.status().RequiresPassphrase}
+	if s.backupAttention != nil {
+		result.BackupAttention = filepath.ToSlash(s.backupAttention.RelativePath)
+	}
 	if s.security != nil {
 		result.Busy = s.security.operation != nil
 		result.RecoveryAvailable = s.security.options.PickRecovery != nil && s.security.options.SaveRecovery != nil
@@ -176,10 +180,14 @@ func (s *Service) ConfigurePassphrase(currentSecret, newSecret string, enabled b
 		return status, errors.New("The current passphrase is incorrect. Check it and try again.")
 	}
 	if err != nil {
+		attention := s.managedCopyAttention(err)
 		s.record(diagnostics.StorageUnavailable)
 		status := s.lockStorageLocked()
 		s.mu.Unlock()
 		s.securityHint(nil, status.StorageState)
+		if attention != nil {
+			return status, attention
+		}
 		return status, errors.New("Passphrase settings could not be changed. Go online and check the current passphrase before trying again.")
 	}
 	status := s.status()

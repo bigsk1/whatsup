@@ -7,14 +7,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/godbus/dbus/v5"
 )
 
-func nativeTrayAvailable() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+func nativeTrayAvailable(ctx context.Context) bool {
 	address := os.Getenv("DBUS_SESSION_BUS_ADDRESS")
 	if !strings.HasPrefix(address, "unix:") || strings.Contains(address, ";") {
 		return false
@@ -31,6 +28,7 @@ type nativeTrayProbe interface {
 	owner(string) (string, error)
 	pid(string) (uint32, error)
 	watcher(string) (bool, []string, error)
+	item(string) (bool, error)
 }
 
 type trayBusProbe struct {
@@ -56,6 +54,12 @@ func (p trayBusProbe) watcher(owner string) (bool, []string, error) {
 	return registered, items, err
 }
 
+func (p trayBusProbe) item(owner string) (bool, error) {
+	var status dbus.Variant
+	err := p.bus.Object(owner, "/StatusNotifierItem").CallWithContext(p.ctx, "org.freedesktop.DBus.Properties.Get", 0, "org.kde.StatusNotifierItem", "Status").Store(&status)
+	return status.Value() == "Active", err
+}
+
 // A host alone is insufficient. The pinned Wails implementation exports one
 // item at this exact path/name; require that the watcher registered this process.
 func registeredNativeTray(probe nativeTrayProbe, pid uint32) bool {
@@ -77,7 +81,19 @@ func registeredNativeTray(probe nativeTrayProbe, pid uint32) bool {
 		return false
 	}
 	for _, item := range items {
-		if item == owner+"/StatusNotifierItem" || item == name+"/StatusNotifierItem" {
+		if registeredOwnItem(item, owner, name) {
+			active, err := probe.item(owner)
+			return err == nil && active
+		}
+	}
+	return false
+}
+
+// Watchers expose either a service name, service/path, or service@/path.
+// Normalize only exact forms for our pinned default object, never prefixes.
+func registeredOwnItem(item, owner, name string) bool {
+	for _, service := range []string{owner, name} {
+		if item == service || item == service+"/StatusNotifierItem" || item == service+"@/StatusNotifierItem" {
 			return true
 		}
 	}

@@ -340,10 +340,6 @@
     display: block;
     margin: 0.5rem 0;
   }
-  .attachment-list {
-    max-height: 250px;
-    overflow: auto;
-  }
   article {
     padding: 0.6rem 0;
     border-top: 1px solid var(--border);

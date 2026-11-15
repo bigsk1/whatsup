@@ -187,6 +187,9 @@ func (m *Manager) sessionRouteCandidates(parent context.Context, raw net.Conn, r
 	m.authenticated++
 	if route.association == m.preferredRoute {
 		m.preferredAuthenticated++
+		// Only success on the currently preferred route is handover progress.
+		// An old fallback authenticating again cannot replenish peer churn.
+		m.peerRouteBudget = routeReadyRetry{}
 	}
 	m.state = "connected"
 	m.sessionActive = true

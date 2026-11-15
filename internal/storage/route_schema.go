@@ -101,6 +101,9 @@ func (a *ApplicationState) backupRootMetadataWithIOLocked(testIO *rootBackupIO) 
 	a.state.MigrationBackup = name
 	hash := sha256.Sum256(data)
 	a.state.MigrationBackupHash = hex.EncodeToString(hash[:])
+	// Retention evidence is optional. Never fail a safe migration because its
+	// new backup could not join the authenticated creation-order catalog.
+	_ = recordManagedBackup(a.vault, name, data)
 	return nil
 }
 

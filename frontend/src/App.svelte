@@ -1102,9 +1102,13 @@
   operation={$securityState.operation}
   busy={$securityState.busy}
   notice={$securityState.notice}
-  requiresPassphrase={status.requiresPassphrase}
+  requiresPassphrase={$securityState.operation === 'repair'
+    ? $securityState.summary.requiresPassphrase
+    : status.requiresPassphrase}
+  backupAttention={$securityState.summary.backupAttention}
   onsubmit={(current, secret) => void security.submit(current, secret)}
   oncancel={security.cancel}
+  onrepair={() => securityAction('repair')}
 />
 <RecoveryDialog
   preview={$securityState.operation === 'import-confirm'

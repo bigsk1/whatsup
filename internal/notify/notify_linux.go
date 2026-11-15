@@ -167,3 +167,21 @@ func (l *linuxBackend) close() error {
 	}
 	return nil
 }
+
+func (l *linuxBackend) forget(contactID string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for id, contact := range l.ids {
+		if contact == contactID {
+			delete(l.ids, id)
+		}
+	}
+	retained := l.order[:0]
+	for _, id := range l.order {
+		if l.ids[id] != "" {
+			retained = append(retained, id)
+		}
+	}
+	l.order = retained
+	return nil
+}

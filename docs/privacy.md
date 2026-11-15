@@ -67,10 +67,19 @@ peer's retries; it does not delete their history. These are logical deletion,
 not physical erasure of media, memory, external exports or OS notification history.
 Managed migration backups are re-protected on passphrase changes/authenticated
 reopen. Retention keeps three authenticated top-level snapshots under the current
-master plus any live migration reference, in either protection mode. Unreadable
+master plus any live migration reference, in either protection mode. A separate
+encrypted `managed-backups.vault` catalog authenticates creation order and exact
+ciphertext digests for newly published backups. Mutable file dates do not control
+pruning. Unlisted older backups and unverifiable catalog data are retained.
+Unreadable
 or different-key material does not count toward that limit. Complete recovery
 rollback data, including nested snapshots, is retained for safety; it can consume
 additional space. External old backups are not retroactively protected.
+Confirmed replacement and explicit **Set aside and retry** can retain opaque or
+damaged historical roots inside another master-encrypted envelope. Original
+bytes remain preserved; no raw rename or plaintext recovery copy is created.
+Repair messages use recognized relative filenames, without the OS username or
+full profile path.
 
 ## Desktop behavior and OS artifacts
 
@@ -93,9 +102,18 @@ The same app-identity key contains `WhatsUpIssuedNoticesV1`, a Windows DPAPI
 current-user encrypted receipt ledger. It holds at most 1,024 opaque notification
 and contact identifiers, random activation proofs and issue times for 30 days,
 without names or message text. A receipt is consumed before selecting a chat.
-This permits checking notification clicks after restart. Missing, damaged or
-expired receipts cannot select a conversation. Older notices without a proof
-can still launch the app normally.
+This permits checking notification clicks after restart. Damaged, migrated or
+undecryptable receipt contents are reset to an empty encrypted ledger. Prior
+proofs become invalid; new notifications can issue fresh proofs. Temporary
+registry access failures are retried on later notices. Missing or expired proofs
+cannot select a conversation. While the app is running, older notices without a
+valid proof have no conversation action. They may still cause an ordinary cold
+app launch, which follows the usual OS-only/passphrase launch behavior.
+Forget retires the contact's issued IDs and removes its receipt entries. OS
+notification history is separate and can remain visible. If OS storage prevents
+cleanup, inaccessible receipt data can remain until cleanup or expiry, while
+forgotten contacts cannot be selected. Restoring an approved contact permits new
+notices after stale receipts are purged; old proofs are not revived.
 
 Linux start at login uses `$XDG_CONFIG_HOME/autostart/whatsup.desktop`, normally
 `~/.config/autostart/whatsup.desktop`. Disabling it removes the app-managed entry.

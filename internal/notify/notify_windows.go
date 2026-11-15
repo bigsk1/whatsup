@@ -93,11 +93,14 @@ func toastBuildApproved(info *debug.BuildInfo) bool {
 }
 
 type windowsBackend struct {
-	service     *notifications.NotificationService
-	activate    func(string)
-	initialized bool
-	thread      bool
-	receipts    *noticeReceipts
+	service      *notifications.NotificationService
+	activate     func(string)
+	initialized  bool
+	thread       bool
+	receipts     *noticeReceipts
+	receiptsMu   sync.Mutex
+	appName      string
+	openReceipts func() (*noticeReceipts, error)
 }
 
 func newBackend(activate func(string)) backend { return &windowsBackend{activate: activate} }
@@ -131,14 +134,13 @@ func (w *windowsBackend) start(ctx context.Context) error {
 	if scopedToastActivation(application.Get().Config().Name) != nil {
 		return ErrUnavailable
 	}
-	var err error
-	w.receipts, err = openWindowsReceipts(application.Get().Config().Name)
-	if err != nil {
-		return ErrUnavailable
-	}
+	w.appName = application.Get().Config().Name
+	// A transient registry failure affects notice delivery, not native service
+	// lifetime. Later sends retry without requiring a process restart.
+	_, _ = w.ensureReceipts()
 	w.service = notifications.New()
 	w.service.OnNotificationResponse(func(result notifications.NotificationResult) {
-		if id := windowsActivation(result, w.receipts); id != "" && w.activate != nil {
+		if id := windowsActivation(result, w.receiptValue()); id != "" && w.activate != nil {
 			w.activate(id)
 		}
 	})
@@ -146,6 +148,27 @@ func (w *windowsBackend) start(ctx context.Context) error {
 		return ErrUnavailable
 	}
 	return nil
+}
+
+func (w *windowsBackend) receiptValue() *noticeReceipts {
+	w.receiptsMu.Lock()
+	defer w.receiptsMu.Unlock()
+	return w.receipts
+}
+
+func (w *windowsBackend) ensureReceipts() (*noticeReceipts, error) {
+	w.receiptsMu.Lock()
+	defer w.receiptsMu.Unlock()
+	if w.receipts != nil {
+		return w.receipts, nil
+	}
+	var err error
+	if w.openReceipts != nil {
+		w.receipts, err = w.openReceipts()
+	} else {
+		w.receipts, err = openWindowsReceipts(w.appName)
+	}
+	return w.receipts, err
 }
 
 func windowsActivation(result notifications.NotificationResult, receipts *noticeReceipts) string {
@@ -166,7 +189,11 @@ func (w *windowsBackend) send(ctx context.Context, notice Notice) error {
 	if ctx.Err() != nil || w.service == nil {
 		return ErrUnavailable
 	}
-	proof, err := w.receipts.issue(notice)
+	receipts, err := w.ensureReceipts()
+	if err != nil {
+		return ErrUnavailable
+	}
+	proof, err := receipts.issue(notice)
 	if err != nil {
 		return ErrUnavailable
 	}
@@ -174,9 +201,17 @@ func (w *windowsBackend) send(ctx context.Context, notice Notice) error {
 	// generic actions, schedules, categories, attachment or file APIs.
 	err = w.service.SendNotification(notifications.NotificationOptions{ID: notice.ID, Title: notice.Title, Body: notice.Body, Data: map[string]interface{}{"contactID": notice.ContactID, "proof": proof}})
 	if err != nil {
-		w.receipts.discard(notice.ID, notice.ContactID, proof)
+		receipts.discard(notice.ID, notice.ContactID, proof)
 	}
 	return err
+}
+
+func (w *windowsBackend) forget(contactID string) error {
+	receipts, err := w.ensureReceipts()
+	if err != nil {
+		return ErrUnavailable
+	}
+	return receipts.forget(contactID)
 }
 func (w *windowsBackend) close() error {
 	var err error

@@ -27,14 +27,17 @@ func TestDamagedBackupUnlockExplainsTheSpecificLocalFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := s.UnlockWithPassphrase(securityTestSecret)
-	if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "Preserve this file") || got.StorageState != "unavailable" || got.IdentityFingerprint != "" {
+	if err == nil || !strings.Contains(err.Error(), filepath.Base(path)) || strings.Contains(err.Error(), s.directory) || got.StorageState != "unavailable" || got.IdentityFingerprint != "" {
 		t.Fatal("managed backup failure is not actionable and closed", err)
 	}
-	if err := os.Rename(path, filepath.Join(t.TempDir(), "preserved.vault")); err != nil {
-		t.Fatal(err)
+	if got, err := s.SetAsideBackup("wrong synthetic passphrase"); err == nil || got.StorageState == "unlocked" {
+		t.Fatal("wrong secret repaired backup")
 	}
-	if got, err := s.UnlockWithPassphrase(securityTestSecret); err != nil || got.StorageState != "unlocked" {
+	if got, err := s.SetAsideBackup(securityTestSecret); err != nil || got.StorageState != "unlocked" {
 		t.Fatal("repair did not restore healthy access", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("repair discarded backup")
 	}
 }
 

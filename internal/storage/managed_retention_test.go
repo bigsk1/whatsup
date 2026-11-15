@@ -21,7 +21,11 @@ func TestOSOnlyRetentionKeepsThreeReadableTopLevelSnapshots(t *testing.T) {
 		if err := os.WriteFile(path, root, 0600); err != nil {
 			t.Fatal(err)
 		}
-		at := time.Unix(int64(1000+i), 0)
+		if err := recordManagedBackup(app.vault, filepath.Base(path), root); err != nil {
+			t.Fatal(err)
+		}
+		// Reversed, attacker-mutable timestamps must not reverse creation order.
+		at := time.Unix(int64(1000-i), 0)
 		if err := os.Chtimes(path, at, at); err != nil {
 			t.Fatal(err)
 		}

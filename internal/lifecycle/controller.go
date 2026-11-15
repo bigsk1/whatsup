@@ -4,15 +4,16 @@ package lifecycle
 import "sync"
 
 type Actions struct {
-	StartHidden   bool
-	Show          func()
-	Hide          func()
-	Quit          func()
-	Background    func() bool
-	TrayAvailable func() bool
-	NoticeSeen    func() (bool, error)
-	Notice        func(noTray bool)
-	MarkNotice    func() error
+	StartHidden          bool
+	Show                 func()
+	Hide                 func()
+	Quit                 func()
+	Background           func() bool
+	TrayAvailable        func() bool
+	ConfirmTrayAvailable func() bool
+	NoticeSeen           func() (bool, error)
+	Notice               func(noTray bool)
+	MarkNotice           func() error
 }
 
 type Controller struct {
@@ -46,10 +47,10 @@ func (c *Controller) Ready() {
 		return
 	}
 	c.ready = true
-	// Autostart creates a hidden window before native tray availability can
-	// be known. Keep a window reachable if that desktop has no working tray.
+	// Tray registration has its own grace period. Renderer readiness alone
+	// must not turn a temporarily missing tray host into a visible autostart.
 	c.nativeReady = true
-	focus := !c.quitting && !c.revealed && (c.pendingFocus || c.actions.StartHidden && !c.actions.TrayAvailable())
+	focus := !c.quitting && !c.revealed && c.pendingFocus
 	c.pendingFocus = false
 	if focus {
 		c.revealed = true
@@ -64,7 +65,15 @@ func (c *Controller) Ready() {
 // missing renderer-ready event or an unregistered tray fails visibly.
 func (c *Controller) StartupFallback() {
 	c.mu.Lock()
-	focus := c.actions.StartHidden && c.nativeReady && !c.quitting && !c.revealed && (!c.ready || !c.actions.TrayAvailable())
+	eligible := c.actions.StartHidden && c.nativeReady && !c.quitting && !c.revealed
+	c.mu.Unlock()
+	if !eligible {
+		return
+	}
+	// External availability checks never run under the controller mutex.
+	tray := c.actions.TrayAvailable()
+	c.mu.Lock()
+	focus := c.actions.StartHidden && c.nativeReady && !c.quitting && !c.revealed && (!c.ready || !tray)
 	if focus {
 		c.revealed = true
 	}
@@ -116,6 +125,12 @@ func (c *Controller) CloseWindow() {
 	defer func() { c.mu.Lock(); c.closing = false; c.mu.Unlock() }()
 	background := c.actions.Background()
 	tray := c.actions.TrayAvailable()
+	if background && !tray && c.actions.ConfirmTrayAvailable != nil {
+		tray = c.actions.ConfirmTrayAvailable()
+	}
+	if c.Quitting() {
+		return
+	}
 	if !background || !tray {
 		if background && !tray {
 			c.actions.Notice(true)

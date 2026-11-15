@@ -15,7 +15,14 @@ import (
 // credentials only; the device identity and OS wrapping credential are retained.
 func (s *Service) ForgetContact(contactID string) (messaging.Snapshot, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	forgotten := false
+	defer func() {
+		onForgotten := s.runtimeOptions.OnContactForgotten
+		s.mu.Unlock()
+		if forgotten && onForgotten != nil {
+			onForgotten(contactID)
+		}
+	}()
 	if s.state != "unlocked" || s.vault == nil || s.application == nil {
 		return unavailableConversation(), errors.New("Unlock local storage before forgetting a contact")
 	}
@@ -57,6 +64,7 @@ func (s *Service) ForgetContact(contactID string) (messaging.Snapshot, error) {
 	if err != nil {
 		return s.failForget()
 	}
+	forgotten = true
 	return s.firstConversationLocked(), nil
 }
 

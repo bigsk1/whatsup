@@ -15,7 +15,7 @@ import (
 
 var managedSecretB = []byte("synthetic replacement secret B")
 
-func managedCopiesFixture(t *testing.T, dir string, root []byte) []string {
+func managedCopiesFixture(t *testing.T, dir string, v *Vault, root []byte) []string {
 	t.Helper()
 	container := filepath.Join(dir, ".recovery-rollback-AQEBAQEBAQEBAQEBAQEBAQ")
 	if err := os.Mkdir(container, 0700); err != nil {
@@ -28,6 +28,11 @@ func managedCopiesFixture(t *testing.T, dir string, root []byte) []string {
 	for _, path := range paths {
 		if err := os.WriteFile(path, root, 0600); err != nil {
 			t.Fatal(err)
+		}
+		if filepath.Dir(path) == dir {
+			if err := recordManagedBackup(v, filepath.Base(path), root); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	return paths
@@ -74,7 +79,7 @@ func TestManagedCopiesChangeAndDisableFollowCommittedProtection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	paths := managedCopiesFixture(t, dir, root)
+	paths := managedCopiesFixture(t, dir, app.vault, root)
 	if err := app.SetPassphrase(t.Context(), nil, testPassphrase); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +110,7 @@ func TestCommittedPassphraseChangeSurvivesRetentionFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			paths := managedCopiesFixture(t, dir, root)
+			paths := managedCopiesFixture(t, dir, app.vault, root)
 			next := managedSecretB
 			if disable {
 				next = nil
@@ -231,7 +236,7 @@ func TestDamagedOldSecretBackupCannotSurviveSuccessfulProtectionChange(t *testin
 	}
 }
 
-func TestManagedBackupRepairErrorSurvivesPendingRecoveryOpen(t *testing.T) {
+func TestPendingRecoverySecurelyPreservesDamagedManagedCopy(t *testing.T) {
 	f := makeRecoveryFixture(t)
 	dir, keys := privateDirectory(t), &memoryKeys{}
 	_, app := openApplicationTest(t, dir, keys)
@@ -254,16 +259,17 @@ func TestManagedBackupRepairErrorSurvivesPendingRecoveryOpen(t *testing.T) {
 	if err := os.WriteFile(path, []byte("WUPVAULT\x02{synthetic damaged copy"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = OpenWithPassphrase(dir, keys, testPassphrase)
-	var attention *ManagedCopyError
-	if !errors.As(err, &attention) || attention.RelativePath != filepath.Base(path) {
-		t.Fatal("early recovery opening lost backup repair context", err)
-	}
-	if err := os.Rename(path, filepath.Join(t.TempDir(), "preserved.vault")); err != nil {
-		t.Fatal(err)
-	}
 	_, app = openProtectedTest(t, dir, keys, testPassphrase)
 	assertRestoredFixture(t, app, f)
+	sealed, err := readCipherFile(path, maxManagedRootBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := openPreservedRoot(app.vault, path, sealed)
+	defer clear(plain)
+	if err != nil || !bytes.Equal(plain, []byte("WUPVAULT\x02{synthetic damaged copy")) {
+		t.Fatal("interrupted recovery did not preserve damaged copy", err)
+	}
 }
 
 func TestManagedProtectionCrashHelper(t *testing.T) {
@@ -296,7 +302,11 @@ func TestManagedProtectionCrashHelper(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := range 5 {
-			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("pre-migration-%032x.vault", i)), root, 0600); err != nil {
+			name := fmt.Sprintf("pre-migration-%032x.vault", i)
+			if err := os.WriteFile(filepath.Join(dir, name), root, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := recordManagedBackup(v, name, root); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -337,7 +347,7 @@ func TestManagedProtectionActualProcessCrashReopensCommittedMode(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				paths := managedCopiesFixture(t, dir, root)
+				paths := managedCopiesFixture(t, dir, app.vault, root)
 				identity, _ := app.Identity()
 				seed := identity.Seed()
 				app.Close()

@@ -382,6 +382,9 @@ func TestClearMaximumOfferSetKeepsTerminalControlsBoundedAndStreamLive(t *testin
 			t.Fatal("missing or repeated terminal response")
 		}
 		seen[frame.ID] = true
+		if err := e.Submit(e.epoch, Frame{Kind: WithdrawAckFrame, ID: frame.ID, SHA256: frame.SHA256, Reason: ReasonDeclined}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	barrier(t, e)
 	select {

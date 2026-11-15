@@ -106,6 +106,9 @@ func readRecoveryJournal(directory string, key []byte) (recoveryJournal, error) 
 	return j, nil
 }
 func allowedRecoveryName(name string) bool {
+	if name == managedCatalogFilename {
+		return true
+	}
 	switch name {
 	case "state.vault", "messages.sqlite", "messages.sqlite-wal", "messages.sqlite-shm", "messages.sqlite-journal", "attachments", "app-preferences.vault":
 		return true
@@ -163,20 +166,33 @@ func expectedRecoveryHash(j recoveryJournal, name string) string {
 
 func protectLiveRootForRecovery(v *Vault) error {
 	path := filepath.Join(v.directory, "state.vault")
-	data, err := readCipherFile(path, maxRootFileBytes)
+	data, err := readCipherFile(path, maxManagedRootBytes)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	if bytes.HasPrefix(data, preservedRootHeader) {
+		plain, err := openPreservedRoot(v, path, data)
+		clear(plain)
+		if err == nil {
+			return nil
+		}
+		return preserveManagedRoot(v, path, data, managedCopyIO{}, managedCopyPolicy{preserveOpaque: true}, err)
+	}
 	if bytes.HasPrefix(data, rootHeader) {
 		root, err := decodeRoot(data[len(rootHeader):])
 		if err != nil {
-			return err
+			return preserveManagedRoot(v, path, data, managedCopyIO{}, managedCopyPolicy{preserveOpaque: true}, err)
 		}
 		if root.Mode == "os-plus-passphrase" {
 			if rootUsesCurrentProtection(v, root) {
+				plain, err := managedPayload(root, v.master)
+				clear(plain)
+				if err != nil {
+					return preserveManagedRoot(v, path, data, managedCopyIO{}, managedCopyPolicy{preserveOpaque: true}, err)
+				}
 				return nil
 			}
 			sealed, same, err := rewrapSameMasterRoot(v, data)
@@ -186,7 +202,10 @@ func protectLiveRootForRecovery(v *Vault) error {
 			if same {
 				return atomicCipherReplace(path, sealed)
 			}
-			return nil
+			if knownRootInaccessibleWithOSKey(v, data) {
+				return nil
+			}
+			return preserveManagedRoot(v, path, data, managedCopyIO{}, managedCopyPolicy{preserveOpaque: true}, ErrCorrupt)
 		}
 	}
 	scratch := scratchVault(v)
@@ -196,7 +215,7 @@ func protectLiveRootForRecovery(v *Vault) error {
 		if knownRootInaccessibleWithOSKey(scratch, data) {
 			return nil
 		}
-		return err
+		return preserveManagedRoot(v, path, data, managedCopyIO{}, managedCopyPolicy{preserveOpaque: true}, err)
 	}
 	defer clear(plain)
 	if len(scratch.master) != 32 {
@@ -255,7 +274,7 @@ func reconcileRecoveryContext(ctx context.Context, directory string, key, secret
 				clearScratch(scratch)
 				return err
 			}
-			if err := protectManagedCopiesLocked(scratch); err != nil {
+			if err := protectRecoveryCopiesLocked(scratch, filepath.Join(stage, "state.vault")); err != nil {
 				clearScratch(scratch)
 				return err
 			}
@@ -542,10 +561,8 @@ func (a *ApplicationState) finishRecoveryLocked() error {
 	if err != nil || summary.Contacts != j.Contacts || summary.Messages != j.Messages || summary.Attachments != j.Attachments {
 		return ErrRecovery
 	}
-	if a.vault.protectionMode == "os-plus-passphrase" {
-		if err := protectManagedCopiesLocked(a.vault); err != nil {
-			return err
-		}
+	if err := protectRecoveryCopiesLocked(a.vault, filepath.Join(a.vault.directory, "state.vault")); err != nil {
+		return err
 	}
 	if os.Remove(path) != nil || syncDirectory(a.vault.directory) != nil {
 		return ErrRecovery

@@ -66,7 +66,7 @@ func TestWindowsActivationAcceptsOnlyCanonicalContactForDefaultMessageAction(t *
 	}
 }
 
-func TestWindowsReceiptsSurviveRestartAndFailClosedOnDPAPIDamage(t *testing.T) {
+func TestWindowsReceiptsSurviveRestartAndRecoverFromDPAPIDamage(t *testing.T) {
 	var token [16]byte
 	if _, err := rand.Read(token[:]); err != nil {
 		t.Fatal(err)
@@ -99,10 +99,17 @@ func TestWindowsReceiptsSurviveRestartAndFailClosedOnDPAPIDamage(t *testing.T) {
 		if key.SetBinaryValue(noticeReceiptRegistryValue, damaged) != nil {
 			t.Fatal("fixture write failed")
 		}
-		if _, err := openWindowsReceipts(appName); err == nil {
-			t.Fatal("damaged/oversized DPAPI registry accepted")
-		}
+		assertFreshWorkingReceipts(t, appName, proof)
 	}
+	if key.SetStringValue(noticeReceiptRegistryValue, "wrong type") != nil {
+		t.Fatal("fixture write failed")
+	}
+	assertFreshWorkingReceipts(t, appName, proof)
+	malformed, err := receiptDPAPI([]byte("invalid ledger syntax"), appName, true)
+	if err != nil || key.SetBinaryValue(noticeReceiptRegistryValue, malformed) != nil {
+		t.Fatal("fixture write failed")
+	}
+	assertFreshWorkingReceipts(t, appName, proof)
 	plain := encodeNoticeReceipts(nil)
 	ciphertext, err := receiptDPAPI(plain, appName, true)
 	if err != nil {
@@ -123,6 +130,43 @@ func TestWindowsReceiptsSurviveRestartAndFailClosedOnDPAPIDamage(t *testing.T) {
 	lost, err := openWindowsReceipts(appName)
 	if err != nil || lost.consume(syntheticNotice().ID, syntheticNotice().ContactID, proof) {
 		t.Fatal("lost ledger invented proof for old notice")
+	}
+}
+
+func assertFreshWorkingReceipts(t *testing.T, appName, oldProof string) {
+	t.Helper()
+	fresh, err := openWindowsReceipts(appName)
+	if err != nil || fresh.consume(syntheticNotice().ID, syntheticNotice().ContactID, oldProof) {
+		t.Fatal("damaged ledger did not reset old proofs")
+	}
+	proof, err := fresh.issue(syntheticNotice())
+	if err != nil {
+		t.Fatal("reset ledger cannot issue new notice")
+	}
+	reopened, err := openWindowsReceipts(appName)
+	if err != nil || !reopened.consume(syntheticNotice().ID, syntheticNotice().ContactID, proof) {
+		t.Fatal("new notice does not survive reset/restart")
+	}
+}
+
+func TestWindowsReceiptInitializationRetriesTemporaryRegistryFailure(t *testing.T) {
+	attempts := 0
+	receipts, _ := newNoticeReceipts(nil, func([]byte) error { return nil }, nil)
+	w := &windowsBackend{openReceipts: func() (*noticeReceipts, error) {
+		attempts++
+		if attempts == 1 {
+			return nil, ErrUnavailable
+		}
+		return receipts, nil
+	}}
+	if _, err := w.ensureReceipts(); err == nil || w.receiptValue() != nil {
+		t.Fatal("unavailable ledger reported usable")
+	}
+	if got, err := w.ensureReceipts(); err != nil || got != receipts {
+		t.Fatal("temporary ledger failure became permanent")
+	}
+	if _, err := w.ensureReceipts(); err != nil || attempts != 2 {
+		t.Fatal("healthy ledger needlessly reopened")
 	}
 }
 

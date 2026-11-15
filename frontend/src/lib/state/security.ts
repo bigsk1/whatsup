@@ -2,11 +2,19 @@ import { writable } from 'svelte/store';
 import { hasDesktopBridge, validateStatus, type Status } from '../backend';
 
 export type SecurityOperation =
-  '' | 'unlock' | 'enable' | 'disable' | 'export' | 'import' | 'import-confirm';
+  | ''
+  | 'unlock'
+  | 'enable'
+  | 'disable'
+  | 'export'
+  | 'import'
+  | 'import-confirm'
+  | 'repair';
 export interface StorageSecurity {
   requiresPassphrase: boolean;
   recoveryAvailable: boolean;
   busy: boolean;
+  backupAttention: string;
 }
 export interface RecoveryPreview {
   handle: string;
@@ -20,6 +28,7 @@ export interface RecoveryPreview {
 export interface SecurityBridge {
   get(): Promise<unknown>;
   unlock(secret: string): Promise<unknown>;
+  setAside(secret: string): Promise<unknown>;
   configure(
     current: string,
     secret: string,
@@ -60,17 +69,30 @@ function object(value: unknown): Record<string, unknown> {
 }
 export function validateStorageSecurity(input: unknown): StorageSecurity {
   const value = object(input);
+  const keys = Object.keys(value);
+  const backupAttention =
+    'backupAttention' in value ? value.backupAttention : '';
   if (
-    Object.keys(value).length !== 3 ||
+    !(
+      (keys.length === 3 && !('backupAttention' in value)) ||
+      (keys.length === 4 && 'backupAttention' in value)
+    ) ||
     ['requiresPassphrase', 'recoveryAvailable', 'busy'].some(
       (key) => typeof value[key] !== 'boolean',
-    )
+    ) ||
+    typeof backupAttention !== 'string' ||
+    backupAttention.length > 160 ||
+    (backupAttention !== '' &&
+      !/^(?:(?:\.recovery-(?:stage|rollback)-[A-Za-z0-9_-]{22})[\\/])?(?:pre-migration-[0-9a-f]{32}\.vault|\.(?:state|protection)-[0-9]+\.tmp|state\.vault)$/.test(
+        backupAttention,
+      ))
   )
     throw new Error('Invalid security response.');
   return {
     requiresPassphrase: value.requiresPassphrase as boolean,
     recoveryAvailable: value.recoveryAvailable as boolean,
     busy: value.busy as boolean,
+    backupAttention,
   };
 }
 export function validateRecoveryPreview(input: unknown): RecoveryPreview {
@@ -108,6 +130,7 @@ async function service() {
 const bridge: SecurityBridge = {
   get: async () => (await service()).GetStorageSecurity(),
   unlock: async (secret) => (await service()).UnlockWithPassphrase(secret),
+  setAside: async (secret) => (await service()).SetAsideBackup(secret),
   configure: async (current, secret, enabled) =>
     (await service()).ConfigurePassphrase(current, secret, enabled),
   export: async (secret) => (await service()).ExportRecovery(secret),
@@ -127,6 +150,7 @@ const initial = () => ({
     requiresPassphrase: false,
     recoveryAvailable: false,
     busy: false,
+    backupAttention: '',
   } as StorageSecurity,
   preview: null as RecoveryPreview | null,
 });
@@ -177,7 +201,13 @@ export function createSecurity(
     }
   }
   function begin(operation: SecurityOperation) {
-    if (current.busy || operation === 'import-confirm' || operation === '')
+    if (
+      current.busy ||
+      operation === 'import-confirm' ||
+      operation === '' ||
+      (operation === 'repair' &&
+        (!current.loaded || current.summary.backupAttention === ''))
+    )
       return;
     cancel();
     publish({ operation });
@@ -196,10 +226,14 @@ export function createSecurity(
       return;
     const needsCurrent =
       operation === 'disable' ||
-      (operation === 'enable' && current.summary.requiresPassphrase);
+      ((operation === 'enable' || operation === 'repair') &&
+        current.summary.requiresPassphrase);
+    const needsNew = operation !== 'disable' && operation !== 'repair';
     if (
       (needsCurrent && !validSecret(currentSecret)) ||
-      (operation !== 'disable' && !validSecret(secret))
+      (needsNew && !validSecret(secret)) ||
+      (operation === 'repair' &&
+        (!current.loaded || current.summary.backupAttention === ''))
     ) {
       publish({
         notice:
@@ -210,6 +244,7 @@ export function createSecurity(
     const epoch = ++generation;
     publish({ busy: true, notice: '' });
     let refreshAfterFailure = false;
+    let failed = false;
     try {
       if (operation === 'import') {
         const input = await api.stage(secret);
@@ -254,11 +289,13 @@ export function createSecurity(
         const result = validateStatus(
           await (operation === 'unlock'
             ? api.unlock(secret)
-            : api.configure(
-                needsCurrent ? currentSecret : '',
-                operation === 'enable' ? secret : '',
-                operation === 'enable',
-              )),
+            : operation === 'repair'
+              ? api.setAside(needsCurrent ? currentSecret : '')
+              : api.configure(
+                  needsCurrent ? currentSecret : '',
+                  operation === 'enable' ? secret : '',
+                  operation === 'enable',
+                )),
         );
         if (epoch !== generation) return;
         publish({
@@ -268,18 +305,22 @@ export function createSecurity(
             requiresPassphrase: result.requiresPassphrase,
             recoveryAvailable: result.storageState === 'unlocked',
             busy: false,
+            backupAttention: '',
           },
           notice:
             operation === 'unlock'
               ? ''
-              : operation === 'enable'
-                ? 'App passphrase enabled.'
-                : 'App passphrase disabled.',
+              : operation === 'repair'
+                ? 'The local backup was preserved encrypted. Local storage was retried.'
+                : operation === 'enable'
+                  ? 'App passphrase enabled.'
+                  : 'App passphrase disabled.',
         });
         callbacks.changed(result);
       }
     } catch {
       if (epoch === generation) {
+        failed = true;
         refreshAfterFailure =
           operation === 'enable' ||
           operation === 'disable' ||
@@ -291,14 +332,17 @@ export function createSecurity(
           notice:
             operation === 'unlock'
               ? 'The passphrase was not accepted or local storage is unavailable. Try again.'
-              : operation === 'import'
-                ? 'The recovery copy could not be authenticated. Check its passphrase and try again.'
-                : 'The security action could not be completed. Check the passphrase and local storage, then try again.',
+              : operation === 'repair'
+                ? 'The backup could not be set aside. Check the current app passphrase and retry. A changed or unavailable file must be reviewed before retrying.'
+                : operation === 'import'
+                  ? 'The recovery copy could not be authenticated. Check its passphrase and try again.'
+                  : 'The security action could not be completed. Check the passphrase and local storage, then try again.',
         });
       }
     } finally {
       if (epoch === generation) publish({ busy: false });
     }
+    if (failed && epoch === generation) await load();
     if (refreshAfterFailure && epoch === generation) callbacks.failed?.();
   }
   async function commit(secret: string, required: boolean, replace: boolean) {
@@ -317,6 +361,7 @@ export function createSecurity(
     }
     const epoch = ++generation;
     publish({ busy: true, notice: '' });
+    let failed = false;
     try {
       callbacks.beforeImport();
       const result = validateStatus(
@@ -336,12 +381,14 @@ export function createSecurity(
           requiresPassphrase: result.requiresPassphrase,
           recoveryAvailable: result.storageState === 'unlocked',
           busy: false,
+          backupAttention: '',
         },
         notice: 'Recovery copy restored.',
       });
       callbacks.changed(result);
     } catch {
       if (epoch === generation) {
+        failed = true;
         cancelHandle(preview.handle);
         publish({
           operation: '',
@@ -354,6 +401,7 @@ export function createSecurity(
     } finally {
       if (epoch === generation) publish({ busy: false });
     }
+    if (failed && epoch === generation) await load();
   }
   return { state, load, begin, startup, submit, commit, cancel, reset };
 }

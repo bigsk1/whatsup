@@ -394,7 +394,7 @@ func TestProtectedReopenRepairsNestedBackupsAndTemporaryRoots(t *testing.T) {
 	}
 }
 
-func TestManagedMigrationRetentionKeepsNewestThreeAndPinnedCopy(t *testing.T) {
+func TestManagedMigrationRetentionKeepsCreationOrderAndPinnedCopy(t *testing.T) {
 	dir, keys := privateDirectory(t), &memoryKeys{}
 	_, app := openApplicationTest(t, dir, keys)
 	original, err := os.ReadFile(filepath.Join(dir, "state.vault"))
@@ -415,6 +415,11 @@ func TestManagedMigrationRetentionKeepsNewestThreeAndPinnedCopy(t *testing.T) {
 		if err := os.WriteFile(path, original, 0600); err != nil {
 			t.Fatal(err)
 		}
+		if parent == dir {
+			if err := recordManagedBackup(app.vault, filepath.Base(path), original); err != nil {
+				t.Fatal(err)
+			}
+		}
 		at := time.Unix(int64(1000+i), 0)
 		if err := os.Chtimes(path, at, at); err != nil {
 			t.Fatal(err)
@@ -428,15 +433,26 @@ func TestManagedMigrationRetentionKeepsNewestThreeAndPinnedCopy(t *testing.T) {
 		_, err := os.Stat(path)
 		want := i%2 != 0 || i >= len(paths)-2*maxRetainedMigrationBackups
 		if want && err != nil || !want && !os.IsNotExist(err) {
-			t.Fatalf("first protection lost original snapshot age at index %d", i)
+			t.Fatalf("first protection lost authenticated snapshot order at index %d", i)
 		}
 	}
-	// Recreate authenticated managed backups with deterministic ages, then keep
-	// the oldest top-level snapshot pinned by the current envelope.
+	// Publish a fresh generation of authenticated backups, then keep its oldest
+	// top-level snapshot pinned by the current envelope.
 	protected, _ := os.ReadFile(filepath.Join(dir, "state.vault"))
-	for i, path := range paths {
+	for i := range paths {
+		parent := dir
+		if i%2 != 0 {
+			parent = container
+		}
+		path := filepath.Join(parent, fmt.Sprintf("pre-migration-%032x.vault", 100+i))
+		paths[i] = path
 		if err := os.WriteFile(path, protected, 0600); err != nil {
 			t.Fatal(err)
+		}
+		if parent == dir {
+			if err := recordManagedBackup(app.vault, filepath.Base(path), protected); err != nil {
+				t.Fatal(err)
+			}
 		}
 		at := time.Unix(int64(1000+i), 0)
 		if err := os.Chtimes(path, at, at); err != nil {

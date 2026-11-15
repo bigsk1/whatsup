@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestSecondLaunchBeforeNativeWindowFocusesExistingWindowOnce(t *testing.T) {
@@ -71,6 +72,10 @@ func TestAutostartRemainsHiddenOnlyWithReachableTrayAndNoFocusRequest(t *testing
 				c.NativeReady()
 				c.Ready()
 				c.Ready()
+				if !focus && shown != 0 {
+					t.Fatal("renderer-ready skipped tray startup grace")
+				}
+				c.StartupFallback()
 				want := 0
 				if focus || hidden && !tray {
 					want = 1
@@ -85,6 +90,46 @@ func TestAutostartRemainsHiddenOnlyWithReachableTrayAndNoFocusRequest(t *testing
 			}
 		}
 	}
+}
+
+func TestLateTrayRegistrationUsesGracePeriod(t *testing.T) {
+	tray := false
+	shown := 0
+	c := New(Actions{StartHidden: true, Show: func() { shown++ }, TrayAvailable: func() bool { return tray }})
+	c.NativeReady()
+	c.Ready()
+	if shown != 0 {
+		t.Fatal("initial missing host prematurely revealed autostart")
+	}
+	tray = true
+	c.StartupFallback()
+	if shown != 0 {
+		t.Fatal("late registered host was ignored")
+	}
+}
+
+func TestExternalTrayProbeCannotBlockControllerFocusOrQuit(t *testing.T) {
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	shown, quit := make(chan struct{}, 1), make(chan struct{}, 1)
+	c := New(Actions{StartHidden: true, Show: func() { shown <- struct{}{} }, Quit: func() { quit <- struct{}{} }, TrayAvailable: func() bool { close(entered); <-release; return false }})
+	c.NativeReady()
+	c.Ready()
+	go func() { c.StartupFallback(); close(finished) }()
+	<-entered
+	c.Focus()
+	c.Quit()
+	select {
+	case <-shown:
+	case <-time.After(time.Second):
+		t.Fatal("focus blocked on external probe")
+	}
+	select {
+	case <-quit:
+	case <-time.After(time.Second):
+		t.Fatal("quit blocked on external probe")
+	}
+	close(release)
+	<-finished
 }
 
 func TestAutostartCannotShowAfterQuit(t *testing.T) {

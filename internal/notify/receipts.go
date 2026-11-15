@@ -133,3 +133,25 @@ func (r *noticeReceipts) consume(id, contact, proof string) bool {
 }
 
 func (r *noticeReceipts) discard(id, contact, proof string) { _ = r.consume(id, contact, proof) }
+
+func (r *noticeReceipts) forget(contactID string) error {
+	if r == nil || !canonicalID(contactID, true) {
+		return ErrUnavailable
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entries := r.current(r.entries)
+	retained := entries[:0]
+	for _, entry := range entries {
+		if entry.contact != contactID {
+			retained = append(retained, entry)
+		}
+	}
+	// Retire the in-process capability even if persistent cleanup is temporarily
+	// unavailable. The caller still receives the cleanup error.
+	r.entries = retained
+	if r.save == nil || r.save(encodeNoticeReceipts(retained)) != nil {
+		return ErrUnavailable
+	}
+	return nil
+}

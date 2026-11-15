@@ -78,3 +78,11 @@ func TestLinuxNotificationRejectsForgedAndPreviousDaemonSenders(t *testing.T) {
 		t.Fatal("new daemon could not activate newly issued notice")
 	}
 }
+
+func TestLinuxForgetPurgesOnlyMatchingIssuedIDs(t *testing.T) {
+	first, second := syntheticNotice().ContactID, "AwMDAwMDAwMDAwMDAwMDAw"
+	l := &linuxBackend{ids: map[uint32]string{1: first, 2: second, 3: first}, order: []uint32{1, 2, 3}}
+	if l.forget(first) != nil || len(l.ids) != 1 || l.ids[2] != second || len(l.order) != 1 || l.order[0] != 2 {
+		t.Fatal("Forget retained IDs or affected another contact")
+	}
+}

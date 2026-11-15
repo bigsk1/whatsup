@@ -16,6 +16,7 @@ const names = [
   'LockStorage',
   'UnlockWithPassphrase',
   'GetStorageSecurity',
+  'SetAsideBackup',
   'ConfigurePassphrase',
   'ExportRecovery',
   'StageRecoveryImport',
@@ -38,6 +39,8 @@ for (const name of names) {
 }
 const secret = '  synthetic 🔐 passphrase  ';
 const token = 'D'.repeat(32);
+const backup =
+  '.recovery-rollback-AQEBAQEBAQEBAQEBAQEBAQ/pre-migration-00000000000000000000000000000000.vault';
 async function desktop(page: Page, required = true) {
   const state = {
     storage: required ? 'locked' : 'unlocked',
@@ -45,6 +48,9 @@ async function desktop(page: Page, required = true) {
     holdUnlock: undefined as Promise<void> | undefined,
     holdSecurity: undefined as Promise<void> | undefined,
     failUnlock: false,
+    failConfigure: false,
+    backupAttention: '',
+    holdSetAside: undefined as Promise<void> | undefined,
   };
   const calls: { operation: Operation; args: unknown[] }[] = [];
   await page.addInitScript(() => {
@@ -84,7 +90,7 @@ async function desktop(page: Page, required = true) {
         result = status();
         break;
       case 'UnlockWithPassphrase':
-        if (state.failUnlock) {
+        if (state.failUnlock || state.backupAttention) {
           await route.fulfill({
             status: 500,
             json: { kind: 'RuntimeError', message: secret },
@@ -101,9 +107,38 @@ async function desktop(page: Page, required = true) {
           requiresPassphrase: state.required,
           recoveryAvailable: state.storage === 'unlocked',
           busy: false,
+          backupAttention: state.backupAttention,
         };
         break;
+      case 'SetAsideBackup':
+        if (state.required && args[0] !== secret) {
+          await route.fulfill({
+            status: 500,
+            json: {
+              kind: 'RuntimeError',
+              message: secret + ' C:/Users/private',
+            },
+          });
+          return;
+        }
+        state.backupAttention = '';
+        state.storage = 'unlocked';
+        result = status();
+        if (state.holdSetAside) await state.holdSetAside;
+        break;
       case 'ConfigurePassphrase':
+        if (state.failConfigure) {
+          state.backupAttention = backup;
+          state.storage = 'unavailable';
+          await route.fulfill({
+            status: 500,
+            json: {
+              kind: 'RuntimeError',
+              message: secret + ' C:/Users/private',
+            },
+          });
+          return;
+        }
         state.required = args[2] === true;
         result = status();
         break;
@@ -308,6 +343,183 @@ test('wrong unlock secrets leave empty fields and fixed notices without echoing 
   await expect(
     page.getByText('Local storage locked', { exact: true }),
   ).toBeVisible();
+});
+
+test('failed passphrase settings expose the relative backup and allow OS-only encrypted set-aside', async ({
+  page,
+}) => {
+  const { state, calls } = await desktop(page, false);
+  await page.goto('/');
+  await securityPage(page);
+  await page
+    .getByRole('button', { name: 'Require app passphrase…', exact: true })
+    .click();
+  const configure = page.getByRole('dialog', {
+    name: 'Require an app passphrase',
+  });
+  await configure
+    .getByLabel('New app passphrase', { exact: true })
+    .fill(secret);
+  await configure
+    .getByLabel('Confirm app passphrase', { exact: true })
+    .fill(secret);
+  state.failConfigure = true;
+  await configure
+    .getByRole('button', { name: 'Enable passphrase', exact: true })
+    .click();
+  await expect(configure).not.toBeVisible();
+  const attention = page.getByRole('region', {
+    name: 'A local backup needs attention',
+    exact: true,
+  });
+  await expect(attention).toContainText(backup);
+  await expect(attention).not.toContainText('C:/Users');
+  await attention
+    .getByRole('button', { name: 'Set aside and retry…', exact: true })
+    .click();
+  const repair = page.getByRole('dialog', {
+    name: 'Set aside a local backup',
+    exact: true,
+  });
+  await expect(repair).toBeVisible();
+  await expect(repair.locator('input[type=password]')).toHaveCount(0);
+  await expect(repair).toContainText('preserve this backup encrypted');
+  await repair
+    .getByRole('button', { name: 'Set aside and retry', exact: true })
+    .click();
+  await expect(repair).not.toBeVisible();
+  await expect(attention).toHaveCount(0);
+  expect(
+    calls.find((call) => call.operation === 'SetAsideBackup')?.args,
+  ).toEqual(['']);
+  await page
+    .getByRole('button', { name: 'Back to chats', exact: true })
+    .click();
+  await expect(
+    page.getByText('Local storage unlocked', { exact: true }),
+  ).toBeVisible();
+});
+
+test('backup repair after unlock uses the current secret, supports cancel and wrong-secret retry, and keeps paths private', async ({
+  page,
+}) => {
+  const { state, calls } = await desktop(page);
+  await page.goto('/');
+  const unlock = page.getByRole('dialog', { name: 'Go online', exact: true });
+  await expect(unlock).toBeVisible();
+  state.backupAttention = backup;
+  await unlock.getByLabel('App passphrase', { exact: true }).fill(secret);
+  await unlock
+    .getByRole('button', { name: 'Unlock and go online', exact: true })
+    .click();
+  await expect(unlock).toContainText(backup);
+  await unlock
+    .getByRole('button', { name: 'Set aside and retry…', exact: true })
+    .click();
+  const repair = page.getByRole('dialog', {
+    name: 'Set aside a local backup',
+    exact: true,
+  });
+  await repair
+    .getByLabel('Current app passphrase', { exact: true })
+    .fill(secret);
+  await repair.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(repair).not.toBeVisible();
+  expect(calls.some((call) => call.operation === 'SetAsideBackup')).toBe(false);
+  await securityPage(page);
+  await page
+    .getByRole('button', { name: 'Set aside and retry…', exact: true })
+    .click();
+  await expect(
+    repair.getByLabel('Current app passphrase', { exact: true }),
+  ).toHaveValue('');
+  await repair
+    .getByLabel('Current app passphrase', { exact: true })
+    .fill('synthetic wrong app secret');
+  await repair
+    .getByRole('button', { name: 'Set aside and retry', exact: true })
+    .click();
+  await expect(repair.getByRole('alert')).toContainText(
+    'could not be set aside',
+  );
+  await expect(
+    repair.getByLabel('Current app passphrase', { exact: true }),
+  ).toHaveValue('');
+  await expect(repair).toContainText(backup);
+  await expect(repair).not.toContainText('C:/Users');
+  await expect(repair.getByText(secret, { exact: true })).toHaveCount(0);
+  await repair
+    .getByLabel('Current app passphrase', { exact: true })
+    .fill(secret);
+  await repair
+    .getByRole('button', { name: 'Set aside and retry', exact: true })
+    .click();
+  await expect(repair).not.toBeVisible();
+  expect(
+    calls
+      .filter((call) => call.operation === 'SetAsideBackup')
+      .map((call) => call.args),
+  ).toEqual([['synthetic wrong app secret'], [secret]]);
+  await page
+    .getByRole('button', { name: 'Back to chats', exact: true })
+    .click();
+  await expect(
+    page.getByText('Local storage unlocked', { exact: true }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(() => JSON.stringify({ ...localStorage })),
+  ).not.toContain(secret);
+});
+
+test('a late set-aside reply after native offline leaves the repair closed and local data offline', async ({
+  page,
+}) => {
+  const { state, calls } = await desktop(page);
+  await page.goto('/');
+  const unlock = page.getByRole('dialog', { name: 'Go online', exact: true });
+  await expect(unlock).toBeVisible();
+  state.backupAttention = backup;
+  await unlock.getByLabel('App passphrase', { exact: true }).fill(secret);
+  await unlock
+    .getByRole('button', { name: 'Unlock and go online', exact: true })
+    .click();
+  await unlock
+    .getByRole('button', { name: 'Set aside and retry…', exact: true })
+    .click();
+  const repair = page.getByRole('dialog', {
+    name: 'Set aside a local backup',
+    exact: true,
+  });
+  let release!: () => void;
+  state.holdSetAside = new Promise<void>((resolve) => (release = resolve));
+  await repair
+    .getByLabel('Current app passphrase', { exact: true })
+    .fill(secret);
+  await repair
+    .getByRole('button', { name: 'Set aside and retry', exact: true })
+    .click();
+  await expect
+    .poll(() => calls.some((call) => call.operation === 'SetAsideBackup'))
+    .toBe(true);
+  await expect(
+    repair.getByLabel('Current app passphrase', { exact: true }),
+  ).toHaveValue('');
+  state.storage = 'locked';
+  await nativeHint(page, 'whatsup:storage-changed', {
+    state: 'locked',
+    requiresPassphrase: true,
+  });
+  release();
+  await expect(repair).not.toBeVisible();
+  await expect(
+    page.getByText('Local storage locked', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText('Local storage unlocked', { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('dialog', { name: 'Go online', exact: true }),
+  ).not.toBeVisible();
 });
 test('recovery export and authenticated import use native dialogs and opaque handles with explicit replacement', async ({
   page,

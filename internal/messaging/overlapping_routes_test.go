@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,6 +40,95 @@ func approvedMigrationManager(t *testing.T) (*Manager, *registryPeer, *registryP
 	m.planKey = routePlanKey(routes)
 	m.mu.Unlock()
 	return m, a, b, routes, n
+}
+
+func TestDisjointFallbackStageKeepsAuthenticatedChatThenVisitsPreferredAfterClose(t *testing.T) {
+	m, a, b, routes, n := approvedMigrationManager(t)
+	ctx, cancel := context.WithTimeout(m.ctx, 5*time.Second)
+	defer cancel()
+	const window = 150 * time.Millisecond
+	listen := m.factories.Listen
+	var preferredAttempts atomic.Int32
+	m.factories.Listen = func(ctx context.Context, record storage.PendingRecord, profile *transport.RelayProfile) (Listener, error) {
+		if record.RelayServiceURL == routes[0].record.RelayServiceURL && preferredAttempts.Add(1) == 1 {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return listen(ctx, record, profile)
+	}
+	done := make(chan error, 1)
+	go func() { done <- m.visitOverlappingListeners(ctx, routes, window) }()
+	defer func() { cancel(); <-done }()
+	until := time.Now().Add(time.Second)
+	for {
+		n.mu.Lock()
+		ready := n.listeners[routes[1].record.ID+routes[1].record.RelayServiceURL] != nil
+		n.mu.Unlock()
+		if ready {
+			break
+		}
+		if time.Now().After(until) {
+			t.Fatal("old fallback listener not ready")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	raw, err := m.factories.Dial(ctx, peerRouteRecord(t, b, routes[1]), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, err := sessionauth.Authenticate(ctx, raw, sessionauth.Options{Local: b.local, Peer: a.local.PublicKey(), ContactID: routes[1].record.ID, Association: routes[1].association})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer peer.Close()
+	consumeInitialProfile(t, peer)
+	textAcked := make(chan struct{}, 1)
+	go func() {
+		for {
+			frame, err := readPacket(peer)
+			if err != nil {
+				return
+			}
+			if frame.kind == dataPacket && frame.frame.Type == chat.MessageFrame {
+				if writePacket(peer, packet{kind: dataPacket, frame: chat.Frame{Version: 1, Type: chat.AckFrame, ID: frame.frame.ID}}) != nil {
+					return
+				}
+				textAcked <- struct{}{}
+			}
+		}
+	}()
+	time.Sleep(3 * window)
+	m.mu.Lock()
+	live := m.sessionActive && m.claim != nil && m.claim.route.association == routes[1].association
+	m.mu.Unlock()
+	if !live {
+		t.Fatal("disjoint-map stage timer disconnected a working fallback")
+	}
+	if _, err := m.Send(routes[1].record.ID, "synthetic text on retained disjoint fallback"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-textAcked:
+	case <-time.After(time.Second):
+		t.Fatal("retained fallback could not deliver text")
+	}
+	if preferredAttempts.Load() != 1 {
+		t.Fatal("live fallback was retired to keep trying preferred")
+	}
+	_ = peer.Close()
+	until = time.Now().Add(3 * time.Second)
+	for preferredAttempts.Load() < 2 {
+		if time.Now().After(until) {
+			t.Fatal("natural fallback close prevented future preferred attempts")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	n.mu.Lock()
+	peak := n.peak[routes[0].record.ID]
+	n.mu.Unlock()
+	if peak != 1 {
+		t.Fatal("fallback retention created duplicate physical engines")
+	}
 }
 
 func TestEquivalentListenerProofUsesExactlyNegotiatedRoute(t *testing.T) {
@@ -145,11 +235,21 @@ func TestOverlappingStagesUseOldFallbackThenRetryNewWithoutDuplicateEngines(t *t
 		t.Fatal(err)
 	}
 	acknowledged := false
-	for p := range read {
-		acknowledged = acknowledged || p.kind == dataPacket && p.frame.Type == chat.AckFrame && p.frame.ID == id
+	for !acknowledged {
+		select {
+		case p, ok := <-read:
+			if !ok {
+				t.Fatal("working fallback closed before acknowledging text")
+			}
+			acknowledged = p.kind == dataPacket && p.frame.Type == chat.AckFrame && p.frame.ID == id
+		case <-time.After(time.Second):
+			t.Fatal("old fallback did not durably receive and ACK text")
+		}
 	}
-	if !acknowledged {
-		t.Fatal("old fallback did not durably receive and ACK text before rotation")
+	// A live fallback is not retired for migration. Closing it naturally makes
+	// the next serial preferred stage eligible without registering two engines.
+	_ = old.Close()
+	for range read {
 	}
 	next := dial(routes[0])
 	defer next.Close()

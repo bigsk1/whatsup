@@ -44,6 +44,11 @@ const (
 	wakeEvent
 )
 
+// A receipt retires one durable intent before another enters the wire. This is
+// deliberately smaller than the actor's bounded input queue, including when both
+// directions are simultaneously replaying cancellations after a restart.
+const maxWithdrawalsInFlight = 4
+
 type sendJob struct {
 	credit                                                                               [16]byte
 	record                                                                               Record
@@ -150,20 +155,44 @@ func (e *Engine) BeginWithWithdrawals(ctx context.Context, guard func() error, w
 }
 func (e *Engine) End(epoch uint64) error { return e.request(event{kind: endEvent, epoch: epoch}) }
 func (e *Engine) Submit(epoch uint64, frame Frame) error {
+	return e.SubmitContext(e.ctx, epoch, frame)
+}
+
+// SubmitContext applies bounded backpressure instead of treating a busy local
+// persistence worker as a peer protocol violation. Session cancellation always
+// interrupts the wait, even if this Engine remains alive for a later session.
+func (e *Engine) SubmitContext(ctx context.Context, epoch uint64, frame Frame) error {
 	if frame.Validate() != nil {
 		return ErrProtocol
 	}
+	if ctx == nil {
+		return ErrUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
+	case <-ctx.Done():
+		return ctx.Err()
 	case <-e.ctx.Done():
 		return ErrUnavailable
 	case e.events <- event{kind: incomingEvent, epoch: epoch, frame: frame}:
 		return nil
-	default:
-		return ErrProtocol
 	}
 }
 func (e *Engine) Written(epoch uint64, frame Frame) error {
+	return e.WrittenContext(e.ctx, epoch, frame)
+}
+func (e *Engine) WrittenContext(ctx context.Context, epoch uint64, frame Frame) error {
+	if ctx == nil {
+		return ErrUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	select {
+	case <-ctx.Done():
+		return ctx.Err()
 	case <-e.ctx.Done():
 		return ErrUnavailable
 	case e.events <- event{kind: writtenEvent, epoch: epoch, frame: frame}:
@@ -336,10 +365,9 @@ func (e *Engine) reload() error {
 	}
 	for _, r := range records {
 		if r.PendingWithdrawal && e.withdrawals && !e.withdrawSent[r.Offer.ID] {
-			if err := e.emit(control(WithdrawFrame, r.Offer, 0, 0)); err != nil {
+			if err := e.queueWithdrawal(r); err != nil {
 				return err
 			}
-			e.withdrawSent[r.Offer.ID] = true
 		}
 	}
 	for _, id := range e.order {
@@ -350,11 +378,25 @@ func (e *Engine) reload() error {
 		if !e.allowed(job.record) {
 			continue
 		}
+		if len(e.pending) >= MaxOffers+MaxActive+4 {
+			break
+		}
 		if err := e.emit(Frame{Kind: OfferFrame, ID: id, SHA256: job.record.Offer.SHA256, Offer: job.record.Offer}); err != nil {
 			return err
 		}
 		job.offerQueued = true
 	}
+	return nil
+}
+
+func (e *Engine) queueWithdrawal(record Record) error {
+	if !e.withdrawals || !record.PendingWithdrawal || e.withdrawSent[record.Offer.ID] || len(e.withdrawSent) >= maxWithdrawalsInFlight || len(e.pending) >= MaxOffers+MaxActive+4 {
+		return nil
+	}
+	if err := e.emit(control(WithdrawFrame, record.Offer, 0, 0)); err != nil {
+		return err
+	}
+	e.withdrawSent[record.Offer.ID] = true
 	return nil
 }
 func (e *Engine) allowed(record Record) bool {
@@ -518,6 +560,9 @@ func (e *Engine) written(frame Frame) error {
 	}
 	job := e.jobs[frame.ID]
 	if job == nil {
+		if frame.Kind == CompleteFrame || frame.Kind == DeclineFrame || frame.Kind == WithdrawAckFrame {
+			return e.reload()
+		}
 		return nil
 	}
 	if frame.Kind != OfferFrame && (!job.accepted || job.remotePaused) {

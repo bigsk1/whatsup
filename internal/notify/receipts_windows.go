@@ -47,26 +47,7 @@ func openWindowsReceipts(appName string) (*noticeReceipts, error) {
 		return nil, ErrUnavailable
 	}
 	defer key.Close()
-	size, kind, err := key.GetValue(noticeReceiptRegistryValue, nil)
-	var plain []byte
-	if err == nil {
-		if kind != registry.BINARY || size <= 0 || size > maxProtectedNoticeReceipts {
-			return nil, ErrUnavailable
-		}
-		ciphertext := make([]byte, size)
-		n, kind, err := key.GetValue(noticeReceiptRegistryValue, ciphertext)
-		if err != nil || kind != registry.BINARY || n != size {
-			return nil, ErrUnavailable
-		}
-		plain, err = receiptDPAPI(ciphertext, appName, false)
-		if err != nil {
-			return nil, ErrUnavailable
-		}
-	} else if err != registry.ErrNotExist {
-		return nil, ErrUnavailable
-	}
-	defer clear(plain)
-	return newNoticeReceipts(plain, func(data []byte) error {
+	save := func(data []byte) error {
 		defer clear(data)
 		ciphertext, err := receiptDPAPI(data, appName, true)
 		if err != nil {
@@ -81,5 +62,37 @@ func openWindowsReceipts(appName string) (*noticeReceipts, error) {
 			return ErrUnavailable
 		}
 		return nil
-	}, nil)
+	}
+	size, kind, err := key.GetValue(noticeReceiptRegistryValue, nil)
+	var plain []byte
+	reset := false
+	if err == nil {
+		if kind != registry.BINARY || size <= 0 || size > maxProtectedNoticeReceipts {
+			reset = true
+		} else {
+			ciphertext := make([]byte, size)
+			n, kind, readErr := key.GetValue(noticeReceiptRegistryValue, ciphertext)
+			if readErr != nil || kind != registry.BINARY || n != size {
+				reset = true
+			} else {
+				plain, err = receiptDPAPI(ciphertext, appName, false)
+				reset = err != nil
+			}
+		}
+	} else if err != registry.ErrNotExist {
+		reset = true
+	}
+	defer clear(plain)
+	if !reset {
+		receipts, err := newNoticeReceipts(plain, save, nil)
+		if err == nil {
+			return receipts, nil
+		}
+	}
+	// Receipts are disposable routing evidence, not identity or history. Retire
+	// every old proof and recover notification delivery from unusable state.
+	if save(encodeNoticeReceipts(nil)) != nil {
+		return nil, ErrUnavailable
+	}
+	return newNoticeReceipts(nil, save, nil)
 }

@@ -98,13 +98,16 @@ func TestCapacityFailureAndDeclineRaceKeepProtocolUsable(t *testing.T) {
 	}
 	_ = nextOutput(t, e)
 	// The sender may already have written a bounded chunk before seeing the
-	// decline. It is discarded and answered, without killing the chat session.
+	// decline. It is discarded without duplicating a withdrawal still awaiting
+	// its receipt or killing the shared chat session.
 	if err := e.Submit(epoch, chunk); err != nil {
 		t.Fatal(err)
 	}
-	out = nextOutput(t, e)
-	if out.Frame.Kind != WithdrawFrame {
-		t.Fatal("in-flight declined chunk was not safely drained")
+	barrier(t, e)
+	select {
+	case duplicate := <-e.Output():
+		t.Fatal("stale chunk duplicated an unacknowledged withdrawal", duplicate.Frame.Kind)
+	default:
 	}
 	select {
 	case <-e.Failures():

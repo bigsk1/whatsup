@@ -40,7 +40,9 @@ type NativeStorageHint struct {
 type nativeNotifier interface {
 	Start(context.Context) error
 	Send(context.Context, notify.Notice) error
+	SendApproved(context.Context, notify.Notice) error
 	Close() error
+	ForgetContact(context.Context, string) error
 }
 
 type nativeHost struct {
@@ -51,6 +53,9 @@ type nativeHost struct {
 	notifier          nativeNotifier
 	controller        *lifecycle.Controller
 	tray              *application.SystemTray
+	trayMonitor       *lifecycle.TrayMonitor
+	trayGraceElapsed  atomic.Bool
+	hiddenToTray      atomic.Bool
 	windowMu          sync.RWMutex
 	window            *application.WebviewWindow
 	closeToTray       atomic.Bool
@@ -121,22 +126,25 @@ func newNativeHost(app *application.App, backend *desktop.Service, record func(d
 		}
 	}
 	h.notifier = notify.New(h.activateContact)
+	h.hiddenToTray.Store(opts.Autostart)
+	h.trayMonitor = lifecycle.NewTrayMonitor(h.life, nativeTrayAvailable, h.trayUnavailable)
 	h.deliver = func(ctx context.Context, incoming messaging.Incoming) error {
 		return desktop.WithIncomingNotification(backend, incoming, func(value desktop.Notification) error {
 			if ctx.Err() != nil || h.foreground() {
 				return nil
 			}
-			return h.notifier.Send(ctx, notify.Notice{ID: incoming.MessageID, ContactID: incoming.ContactID, Title: value.Name, Body: value.Body})
+			return h.notifier.SendApproved(ctx, notify.Notice{ID: incoming.MessageID, ContactID: incoming.ContactID, Title: value.Name, Body: value.Body})
 		})
 	}
 	h.controller = lifecycle.New(lifecycle.Actions{
 		StartHidden: opts.Autostart,
 		Show:        h.show, Hide: h.hide,
-		Quit:          func() { go func() { h.stopTasks(); app.Quit() }() },
-		Background:    h.closeToTray.Load,
-		TrayAvailable: func() bool { return h.tray != nil && nativeTrayAvailable() },
-		NoticeSeen:    func() (bool, error) { return desktop.TrayNoticeSeen(backend) },
-		Notice:        h.notice,
+		Quit:                 func() { go func() { h.stopTasks(); app.Quit() }() },
+		Background:           h.closeToTray.Load,
+		TrayAvailable:        func() bool { return h.tray != nil && h.trayMonitor.Available() },
+		ConfirmTrayAvailable: func() bool { return h.tray != nil && h.trayMonitor.Fresh(h.life) },
+		NoticeSeen:           func() (bool, error) { return desktop.TrayNoticeSeen(backend) },
+		Notice:               h.notice,
 		MarkNotice: func() error {
 			if h.life.Err() != nil {
 				return h.life.Err()
@@ -164,6 +172,7 @@ func (h *nativeHost) nativeStarted() {
 	if h.life.Err() != nil {
 		return
 	}
+	h.trayMonitor.Start()
 	timer := time.NewTimer(10 * time.Second)
 	defer timer.Stop()
 	ticker := time.NewTicker(50 * time.Millisecond)
@@ -180,6 +189,7 @@ func (h *nativeHost) nativeStarted() {
 			return
 		case <-timer.C:
 			h.controller.NativeReady()
+			h.trayGraceElapsed.Store(true)
 			h.controller.StartupFallback()
 			return
 		case <-ticker.C:
@@ -188,6 +198,7 @@ func (h *nativeHost) nativeStarted() {
 	select {
 	case <-h.life.Done():
 	case <-timer.C:
+		h.trayGraceElapsed.Store(true)
 		h.controller.StartupFallback()
 	}
 }
@@ -258,6 +269,7 @@ func (h *nativeHost) show() {
 		return
 	}
 	if window := h.windowValue(); window != nil {
+		h.hiddenToTray.Store(false)
 		window.Show()
 		// Pinned Wails' first Show may create a deferred hidden native window.
 		// A second call explicitly reveals it after that synchronous creation.
@@ -274,14 +286,25 @@ func (h *nativeHost) hide() {
 		return
 	}
 	if window := h.windowValue(); window != nil {
+		h.hiddenToTray.Store(true)
 		window.Hide()
 		h.focused.Store(window.IsFocused())
 		h.setVisible(window.IsVisible() && !window.IsMinimised())
 	}
 }
 
+func (h *nativeHost) trayUnavailable() {
+	// Ordinary minimization is distinct from hiding to a tray. Recover only
+	// windows the application intentionally hid, without stealing focus from
+	// someone who merely minimized a normal window on a tray-less desktop.
+	if h.life.Err() == nil && h.trayGraceElapsed.Load() && h.hiddenToTray.Load() && h.controller != nil {
+		h.controller.Focus()
+	}
+}
+
 func (h *nativeHost) focus() {
 	if h != nil && h.life.Err() == nil && h.controller != nil {
+		h.trayMonitor.Refresh()
 		h.controller.Focus()
 	}
 }
@@ -319,13 +342,31 @@ func (h *nativeHost) takeNotificationActivation() string {
 	return id
 }
 
+func (h *nativeHost) forgetContact(contactID string) {
+	if h == nil || !nativeIncomingID(contactID, true) {
+		return
+	}
+	if h.notifier != nil {
+		ctx, cancel := context.WithTimeout(h.life, notify.CallTimeout)
+		if h.notifier.ForgetContact(ctx, contactID) != nil && h.life.Err() == nil {
+			h.record(diagnostics.RuntimeWarning)
+		}
+		cancel()
+	}
+	h.activationMu.Lock()
+	if h.activation == contactID {
+		h.activation = ""
+	}
+	h.activationMu.Unlock()
+}
+
 func (h *nativeHost) notice(noTray bool) {
 	if h.life.Err() != nil {
 		return
 	}
 	message := "WhatsUp will keep running in the tray when you close this window. Messages can arrive while the window is hidden. Choose Quit from the tray to exit, or Go offline to disconnect and lock local storage."
 	if noTray {
-		message = "This desktop does not provide an available system tray. WhatsUp will quit instead of hiding an unreachable window. Both apps must be running to exchange messages."
+		message = "WhatsUp could not confirm a working tray icon, so closing the window will quit the app instead of hiding it. Both apps must be running to exchange messages."
 	}
 	ack := make(chan struct{})
 	var once sync.Once

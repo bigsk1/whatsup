@@ -9,10 +9,11 @@ import (
 // RuntimeOptions is trusted Go construction input, never a bridge DTO. Test
 // factories cannot be selected by renderer input or saved peer metadata.
 type RuntimeOptions struct {
-	AutoConnect      bool
-	OnIncoming       func(messaging.Incoming)
-	Factories        messaging.Factories
-	OnPairingChanged func(PairingHint)
+	AutoConnect        bool
+	OnIncoming         func(messaging.Incoming)
+	Factories          messaging.Factories
+	OnPairingChanged   func(PairingHint)
+	OnContactForgotten func(string)
 }
 
 func ConfigureRuntime(s *Service, options RuntimeOptions) error {

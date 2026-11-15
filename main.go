@@ -128,7 +128,8 @@ func main() {
 	}
 	if err := desktop.ConfigureRuntime(service, desktop.RuntimeOptions{
 		AutoConnect: true, OnIncoming: host.enqueueIncoming,
-		OnPairingChanged: func(hint desktop.PairingHint) { app.Event.Emit(desktop.PairingChangedEvent, hint) },
+		OnContactForgotten: host.forgetContact,
+		OnPairingChanged:   func(hint desktop.PairingHint) { app.Event.Emit(desktop.PairingChangedEvent, hint) },
 	}); err != nil {
 		log.Fatal("WhatsUp could not configure its desktop runtime")
 	}

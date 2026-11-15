@@ -236,6 +236,14 @@ export function SetAppPreferences(values: $models.AppPreferences): $CancellableP
 }
 
 /**
+ * SetAsideBackup can act only on the exact backend-captured backup failure.
+ * There is no filename/path argument or filesystem capability in this bridge.
+ */
+export function SetAsideBackup(secret: string): $CancellablePromise<$models.Status> {
+    return $Call.ByID(1194186671, secret);
+}
+
+/**
  * SetAttachmentInputContact selects only an existing approved association for
  * subsequent OS-native drop input. No renderer-supplied path is accepted.
  */

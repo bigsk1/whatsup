@@ -631,6 +631,35 @@
                 >{/if}
             </section>
           {:else if selected === 'security'}
+            {#if security.summary.backupAttention}
+              <section
+                class="settings-card"
+                aria-labelledby="backup-attention-heading"
+              >
+                <h2 id="backup-attention-heading">
+                  A local backup needs attention
+                </h2>
+                <p role="alert">
+                  WhatsUp could not authenticate or update <code
+                    >{security.summary.backupAttention}</code
+                  >.
+                </p>
+                <p class="muted small">
+                  Set this backup aside encrypted in the app data folder and
+                  retry opening local storage. Its original contents stay
+                  preserved for recovery.
+                </p>
+                <button
+                  class="secondary-button compact"
+                  disabled={!native ||
+                    busy ||
+                    security.busy ||
+                    !security.loaded}
+                  onclick={() => onsecurity('repair')}
+                  >Set aside and retry…</button
+                >
+              </section>
+            {/if}
             <section
               class="settings-card"
               aria-labelledby="app-passphrase-heading"

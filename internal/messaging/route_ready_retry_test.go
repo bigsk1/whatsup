@@ -49,7 +49,9 @@ func TestPeerReadyRetryUsesCurrentApprovalInsteadOfRetiringGenerationKey(t *test
 	m.planKey = old
 	m.mu.Unlock()
 	retry := routeReadyRetry{plan: old, started: true, attempt: maxAutomaticRouteRestarts}
-	delay, allowed, err := m.peerRouteRetry(&retry)
+	m.peerRouteBudget = retry
+	delay, allowed, err := m.peerRouteRetry()
+	retry = m.peerRouteBudget
 	if err != nil || !allowed || delay != 0 || retry.plan != current || retry.attempt != 1 {
 		t.Fatal("fresh approval inherited the exhausted retiring plan", err)
 	}
@@ -72,12 +74,13 @@ func TestLocalRouteErrorsCannotConsumePeerReadyBudget(t *testing.T) {
 // genuinely approved newer route. Each peer-induced restart must remain bounded
 // even though those fallback handshakes reset the ordinary dial retry schedule.
 func TestRepeatedRouteReadyUsesBoundedBackoffAndCanRecoverOrCancel(t *testing.T) {
-	for _, mode := range []string{"cancel during backoff", "preferred route recovers", "limit then explicit retry"} {
+	for _, mode := range []string{"cancel during backoff", "preferred route recovers", "limit retains fallback"} {
 		t.Run(mode, func(t *testing.T) {
 			initial, owner, joiner, _, _ := approvedMigrationManager(t)
 			initial.Close()
 			id := initial.record.ID
 			var allowPreferred atomic.Bool
+			var allowFallbackText atomic.Bool
 			var authenticatedFallback atomic.Int32
 			preferredDials := make(chan time.Time, 32)
 			var workers sync.WaitGroup
@@ -125,7 +128,7 @@ func TestRepeatedRouteReadyUsesBoundedBackoffAndCanRecoverOrCancel(t *testing.T)
 									announced = true
 									close(profileSeen)
 								}
-								if preferred && frame.kind == dataPacket && frame.frame.Type == chat.MessageFrame {
+								if (preferred || allowFallbackText.Load()) && frame.kind == dataPacket && frame.frame.Type == chat.MessageFrame {
 									if writePacket(peer, packet{kind: dataPacket, frame: chat.Frame{Version: chat.ProtocolVersion, Type: chat.AckFrame, ID: frame.frame.ID}}) != nil {
 										return
 									}
@@ -197,41 +200,52 @@ func TestRepeatedRouteReadyUsesBoundedBackoffAndCanRecoverOrCancel(t *testing.T)
 				}
 				return
 			}
-			if mode == "limit then explicit retry" {
+			if mode == "limit retains fallback" {
 				limit := time.Now().Add(5 * time.Second)
-				for {
-					s := m.Snapshot()
-					if s.State == "route-unavailable" && s.CanConnect {
-						if !s.CanSend || len(s.Messages) != 1 || s.Messages[0].ID != queuedID || s.Messages[0].Delivered {
-							t.Fatal("route exhaustion lost local queuing or acknowledged retained text")
-						}
-						break
-					}
+				for authenticatedFallback.Load() < maxAutomaticRouteRestarts+1 {
 					if time.Now().After(limit) {
-						t.Fatal("repeated same-plan handovers did not stop at the hard limit")
+						t.Fatal("same-plan handover did not reach the bounded attempt limit")
 					}
-					time.Sleep(5 * time.Millisecond)
+					time.Sleep(time.Millisecond)
 				}
-				// Exactly one initial dial plus the bounded three automatic
-				// rebuilds are permitted; no disconnected worker keeps retrying.
-				if authenticatedFallback.Load() != maxAutomaticRouteRestarts+1 {
-					t.Fatal("route handover count exceeded its hard limit")
+				time.Sleep(100 * time.Millisecond)
+				snapshot := m.Snapshot()
+				if snapshot.State != "connected" || snapshot.CanConnect {
+					t.Fatal("exhausting preferred-route retries stopped a working authenticated fallback", snapshot.State)
 				}
 				for len(preferredDials) > 0 {
 					<-preferredDials
 				}
 				select {
 				case <-preferredDials:
-					t.Fatal("route exhaustion kept retrying without an explicit action")
+					t.Fatal("exhausted peer hints kept rebuilding the fallback")
 				case <-time.After(100 * time.Millisecond):
 				}
-			}
-			allowPreferred.Store(true)
-			if mode == "limit then explicit retry" {
-				if _, err := m.Connect(id); err != nil {
-					t.Fatal("explicit Connect could not retry a restored route", err)
+				allowFallbackText.Store(true)
+				if _, err := m.Send(id, "synthetic message through retained fallback"); err != nil {
+					t.Fatal(err)
 				}
+				limit = time.Now().Add(5 * time.Second)
+				for {
+					s := m.Snapshot()
+					if len(s.Messages) == 2 && s.Messages[0].Delivered && s.Messages[1].Delivered {
+						break
+					}
+					if time.Now().After(limit) {
+						t.Fatal("retained fallback did not deliver and acknowledge text", s.State)
+					}
+					time.Sleep(time.Millisecond)
+				}
+				m.mu.Lock()
+				active, running, progress := m.sessionActive, m.running, m.preferredAuthenticated
+				m.mu.Unlock()
+				if !active || !running || progress != 0 || authenticatedFallback.Load() != maxAutomaticRouteRestarts+1 {
+					t.Fatal("fallback text used a preferred route or caused churn")
+				}
+				return
 			}
+
+			allowPreferred.Store(true)
 			limit := time.Now().Add(5 * time.Second)
 			for {
 				s := m.Snapshot()

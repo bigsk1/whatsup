@@ -79,3 +79,36 @@ func TestReceiptBoundsExpiryAndPersistenceFailures(t *testing.T) {
 		}
 	}
 }
+
+func TestForgetRemovesOnlyMatchingContactAndPersistsOnLaterWrite(t *testing.T) {
+	var saved []byte
+	fail := false
+	save := func(data []byte) error {
+		if fail {
+			return errors.New("temporarily unavailable")
+		}
+		saved = bytes.Clone(data)
+		return nil
+	}
+	r, _ := newNoticeReceipts(nil, save, nil)
+	first := syntheticNotice()
+	second := first
+	second.ContactID = "AwMDAwMDAwMDAwMDAwMDAw"
+	proof, _ := r.issue(first)
+	otherProof, _ := r.issue(second)
+	fail = true
+	if r.forget(first.ContactID) == nil {
+		t.Fatal("cleanup failure hidden")
+	}
+	if r.consume(first.ID, first.ContactID, proof) {
+		t.Fatal("forgotten in-process receipt survived failed cleanup")
+	}
+	fail = false
+	if _, err := r.issue(second); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newNoticeReceipts(saved, save, nil)
+	if err != nil || reopened.consume(first.ID, first.ContactID, proof) || !reopened.consume(second.ID, second.ContactID, otherProof) {
+		t.Fatal("later persistence did not keep Forget scoped")
+	}
+}

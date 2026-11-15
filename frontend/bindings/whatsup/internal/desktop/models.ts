@@ -112,4 +112,5 @@ export interface StorageSecurity {
     "requiresPassphrase": boolean;
     "recoveryAvailable": boolean;
     "busy": boolean;
+    "backupAttention": string;
 }

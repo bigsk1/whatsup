@@ -16,7 +16,7 @@ import (
 	"whatsup/internal/storage"
 )
 
-const Version = "0.0.13"
+const Version = "0.0.14"
 
 type Status struct {
 	Version              string `json:"version"`
@@ -47,6 +47,7 @@ type Service struct {
 	runtimeOptions    RuntimeOptions
 	attachments       *attachmentControl
 	security          *securityControl
+	backupAttention   *storage.ManagedCopyError
 	fingerprint       string
 	state             string
 	record            func(diagnostics.Event)
@@ -148,7 +149,8 @@ func (s *Service) managedCopyAttention(err error) error {
 	if !errors.As(err, &copyError) {
 		return nil
 	}
-	return fmt.Errorf("A local backup could not be authenticated or re-protected: %s. Preserve this file and the OS credential. Quit WhatsUp, then repair the backup or move it to secure storage outside the app data folder before retrying. Do not share it.", filepath.Join(s.directory, copyError.RelativePath))
+	s.backupAttention = &storage.ManagedCopyError{RelativePath: copyError.RelativePath, Digest: copyError.Digest}
+	return fmt.Errorf("A local backup requires attention: %s. Its bytes were preserved. Use Security & recovery to securely set it aside and retry.", filepath.ToSlash(copyError.RelativePath))
 }
 
 func (s *Service) unlockStorageLocked(secret []byte) (Status, error) {
@@ -230,6 +232,7 @@ func (s *Service) unlockStorageLocked(secret []byte) (Status, error) {
 	s.invitations = invitations
 	s.messages = messages
 	s.state = "unlocked"
+	s.backupAttention = nil
 	s.startAttachmentsLocked()
 	s.record(diagnostics.StorageUnlocked)
 	if s.runtimeOptions.AutoConnect {

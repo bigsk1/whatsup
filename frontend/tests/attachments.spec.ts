@@ -66,6 +66,7 @@ async function desktop(
     items: initial,
     drafts: [] as AttachmentDraft[],
     autoAcceptImages: false,
+    hasMore: false,
     peer,
     protocol,
   };
@@ -168,8 +169,8 @@ async function desktop(
           drafts: args[0] === secondContactID ? [] : state.drafts,
           autoAcceptImages:
             args[0] === secondContactID ? false : state.autoAcceptImages,
-          nextCursor: '',
-          hasMore: false,
+          nextCursor: state.hasMore ? '1' : '',
+          hasMore: state.hasMore,
         };
         break;
       case 'ChooseAttachment':
@@ -511,6 +512,68 @@ test('saved attachment history starts collapsed and its keyboard toggle preserve
   expect(errors).toEqual([]);
 });
 
+test('tall attachment history uses one scroll area for file actions and older history', async ({
+  page,
+}) => {
+  const completed = Array.from({ length: 12 }, (_, index): AttachmentItem => ({
+    ...item,
+    id: Buffer.alloc(16, index + 20).toString('base64url'),
+    name: `Synthetic saved file ${index + 1}.pdf`,
+    state: 'complete',
+    transferredBytes: item.size,
+  }));
+  const { state, calls, errors } = await desktop(page, completed);
+  state.hasMore = true;
+  await attachmentUpdate(page, ++state.revision);
+  await expandAttachments(page);
+  const panel = page.getByRole('region', { name: 'Attachments', exact: true });
+  const content = panel.locator('.attachment-content');
+  const geometry = await panel.evaluate((element) => {
+    const content = element.querySelector('.attachment-content')!;
+    const list = element.querySelector('.attachment-list')!;
+    return {
+      panelHeight: element.getBoundingClientRect().height,
+      contentOverflows: content.scrollHeight > content.clientHeight,
+      listOverflows: list.scrollHeight > list.clientHeight,
+      scrollingAreas: [...element.querySelectorAll('*')].filter((child) => {
+        const overflow = getComputedStyle(child).overflowY;
+        return (
+          ['auto', 'scroll'].includes(overflow) &&
+          child.scrollHeight > child.clientHeight
+        );
+      }).length,
+    };
+  });
+  expect(geometry.panelHeight).toBeLessThanOrEqual(330);
+  expect(geometry.contentOverflows).toBe(true);
+  expect(geometry.listOverflows).toBe(false);
+  expect(geometry.scrollingAreas).toBe(1);
+
+  const older = panel.getByRole('button', {
+    name: 'Load older attachments',
+    exact: true,
+  });
+  await older.scrollIntoViewIfNeeded();
+  await expect(older).toBeInViewport();
+  expect(
+    await content.evaluate((element) => element.scrollTop),
+  ).toBeGreaterThan(0);
+  await panel
+    .getByRole('button', { name: 'Save…', exact: true })
+    .last()
+    .click();
+  await expect
+    .poll(() => calls.find((call) => call.name === 'SaveAttachment')?.args)
+    .toEqual([contactID, completed.at(-1)!.id]);
+  const choose = panel.getByRole('button', {
+    name: 'Choose file…',
+    exact: true,
+  });
+  await choose.scrollIntoViewIfNeeded();
+  await expect(choose).toBeInViewport();
+  expect(errors).toEqual([]);
+});
+
 test('manual collapse survives progress and completion while a new incoming offer reopens it', async ({
   page,
 }) => {
@@ -681,35 +744,78 @@ test('switching from pending attachments to another contact keeps restored histo
   expect(errors).toEqual([]);
 });
 
-test('completed video does not create a player until Play is clicked, and Go offline clears it', async ({
+for (const mediaType of ['video/mp4', 'video/webm']) {
+  test(`completed ${mediaType} does not create a player until Play is clicked, and Go offline clears it`, async ({
+    page,
+  }) => {
+    const { calls, errors } = await desktop(page, [
+      {
+        ...item,
+        name: 'Synthetic video.' + (mediaType === 'video/mp4' ? 'mp4' : 'webm'),
+        mediaType,
+        state: 'complete',
+        transferredBytes: item.size,
+      },
+    ]);
+    await expect(page.locator('video')).toHaveCount(0);
+    await expandAttachments(page);
+    await expect(
+      page.getByRole('button', { name: 'Save…', exact: true }),
+    ).toBeVisible();
+    expect(calls.some((call) => call.name === 'PreviewAttachment')).toBe(false);
+    await page.getByRole('button', { name: 'Play video', exact: true }).click();
+    await expect(page.locator('video')).toHaveAttribute(
+      'src',
+      '/local-media/' + token,
+    );
+    await expect(page.locator('video')).not.toHaveAttribute('autoplay');
+    await page.getByRole('button', { name: 'Go offline', exact: true }).click();
+    await expect(page.locator('video')).toHaveCount(0);
+    await expect(
+      page.getByRole('region', { name: 'Attachments', exact: true }),
+    ).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+}
+
+test('an MP4 offer requires completion while an explicit file-mode MP4 stays save-only', async ({
   page,
 }) => {
+  const saveOnly = {
+    ...item,
+    id: 'AwMDAwMDAwMDAwMDAwMDAw',
+    name: 'Synthetic original.mp4',
+    mediaType: 'application/octet-stream',
+    state: 'complete',
+    transferredBytes: item.size,
+  };
   const { calls, errors } = await desktop(page, [
-    {
-      ...item,
-      name: 'Synthetic video.mp4',
-      mediaType: 'video/mp4',
-      state: 'complete',
-      transferredBytes: item.size,
-    },
+    { ...item, name: 'Synthetic approved video.mp4', mediaType: 'video/mp4' },
+    saveOnly,
   ]);
-  await expect(page.locator('video')).toHaveCount(0);
-  await expandAttachments(page);
   await expect(
-    page.getByRole('button', { name: 'Save…', exact: true }),
-  ).toBeVisible();
-  expect(calls.some((call) => call.name === 'PreviewAttachment')).toBe(false);
-  await page.getByRole('button', { name: 'Play video', exact: true }).click();
-  await expect(page.locator('video')).toHaveAttribute(
-    'src',
-    '/local-media/' + token,
-  );
-  await expect(page.locator('video')).not.toHaveAttribute('autoplay');
-  await page.getByRole('button', { name: 'Go offline', exact: true }).click();
-  await expect(page.locator('video')).toHaveCount(0);
-  await expect(
-    page.getByRole('region', { name: 'Attachments', exact: true }),
+    page.getByRole('button', { name: 'Play video', exact: true }),
   ).toHaveCount(0);
+  await expect(page.locator('video')).toHaveCount(0);
+  expect(calls.some((call) => call.name === 'PreviewAttachment')).toBe(false);
+  await page.getByRole('button', { name: 'Accept', exact: true }).click();
+  await expect(
+    page.getByRole('button', { name: 'Play video', exact: true }),
+  ).toHaveCount(1);
+  const file = page
+    .getByRole('article', { name: 'Received attachment' })
+    .filter({ hasText: saveOnly.name });
+  await expect(
+    file.getByRole('button', { name: 'Play video', exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    file.getByRole('button', { name: 'View image', exact: true }),
+  ).toHaveCount(0);
+  await file.getByRole('button', { name: 'Save…', exact: true }).click();
+  await expect
+    .poll(() => calls.find((call) => call.name === 'SaveAttachment')?.args)
+    .toEqual([contactID, saveOnly.id]);
+  expect(calls.some((call) => call.name === 'PreviewAttachment')).toBe(false);
   expect(errors).toEqual([]);
 });
 

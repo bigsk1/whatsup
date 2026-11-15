@@ -1,7 +1,7 @@
 # WhatsUp
 
 WhatsUp is a private desktop messenger for Windows and Linux. The current
-**0.0.13 preview** supports up to 32 saved contacts, with a separate one-to-one
+**0.0.14 preview** supports up to 32 saved contacts, with a separate one-to-one
 conversation and approved device identities for each contact.
 
 It includes encrypted local message history and offline queues, resumable file
@@ -82,6 +82,9 @@ Cancellation is saved locally and retried until a compatible peer acknowledges
 it. An older peer may need an update before its unfinished copy can be cancelled;
 text messaging remains available. A file completed before cancellation may stay
 on the other device.
+Use **0.0.13 or later on both devices** for acknowledged cancellation. The older
+0.0.11 and 0.0.12 protocols cannot confirm remote cancellation, so their pending
+notices can remain until both devices are updated.
 
 PNG, JPEG, WebP and static GIF previews use bounded Go decoding and sanitized
 thumbnails. **View image** opens a full-size preview with fit and actual-size
@@ -112,6 +115,10 @@ OS credential. Keep it safe. Recovery export uses a separate recovery passphrase
 and includes identity, saved contacts, history and attachment data. Import is an
 explicit replacement operation. Losing required secrets can make data
 unrecoverable. Exports and files saved outside WhatsUp are your responsibility.
+If a managed backup prevents going online or changing protection, Security &
+recovery identifies its relative filename and offers **Set aside and retry…**.
+This authenticates the current protection and preserves the backup's exact bytes
+inside an additional encrypted envelope; it does not discard the file.
 
 **Forget contact…** deletes that contact's local credentials, names, history and
 queue while preserving your identity and other contacts. When the peer is online,

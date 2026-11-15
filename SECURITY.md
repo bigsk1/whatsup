@@ -1,6 +1,6 @@
 # Security information
 
-WhatsUp 0.0.13 is unsigned preview software, not a supported public release.
+WhatsUp 0.0.14 is unsigned preview software, not a supported public release.
 It has not undergone an independent security audit or certification. Do not
 rely on the preview for sensitive communication.
 
@@ -62,18 +62,24 @@ healthy app. Storage corruption and uncertain protection writes still close it.
 
 Passphrase changes cover recognized migration and recovery root copies and owned
 crash temporaries. Authenticated reopen repairs copies missed by older builds.
-Retention keeps the newest three authenticated top-level migration root backups
-under the current master, plus a required live migration reference, in either
-protection mode. Unreadable or different-key copies do not displace those backups.
+An encrypted, master-authenticated catalog records creation sequences and exact
+ciphertext digests for newly published backups. Retention keeps the newest three
+eligible top-level roots plus a required live migration reference in either mode;
+filesystem timestamps do not authorize deletion. Unlisted historical copies,
+interrupted publication and unverifiable catalogs are preserved without pruning.
 Full recovery rollback trees, including their migration roots, and unknown
 recovery material are preserved for safety and can consume extra space.
 Damaged managed backups produce a specific local-file repair error; they are not
 silently skipped when passphrase protection requires reconciliation. Pruning is
 best-effort after a verified settings change and cannot turn success into a
 misleading passphrase-change failure.
-An inaccessible historical protected copy under the current OS credential may
-also require explicit repair or secure preservation outside the app directory
-when its relationship to the current master cannot be authenticated.
+Confirmed recovery securely preserves unreadable retiring roots behind an
+additional envelope derived from the restored master. It retains the original
+bytes without depending on the old app passphrase or exempting raw key slots
+from protection. Ordinary damaged-copy errors offer an explicit **Set aside and
+retry** action, requiring current OS/app factors and the exact backend-captured
+file digest. The renderer supplies no path. Corrupt preservation envelopes still
+fail authentication. These envelopes cannot act as a live application root.
 An app passphrase cannot revoke an earlier external OS-only backup or data
 already obtained by someone else. Master keys are not rotated on mode changes.
 

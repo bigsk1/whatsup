@@ -115,6 +115,10 @@ func Open(directory string, keys KeyStore) (*Vault, error) {
 }
 
 func openWithSecret(directory string, keys KeyStore, secret []byte) (*Vault, error) {
+	return openWithSecretPolicy(directory, keys, secret, true)
+}
+
+func openWithSecretPolicy(directory string, keys KeyStore, secret []byte, reconcile bool) (*Vault, error) {
 	if keys == nil || !filepath.IsAbs(directory) {
 		return nil, ErrUnsafePath
 	}
@@ -154,6 +158,9 @@ func openWithSecret(directory string, keys KeyStore, secret []byte) (*Vault, err
 	fail := func(err error) (*Vault, error) { _ = lock.Close(); return nil, err }
 	encoded, err := keys.Get()
 	if errors.Is(err, keyring.ErrNotFound) {
+		if !reconcile {
+			return fail(ErrCredential)
+		}
 		if journalExists {
 			return fail(ErrRecoveryPending)
 		}
@@ -188,7 +195,7 @@ func openWithSecret(directory string, keys KeyStore, secret []byte) (*Vault, err
 		clear(key)
 		return fail(ErrCredential)
 	}
-	if journalExists {
+	if journalExists && reconcile {
 		if err := reconcileRecoveryDirectory(directory, key, secret); err != nil {
 			clear(key)
 			return fail(err)

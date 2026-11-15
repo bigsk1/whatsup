@@ -103,9 +103,51 @@ func (e *Engine) ClearHistory(clearHistory func() error) error {
 	return e.request(event{kind: actionEvent, action: func() error {
 		session, guard := e.session, e.guard
 		peerOffers, peerPaused := e.peerOffers, e.peerPaused
+		// These controls conclude peer obligations, not local history. They
+		// must survive revoking local file readers in the same live session.
+		terminals := make([]Frame, 0, len(e.pending))
+		for _, frame := range e.pending {
+			if terminalReceipt(frame.Kind) {
+				terminals = append(terminals, frame)
+			}
+		}
+		var queued *Outbound
+		select {
+		case out := <-e.output:
+			if out.Epoch == e.epoch && terminalReceipt(out.Frame.Kind) {
+				queued = &out
+			}
+		default:
+		}
 		e.end() // Cancels/joins final verification and closes every source first.
 		err := clearHistory()
 		e.session, e.guard = session, guard
+		e.pending = terminals
+		if queued != nil && e.live() {
+			e.output <- *queued
+		}
+		// Verification may have durably completed while end joined it. Rebuild
+		// that receipt even when its finalResult event was drained during reset.
+		for _, offer := range peerOffers {
+			if record, readErr := e.repo.Get(offer.ID); readErr == nil && record.State == Complete {
+				already := queued != nil && queued.Frame.Kind == CompleteFrame && queued.Frame.ID == offer.ID && queued.Frame.SHA256 == offer.SHA256
+				for _, frame := range e.pending {
+					if frame.Kind == CompleteFrame && frame.ID == offer.ID && frame.SHA256 == offer.SHA256 {
+						already = true
+						break
+					}
+				}
+				if !already {
+					if restoreErr := e.emit(control(CompleteFrame, offer, 0, 0)); restoreErr != nil {
+						e.protocolFailure(restoreErr)
+						if err != nil {
+							return err
+						}
+						return restoreErr
+					}
+				}
+			}
+		}
 		if err != nil {
 			// The history transaction failed: preserve receiver authority from
 			// this live session and issue fresh credit from the durable checkpoint.
@@ -115,14 +157,6 @@ func (e *Engine) ClearHistory(clearHistory func() error) error {
 				e.protocolFailure(restoreErr)
 				return err
 			}
-			for _, offer := range peerOffers {
-				if record, readErr := e.repo.Get(offer.ID); readErr == nil && record.State == Complete {
-					if restoreErr := e.emit(control(CompleteFrame, offer, 0, 0)); restoreErr != nil {
-						e.protocolFailure(restoreErr)
-						return err
-					}
-				}
-			}
 			if restoreErr := e.promoteReceiver(); restoreErr != nil {
 				e.protocolFailure(restoreErr)
 			}
@@ -131,4 +165,8 @@ func (e *Engine) ClearHistory(clearHistory func() error) error {
 		e.changed(false)
 		return e.reload()
 	}})
+}
+
+func terminalReceipt(kind Kind) bool {
+	return kind == CompleteFrame || kind == DeclineFrame || kind == WithdrawAckFrame
 }

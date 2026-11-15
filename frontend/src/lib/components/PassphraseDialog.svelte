@@ -6,15 +6,19 @@
     busy,
     notice,
     requiresPassphrase,
+    backupAttention,
     onsubmit,
     oncancel,
+    onrepair,
   }: {
     operation: SecurityOperation;
     busy: boolean;
     notice: string;
     requiresPassphrase: boolean;
+    backupAttention: string;
     onsubmit: (current: string, secret: string) => void;
     oncancel: () => void;
+    onrepair: () => void;
   } = $props();
   let dialog: HTMLDialogElement;
   let current = $state(''),
@@ -24,18 +28,25 @@
   const visible = $derived(operation !== '' && operation !== 'import-confirm');
   const newSecret = $derived(operation === 'enable' || operation === 'export');
   const needsCurrent = $derived(
-    operation === 'disable' || (operation === 'enable' && requiresPassphrase),
+    operation === 'disable' ||
+      ((operation === 'enable' || operation === 'repair') &&
+        requiresPassphrase),
+  );
+  const needsSecret = $derived(
+    operation !== 'disable' && operation !== 'repair',
   );
   const title = $derived(
     operation === 'unlock'
       ? 'Go online'
-      : operation === 'enable'
-        ? 'Require an app passphrase'
-        : operation === 'disable'
-          ? 'Disable the app passphrase'
-          : operation === 'export'
-            ? 'Export an encrypted recovery copy'
-            : 'Import an encrypted recovery copy',
+      : operation === 'repair'
+        ? 'Set aside a local backup'
+        : operation === 'enable'
+          ? 'Require an app passphrase'
+          : operation === 'disable'
+            ? 'Disable the app passphrase'
+            : operation === 'export'
+              ? 'Export an encrypted recovery copy'
+              : 'Import an encrypted recovery copy',
   );
   function clear() {
     current = '';
@@ -91,14 +102,36 @@
       <p>
         {operation === 'unlock'
           ? 'Enter your app passphrase to unlock local data and reconnect saved contacts.'
-          : operation === 'enable'
-            ? 'Your OS credential and this passphrase will both be required to unlock local data.'
-            : operation === 'disable'
-              ? 'Enter your current app passphrase. Your OS credential will continue protecting local data.'
-              : operation === 'export'
-                ? 'Choose a recovery passphrase for this encrypted copy. Keep it separately; it is required to restore the copy on another device.'
-                : 'Enter the recovery copy’s passphrase. A native file dialog will let you choose the copy; its contents are authenticated before you confirm replacement.'}
+          : operation === 'repair'
+            ? 'WhatsUp will preserve this backup encrypted in the app data folder, then retry opening your local data. Its contents will be kept for recovery.'
+            : operation === 'enable'
+              ? 'Your OS credential and this passphrase will both be required to unlock local data.'
+              : operation === 'disable'
+                ? 'Enter your current app passphrase. Your OS credential will continue protecting local data.'
+                : operation === 'export'
+                  ? 'Choose a recovery passphrase for this encrypted copy. Keep it separately; it is required to restore the copy on another device.'
+                  : 'Enter the recovery copy’s passphrase. A native file dialog will let you choose the copy; its contents are authenticated before you confirm replacement.'}
       </p>
+      {#if backupAttention}
+        <div role="status">
+          <p>
+            <strong>A local backup needs attention:</strong>
+            <code>{backupAttention}</code>
+          </p>
+          {#if operation !== 'repair'}
+            <p>
+              WhatsUp could not authenticate or update this backup. You can
+              preserve it encrypted and retry opening local storage.
+            </p>
+            <button
+              type="button"
+              class="secondary-button"
+              disabled={busy}
+              onclick={onrepair}>Set aside and retry…</button
+            >
+          {/if}
+        </div>
+      {/if}
       {#if needsCurrent}<label
           >Current app passphrase<input
             type="password"
@@ -110,7 +143,7 @@
             disabled={busy}
           /></label
         >{/if}
-      {#if operation !== 'disable'}<label
+      {#if needsSecret}<label
           >{operation === 'unlock'
             ? 'App passphrase'
             : operation === 'import'
@@ -140,9 +173,9 @@
         >{#if confirm !== '' && secret !== confirm}<p role="status">
             The passphrases do not match.
           </p>{/if}{/if}
-      <p class="muted small">
-        12–1024 UTF-8 bytes. Spaces and Unicode are kept exactly as entered.
-      </p>
+      {#if needsCurrent || needsSecret}<p class="muted small">
+          12–1024 UTF-8 bytes. Spaces and Unicode are kept exactly as entered.
+        </p>{/if}
       {#if notice}<p role="alert">{notice}</p>{/if}
     </div>
     <div class="dialog-footer">
@@ -156,19 +189,22 @@
         class="primary-button"
         disabled={busy ||
           (needsCurrent && !validSecret(current)) ||
-          (operation !== 'disable' && !validSecret(secret)) ||
+          (needsSecret && !validSecret(secret)) ||
+          (operation === 'repair' && backupAttention === '') ||
           (newSecret && secret !== confirm)}
         >{busy
           ? 'Please wait…'
           : operation === 'unlock'
             ? 'Unlock and go online'
-            : operation === 'enable'
-              ? 'Enable passphrase'
-              : operation === 'disable'
-                ? 'Disable passphrase'
-                : operation === 'export'
-                  ? 'Choose export location…'
-                  : 'Choose recovery copy…'}</button
+            : operation === 'repair'
+              ? 'Set aside and retry'
+              : operation === 'enable'
+                ? 'Enable passphrase'
+                : operation === 'disable'
+                  ? 'Disable passphrase'
+                  : operation === 'export'
+                    ? 'Choose export location…'
+                    : 'Choose recovery copy…'}</button
       >
     </div>
   </form>

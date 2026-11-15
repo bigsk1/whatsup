@@ -393,8 +393,8 @@ func listenerOptions(route approvedRoute, profile *transport.RelayProfile) trans
 // Two different approved maps can contain the same physical or meshed DERP
 // service. Duplicate WireGuard node registrations make packet delivery ambiguous.
 // Different maps cannot share TLS route authority, so visit them serially. Keep
-// an authenticated preferred stream; periodically leave an old fallback stream
-// to give the approved new route another opportunity.
+// any authenticated stream. Migration must wait for a natural disconnect when
+// visiting the other map would otherwise interrupt a working fallback.
 func (m *Manager) runOverlappingListeners(ctx context.Context, routes []approvedRoute) error {
 	return m.visitOverlappingListeners(ctx, routes, overlappingRouteWindow)
 }
@@ -404,7 +404,7 @@ func (m *Manager) visitOverlappingListeners(ctx context.Context, routes []approv
 		return ErrUnavailable
 	}
 	for attempt := 0; ctx.Err() == nil; attempt++ {
-		for index, route := range routes {
+		for _, route := range routes {
 			if err := route.validate(); err != nil {
 				return routeFailure(err)
 			}
@@ -413,14 +413,14 @@ func (m *Manager) visitOverlappingListeners(ctx context.Context, routes []approv
 				continue
 			}
 			life, cancel := context.WithCancel(ctx)
-			// Bound initial listener setup too. The preferred stage spares its
-			// authenticated stream; the old stage bounds its whole lifetime so
-			// fallback cannot prevent migration forever after mutual approval.
+			// Bound idle setup/accept stages, while sparing an authenticated claim
+			// on either route. Availability takes priority over trying a preferred
+			// map that cannot safely run a second physical listener concurrently.
 			timer := time.AfterFunc(window, func() {
 				m.mu.Lock()
-				preferredClaim := index == 0 && m.claim != nil && m.claim.route.association == route.association
+				activeClaim := m.claim != nil && m.claim.route.association == route.association
 				m.mu.Unlock()
-				if !preferredClaim {
+				if !activeClaim {
 					cancel()
 				}
 			})

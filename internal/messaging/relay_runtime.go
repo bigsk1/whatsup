@@ -146,13 +146,14 @@ func relayFrame(kind byte, body []byte) (controlFrame, error) {
 }
 
 type relayExchange struct {
-	manager  *Manager
-	control  *controlSession
-	sent     map[[32]byte]bool
-	replies  map[[32]byte]bool
-	ready    [32]byte
-	budgetAt time.Time
-	budget   int
+	manager   *Manager
+	control   *controlSession
+	sent      map[[32]byte]bool
+	replies   map[[32]byte]bool
+	ready     [32]byte
+	budgetAt  time.Time
+	budget    int
+	restartAt time.Time
 }
 
 func (x *relayExchange) live() bool {
@@ -273,6 +274,9 @@ func (x *relayExchange) sync() (result error) {
 	if changed {
 		return errRoutesChanged
 	}
+	if !x.restartAt.IsZero() && !time.Now().Before(x.restartAt) {
+		return errPeerRouteReady
+	}
 	return nil
 }
 
@@ -306,7 +310,22 @@ func (x *relayExchange) receive(f controlFrame) error {
 		for _, candidate := range plan.Candidates {
 			if candidate.Epoch() == epoch && candidate.Association() == association && candidate.RequestID() == requestID && candidate.Validate() == nil {
 				if epoch > x.control.route.epoch {
-					return errPeerRouteReady
+					if !x.restartAt.IsZero() {
+						return nil
+					}
+					delay, allowed, err := m.peerRouteRetry()
+					if err != nil {
+						return err
+					}
+					if !allowed {
+						return nil
+					} // Preserve the authenticated fallback.
+					if delay == 0 {
+						return errPeerRouteReady
+					}
+					// Continue chat/heartbeats while the paced handover is pending.
+					x.restartAt = time.Now().Add(delay)
+					return nil
 				}
 				return nil
 			}
