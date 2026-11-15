@@ -127,7 +127,7 @@ func newNativeHost(app *application.App, backend *desktop.Service, record func(d
 	}
 	h.notifier = notify.New(h.activateContact)
 	h.hiddenToTray.Store(opts.Autostart)
-	h.trayMonitor = lifecycle.NewTrayMonitor(h.life, nativeTrayAvailable, h.trayUnavailable)
+	h.trayMonitor = lifecycle.NewTrayMonitor(h.life, newNativeTrayProbe(h.life), h.trayUnavailable)
 	h.deliver = func(ctx context.Context, incoming messaging.Incoming) error {
 		return desktop.WithIncomingNotification(backend, incoming, func(value desktop.Notification) error {
 			if ctx.Err() != nil || h.foreground() {
@@ -189,8 +189,8 @@ func (h *nativeHost) nativeStarted() {
 			return
 		case <-timer.C:
 			h.controller.NativeReady()
-			h.trayGraceElapsed.Store(true)
 			h.controller.StartupFallback()
+			h.trayGraceElapsed.Store(true)
 			return
 		case <-ticker.C:
 		}
@@ -198,8 +198,8 @@ func (h *nativeHost) nativeStarted() {
 	select {
 	case <-h.life.Done():
 	case <-timer.C:
-		h.trayGraceElapsed.Store(true)
 		h.controller.StartupFallback()
+		h.trayGraceElapsed.Store(true)
 	}
 }
 

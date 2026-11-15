@@ -69,25 +69,33 @@ type managedCopyPolicy struct {
 	activeRoot     string
 }
 
+func (policy managedCopyPolicy) failure(v *Vault, path string, cause error) error {
+	failure := managedCopyError(v, path, cause)
+	if attention, ok := failure.(*ManagedCopyError); ok && path == policy.activeRoot {
+		attention.Repairable = false
+	}
+	return failure
+}
+
 func preserveManagedRoot(v *Vault, path string, data []byte, operations managedCopyIO, policy managedCopyPolicy, cause error) error {
 	if !policy.preserveOpaque || path == policy.activeRoot {
-		return managedCopyError(v, path, cause)
+		return policy.failure(v, path, cause)
 	}
 	sealed, err := sealPreservedRoot(v, path, data)
 	if err != nil {
-		return managedCopyError(v, path, err)
+		return policy.failure(v, path, err)
 	}
 	if err := replaceManagedRootTracked(v, path, sealed, operations); err != nil {
-		return managedCopyError(v, path, err)
+		return policy.failure(v, path, err)
 	}
 	installed, err := readCipherFile(path, maxManagedRootBytes)
 	if err != nil {
-		return managedCopyError(v, path, err)
+		return policy.failure(v, path, err)
 	}
 	plain, err := openPreservedRoot(v, path, installed)
 	defer clear(plain)
 	if err != nil || !bytes.Equal(plain, data) {
-		return managedCopyError(v, path, ErrCorrupt)
+		return policy.failure(v, path, ErrCorrupt)
 	}
 	return nil
 }

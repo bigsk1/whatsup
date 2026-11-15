@@ -16,7 +16,7 @@ import (
 	"whatsup/internal/storage"
 )
 
-const Version = "0.0.14"
+const Version = "0.0.15"
 
 type Status struct {
 	Version              string `json:"version"`
@@ -149,8 +149,12 @@ func (s *Service) managedCopyAttention(err error) error {
 	if !errors.As(err, &copyError) {
 		return nil
 	}
-	s.backupAttention = &storage.ManagedCopyError{RelativePath: copyError.RelativePath, Digest: copyError.Digest}
-	return fmt.Errorf("A local backup requires attention: %s. Its bytes were preserved. Use Security & recovery to securely set it aside and retry.", filepath.ToSlash(copyError.RelativePath))
+	captured := *copyError
+	s.backupAttention = &captured
+	if copyError.Repairable {
+		return fmt.Errorf("A local backup requires attention: %s. Its bytes were preserved. Use Security & recovery to securely set it aside and retry.", filepath.ToSlash(copyError.RelativePath))
+	}
+	return fmt.Errorf("A local backup requires attention: %s. Its bytes were preserved. Check this item's ownership, private permissions and availability before retrying. WhatsUp cannot safely set it aside.", filepath.ToSlash(copyError.RelativePath))
 }
 
 func (s *Service) unlockStorageLocked(secret []byte) (Status, error) {

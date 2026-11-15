@@ -113,4 +113,5 @@ export interface StorageSecurity {
     "recoveryAvailable": boolean;
     "busy": boolean;
     "backupAttention": string;
+    "backupRepairAvailable": boolean;
 }

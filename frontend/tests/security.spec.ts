@@ -50,6 +50,7 @@ async function desktop(page: Page, required = true) {
     failUnlock: false,
     failConfigure: false,
     backupAttention: '',
+    backupRepairAvailable: true,
     holdSetAside: undefined as Promise<void> | undefined,
   };
   const calls: { operation: Operation; args: unknown[] }[] = [];
@@ -108,6 +109,8 @@ async function desktop(page: Page, required = true) {
           recoveryAvailable: state.storage === 'unlocked',
           busy: false,
           backupAttention: state.backupAttention,
+          backupRepairAvailable:
+            state.backupRepairAvailable && state.backupAttention !== '',
         };
         break;
       case 'SetAsideBackup':
@@ -398,6 +401,41 @@ test('failed passphrase settings expose the relative backup and allow OS-only en
   await expect(
     page.getByText('Local storage unlocked', { exact: true }),
   ).toBeVisible();
+});
+
+test('an unsafe recovery folder remains visible without offering automatic set-aside', async ({
+  page,
+}) => {
+  const { state, calls } = await desktop(page);
+  state.backupAttention = '.recovery-rollback-AQEBAQEBAQEBAQEBAQEBAQ';
+  state.backupRepairAvailable = false;
+  await page.goto('/');
+  const unlock = page.getByRole('dialog', { name: 'Go online', exact: true });
+  await expect(unlock).toBeVisible();
+  await unlock.getByLabel('App passphrase', { exact: true }).fill(secret);
+  await unlock
+    .getByRole('button', { name: 'Unlock and go online', exact: true })
+    .click();
+  await expect(unlock).toContainText(state.backupAttention);
+  await expect(unlock).toContainText('cannot be set aside safely');
+  await expect(
+    unlock.getByRole('button', { name: 'Set aside and retry…', exact: true }),
+  ).toHaveCount(0);
+  await unlock.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await securityPage(page);
+  const attention = page.getByRole('region', {
+    name: 'A local backup needs attention',
+    exact: true,
+  });
+  await expect(attention).toContainText(state.backupAttention);
+  await expect(attention).toContainText('private permissions');
+  await expect(
+    attention.getByRole('button', {
+      name: 'Set aside and retry…',
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  expect(calls.some((call) => call.operation === 'SetAsideBackup')).toBe(false);
 });
 
 test('backup repair after unlock uses the current secret, supports cancel and wrong-secret retry, and keeps paths private', async ({

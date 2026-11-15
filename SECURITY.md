@@ -1,6 +1,6 @@
 # Security information
 
-WhatsUp 0.0.14 is unsigned preview software, not a supported public release.
+WhatsUp 0.0.15 is unsigned preview software, not a supported public release.
 It has not undergone an independent security audit or certification. Do not
 rely on the preview for sensitive communication.
 
@@ -76,10 +76,12 @@ misleading passphrase-change failure.
 Confirmed recovery securely preserves unreadable retiring roots behind an
 additional envelope derived from the restored master. It retains the original
 bytes without depending on the old app passphrase or exempting raw key slots
-from protection. Ordinary damaged-copy errors offer an explicit **Set aside and
+from protection. Eligible damaged-copy errors offer an explicit **Set aside and
 retry** action, requiring current OS/app factors and the exact backend-captured
 file digest. The renderer supplies no path. Corrupt preservation envelopes still
 fail authentication. These envelopes cannot act as a live application root.
+Unsafe directories, ownership, permissions and unavailable files remain visible
+as attention conditions without granting automatic repair authority.
 An app passphrase cannot revoke an earlier external OS-only backup or data
 already obtained by someone else. Master keys are not rotated on mode changes.
 

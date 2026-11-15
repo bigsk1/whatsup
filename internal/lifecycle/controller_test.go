@@ -108,6 +108,17 @@ func TestLateTrayRegistrationUsesGracePeriod(t *testing.T) {
 	}
 }
 
+func TestHiddenStartupFreshlyConfirmsNegativeCache(t *testing.T) {
+	shown, confirmed := 0, 0
+	c := New(Actions{StartHidden: true, Show: func() { shown++ }, TrayAvailable: func() bool { return false }, ConfirmTrayAvailable: func() bool { confirmed++; return true }})
+	c.NativeReady()
+	c.Ready()
+	c.StartupFallback()
+	if shown != 0 || confirmed != 1 {
+		t.Fatal("hidden login ignored fresh tray proof and showed on stale cached absence")
+	}
+}
+
 func TestExternalTrayProbeCannotBlockControllerFocusOrQuit(t *testing.T) {
 	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	shown, quit := make(chan struct{}, 1), make(chan struct{}, 1)

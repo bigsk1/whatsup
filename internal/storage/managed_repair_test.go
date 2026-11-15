@@ -3,10 +3,71 @@ package storage
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestManagedAttentionNeverOffersSetAsideForActiveStagedRoot(t *testing.T) {
+	dir, keys := privateDirectory(t), &memoryKeys{}
+	v, app := openApplicationTest(t, dir, keys)
+	defer app.Close()
+	if err := app.SetPassphrase(t.Context(), nil, testPassphrase); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(dir, ".recovery-stage-AQEBAQEBAQEBAQEBAQEBAQ")
+	if err := os.Mkdir(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "state.vault")
+	raw := []byte("synthetic damaged active recovery root")
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var attention *ManagedCopyError
+	policy := managedCopyPolicy{preserveOpaque: true, activeRoot: path}
+	if err := preserveManagedRoot(v, path, raw, managedCopyIO{}, policy, ErrCorrupt); !errors.As(err, &attention) || attention.Repairable {
+		t.Fatal("active recovery root granted repair", err)
+	}
+	if err := protectManagedCopiesWithPolicyLocked(v, managedCopyIO{}, policy); !errors.As(err, &attention) || attention.Repairable {
+		t.Fatal("protection walk granted repair of active root", err)
+	}
+}
+
+func TestManagedAttentionSeparatesTargetFromAutomaticRepairCapability(t *testing.T) {
+	dir, keys := privateDirectory(t), &memoryKeys{}
+	v, app := openApplicationTest(t, dir, keys)
+	defer app.Close()
+	name := "pre-migration-00000000000000000000000000000000.vault"
+	for _, fixture := range []struct {
+		name  string
+		cause error
+		size  int
+		want  bool
+	}{
+		{name, ErrCorrupt, 32, true},
+		{name, ErrUnsafePath, 32, false},
+		{"state.vault", ErrCorrupt, 32, false},
+		{".state-123.tmp", ErrCorrupt, 32, false},
+		{name, ErrCorrupt, maxManagedRootBytes, false},
+	} {
+		t.Run(fixture.name+"/"+fixture.cause.Error()+"/"+map[bool]string{true: "repairable", false: "manual"}[fixture.want], func(t *testing.T) {
+			path := filepath.Join(dir, fixture.name)
+			if err := os.WriteFile(path, make([]byte, fixture.size), 0600); err != nil {
+				t.Fatal(err)
+			}
+			attention := managedCopyError(v, path, fixture.cause).(*ManagedCopyError)
+			if attention.Repairable != fixture.want || attention.RelativePath != fixture.name || attention.Digest == [32]byte{} {
+				t.Fatal("incorrect repair classification")
+			}
+		})
+	}
+	missing := managedCopyError(v, filepath.Join(dir, "pre-migration-11111111111111111111111111111111.vault"), ErrCorrupt).(*ManagedCopyError)
+	if missing.Repairable || missing.Digest != [32]byte{} {
+		t.Fatal("unreadable target granted repair")
+	}
+}
 
 func TestManagedSetAsideRequiresFactorsExactCapturedDigestAndHistoricalPath(t *testing.T) {
 	dir, keys := privateDirectory(t), &memoryKeys{}

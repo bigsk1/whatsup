@@ -644,20 +644,28 @@
                     >{security.summary.backupAttention}</code
                   >.
                 </p>
-                <p class="muted small">
-                  Set this backup aside encrypted in the app data folder and
-                  retry opening local storage. Its original contents stay
-                  preserved for recovery.
-                </p>
-                <button
-                  class="secondary-button compact"
-                  disabled={!native ||
-                    busy ||
-                    security.busy ||
-                    !security.loaded}
-                  onclick={() => onsecurity('repair')}
-                  >Set aside and retry…</button
-                >
+                {#if security.summary.backupRepairAvailable}
+                  <p class="muted small">
+                    Set this backup aside encrypted in the app data folder and
+                    retry opening local storage. Its original contents stay
+                    preserved for recovery.
+                  </p>
+                  <button
+                    class="secondary-button compact"
+                    disabled={!native ||
+                      busy ||
+                      security.busy ||
+                      !security.loaded}
+                    onclick={() => onsecurity('repair')}
+                    >Set aside and retry…</button
+                  >
+                {:else}
+                  <p class="muted small">
+                    This file or folder cannot be set aside safely. Keep its
+                    contents and check its ownership, private permissions and
+                    availability, then retry going online.
+                  </p>
+                {/if}
               </section>
             {/if}
             <section

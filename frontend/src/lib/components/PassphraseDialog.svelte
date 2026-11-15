@@ -7,6 +7,7 @@
     notice,
     requiresPassphrase,
     backupAttention,
+    backupRepairAvailable,
     onsubmit,
     oncancel,
     onrepair,
@@ -16,6 +17,7 @@
     notice: string;
     requiresPassphrase: boolean;
     backupAttention: string;
+    backupRepairAvailable: boolean;
     onsubmit: (current: string, secret: string) => void;
     oncancel: () => void;
     onrepair: () => void;
@@ -118,7 +120,7 @@
             <strong>A local backup needs attention:</strong>
             <code>{backupAttention}</code>
           </p>
-          {#if operation !== 'repair'}
+          {#if operation !== 'repair' && backupRepairAvailable}
             <p>
               WhatsUp could not authenticate or update this backup. You can
               preserve it encrypted and retry opening local storage.
@@ -129,6 +131,12 @@
               disabled={busy}
               onclick={onrepair}>Set aside and retry…</button
             >
+          {:else if !backupRepairAvailable}
+            <p>
+              This file or folder cannot be set aside safely. Keep its contents
+              and check its ownership, private permissions and availability,
+              then retry going online.
+            </p>
           {/if}
         </div>
       {/if}
@@ -190,7 +198,7 @@
         disabled={busy ||
           (needsCurrent && !validSecret(current)) ||
           (needsSecret && !validSecret(secret)) ||
-          (operation === 'repair' && backupAttention === '') ||
+          (operation === 'repair' && !backupRepairAvailable) ||
           (newSecret && secret !== confirm)}
         >{busy
           ? 'Please wait…'

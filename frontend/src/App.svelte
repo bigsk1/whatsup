@@ -1106,6 +1106,7 @@
     ? $securityState.summary.requiresPassphrase
     : status.requiresPassphrase}
   backupAttention={$securityState.summary.backupAttention}
+  backupRepairAvailable={$securityState.summary.backupRepairAvailable}
   onsubmit={(current, secret) => void security.submit(current, secret)}
   oncancel={security.cancel}
   onrepair={() => securityAction('repair')}

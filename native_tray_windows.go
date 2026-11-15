@@ -9,6 +9,10 @@ import (
 
 var nativeGetShellWindow = windows.NewLazySystemDLL("user32.dll").NewProc("GetShellWindow")
 
+func newNativeTrayProbe(life context.Context) func(context.Context) bool {
+	return func(ctx context.Context) bool { return life.Err() == nil && nativeTrayAvailable(ctx) }
+}
+
 func nativeTrayAvailable(ctx context.Context) bool {
 	if ctx.Err() != nil {
 		return false

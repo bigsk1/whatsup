@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/services/notifications"
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -167,6 +168,101 @@ func TestWindowsReceiptInitializationRetriesTemporaryRegistryFailure(t *testing.
 	}
 	if _, err := w.ensureReceipts(); err != nil || attempts != 2 {
 		t.Fatal("healthy ledger needlessly reopened")
+	}
+}
+
+func TestReceiptTransientReadAndDecryptFailuresPreserveExistingProofs(t *testing.T) {
+	var plain []byte
+	ledger, _ := newNoticeReceipts(nil, func(data []byte) error { plain = append([]byte(nil), data...); return nil }, nil)
+	proof, err := ledger.issue(syntheticNotice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, failure := range []string{"first-read", "second-read", "size-changed", "decrypt"} {
+		t.Run(failure, func(t *testing.T) {
+			writes := 0
+			read := func(buf []byte) (int, uint32, error) {
+				if failure == "first-read" && buf == nil {
+					return 0, 0, windows.ERROR_ACCESS_DENIED
+				}
+				if buf != nil {
+					if failure == "second-read" {
+						return 0, registry.BINARY, windows.ERROR_MORE_DATA
+					}
+					if failure == "size-changed" {
+						return len(plain) + 1, registry.BINARY, nil
+					}
+					copy(buf, plain)
+				}
+				return len(plain), registry.BINARY, nil
+			}
+			decrypt := func(data []byte) ([]byte, error) {
+				if failure == "decrypt" {
+					return nil, classifyReceiptDPAPIError(windows.ERROR_NOT_ENOUGH_MEMORY)
+				}
+				return append([]byte(nil), data...), nil
+			}
+			if _, err := loadWindowsReceipts(read, decrypt, func([]byte) error { writes++; return nil }); err == nil || writes != 0 {
+				t.Fatal("temporary fault reset saved proof evidence")
+			}
+			// Retrying once the transient fault clears keeps the original proof.
+			recovered, err := newNoticeReceipts(plain, func([]byte) error { return nil }, nil)
+			if err != nil || !recovered.consume(syntheticNotice().ID, syntheticNotice().ContactID, proof) {
+				t.Fatal("temporary read/decrypt fault lost existing notice")
+			}
+		})
+	}
+	for _, err := range []error{windows.ERROR_ACCESS_DENIED, windows.ERROR_NOT_ENOUGH_MEMORY, windows.Errno(0x8009000B)} {
+		if errors.Is(classifyReceiptDPAPIError(err), errReceiptCorrupt) {
+			t.Fatal("ambiguous DPAPI fault classified as corrupt")
+		}
+	}
+	for _, err := range []error{windows.ERROR_INVALID_DATA, windows.ERROR_INVALID_PARAMETER} {
+		if !errors.Is(classifyReceiptDPAPIError(err), errReceiptCorrupt) {
+			t.Fatal("documented invalid input not recognized")
+		}
+	}
+}
+
+func TestForgetPurgesPersistedWindowsProofsBeforeStartAndAfterStartupFailure(t *testing.T) {
+	for _, startFailed := range []bool{false, true} {
+		var token [16]byte
+		if _, err := rand.Read(token[:]); err != nil {
+			t.Fatal(err)
+		}
+		name := "WhatsUp-Purge-QA-" + hex.EncodeToString(token[:])
+		path := `Software\Classes\AppUserModelId\` + name
+		t.Cleanup(func() { _ = registry.DeleteKey(registry.CURRENT_USER, path) })
+		ledger, err := openWindowsReceipts(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		first := syntheticNotice()
+		other := first
+		other.ContactID = "AwMDAwMDAwMDAwMDAwMDAw"
+		proof, err := ledger.issue(first)
+		if err != nil {
+			t.Fatal(err)
+		}
+		otherProof, err := ledger.issue(other)
+		if err != nil {
+			t.Fatal(err)
+		}
+		backend := &windowsBackend{appName: name}
+		n := newNotifier(backend)
+		if startFailed && n.Start(context.Background()) == nil {
+			t.Fatal("native fixture unexpectedly started")
+		}
+		if err := n.ForgetContact(context.Background(), first.ContactID); err != nil {
+			t.Fatal("persistent purge required native startup")
+		}
+		if n.Close() != nil {
+			t.Fatal("fixture close failed")
+		}
+		reopened, err := openWindowsReceipts(name)
+		if err != nil || reopened.consume(first.ID, first.ContactID, proof) || !reopened.consume(other.ID, other.ContactID, otherProof) {
+			t.Fatal("Forget failed persistent scoped purge when service wasn't running")
+		}
 	}
 }
 

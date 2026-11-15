@@ -49,6 +49,13 @@ const (
 // directions are simultaneously replaying cancellations after a restart.
 const maxWithdrawalsInFlight = 4
 
+type withdrawalFlight struct {
+	offer     Offer
+	writtenAt time.Time
+	queued    bool
+	retries   uint8
+}
+
 type sendJob struct {
 	credit                                                                               [16]byte
 	record                                                                               Record
@@ -99,7 +106,7 @@ type Engine struct {
 	offerAt           time.Time
 	progressAt        time.Time
 	withdrawals       bool
-	withdrawSent      map[string]bool
+	withdrawSent      map[string]*withdrawalFlight
 }
 
 func New(repo Repository, options Options) (*Engine, error) {
@@ -299,7 +306,7 @@ func (e *Engine) end() {
 	e.credit = [16]byte{}
 	e.peerOffers = map[string]Offer{}
 	e.peerPaused = map[string]bool{}
-	e.withdrawSent = map[string]bool{}
+	e.withdrawSent = map[string]*withdrawalFlight{}
 	for {
 		select {
 		case <-e.output:
@@ -364,7 +371,7 @@ func (e *Engine) reload() error {
 		return nil
 	}
 	for _, r := range records {
-		if r.PendingWithdrawal && e.withdrawals && !e.withdrawSent[r.Offer.ID] {
+		if r.PendingWithdrawal && e.withdrawals && e.withdrawSent[r.Offer.ID] == nil {
 			if err := e.queueWithdrawal(r); err != nil {
 				return err
 			}
@@ -390,13 +397,47 @@ func (e *Engine) reload() error {
 }
 
 func (e *Engine) queueWithdrawal(record Record) error {
-	if !e.withdrawals || !record.PendingWithdrawal || e.withdrawSent[record.Offer.ID] || len(e.withdrawSent) >= maxWithdrawalsInFlight || len(e.pending) >= MaxOffers+MaxActive+4 {
+	if !e.withdrawals || !record.PendingWithdrawal || e.withdrawSent[record.Offer.ID] != nil || len(e.withdrawSent) >= maxWithdrawalsInFlight || len(e.pending) >= MaxOffers+MaxActive+4 {
 		return nil
 	}
 	if err := e.emit(control(WithdrawFrame, record.Offer, 0, 0)); err != nil {
 		return err
 	}
-	e.withdrawSent[record.Offer.ID] = true
+	e.withdrawSent[record.Offer.ID] = &withdrawalFlight{offer: record.Offer, queued: true}
+	return nil
+}
+
+func withdrawalRetryDelay(retries uint8) time.Duration {
+	delay := 2 * time.Second << min(retries, 4)
+	if delay > 30*time.Second {
+		return 30 * time.Second
+	}
+	return delay
+}
+
+// A TCP session may survive a peer losing a queued receipt, for example after
+// its history is cleared. Retry only the existing four durable obligations,
+// retaining their IDs/hashes and bounded exponential timing without reconnect.
+func (e *Engine) retryWithdrawals() error {
+	if !e.live() || !e.withdrawals {
+		return nil
+	}
+	now := e.now()
+	for _, flight := range e.withdrawSent {
+		if flight.queued || flight.writtenAt.IsZero() || now.Sub(flight.writtenAt) < withdrawalRetryDelay(flight.retries) {
+			continue
+		}
+		if len(e.pending) >= MaxOffers+MaxActive+4 {
+			break
+		}
+		if err := e.emit(control(WithdrawFrame, flight.offer, 0, 0)); err != nil {
+			return err
+		}
+		flight.queued = true
+		if flight.retries < 4 {
+			flight.retries++
+		}
+	}
 	return nil
 }
 func (e *Engine) allowed(record Record) bool {
@@ -406,6 +447,8 @@ func (e *Engine) allowed(record Record) bool {
 func (e *Engine) run() {
 	defer close(e.done)
 	defer e.end()
+	retry := time.NewTicker(time.Second)
+	defer retry.Stop()
 	var staged *Frame
 	for {
 		if e.ctx.Err() != nil {
@@ -450,6 +493,10 @@ func (e *Engine) run() {
 			}
 		case result := <-e.finalized:
 			e.finalResult(result)
+		case <-retry.C:
+			if err := e.retryWithdrawals(); err != nil {
+				e.protocolFailure(err)
+			}
 		case ev := <-e.events:
 			var err error
 			switch ev.kind {
@@ -469,7 +516,10 @@ func (e *Engine) run() {
 					err = e.written(ev.frame)
 				}
 			case wakeEvent:
-				err = e.reload()
+				err = e.retryWithdrawals()
+				if err == nil {
+					err = e.reload()
+				}
 			}
 			if ev.reply != nil {
 				ev.reply <- err
@@ -552,6 +602,12 @@ func (e *Engine) nextChunk() (Frame, bool, error) {
 	return Frame{}, false, nil
 }
 func (e *Engine) written(frame Frame) error {
+	if frame.Kind == WithdrawFrame {
+		if flight := e.withdrawSent[frame.ID]; flight != nil && flight.offer.SHA256 == frame.SHA256 {
+			flight.queued = false
+			flight.writtenAt = e.now()
+		}
+	}
 	if frame.Kind == CompleteFrame || frame.Kind == DeclineFrame || frame.Kind == WithdrawFrame || frame.Kind == WithdrawAckFrame {
 		if offer, ok := e.peerOffers[frame.ID]; ok && offer.SHA256 == frame.SHA256 && e.activeIn != frame.ID {
 			delete(e.peerOffers, frame.ID)

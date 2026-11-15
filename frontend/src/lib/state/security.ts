@@ -15,6 +15,7 @@ export interface StorageSecurity {
   recoveryAvailable: boolean;
   busy: boolean;
   backupAttention: string;
+  backupRepairAvailable: boolean;
 }
 export interface RecoveryPreview {
   handle: string;
@@ -72,18 +73,28 @@ export function validateStorageSecurity(input: unknown): StorageSecurity {
   const keys = Object.keys(value);
   const backupAttention =
     'backupAttention' in value ? value.backupAttention : '';
+  const backupRepairAvailable =
+    'backupRepairAvailable' in value ? value.backupRepairAvailable : false;
   if (
     !(
       (keys.length === 3 && !('backupAttention' in value)) ||
-      (keys.length === 4 && 'backupAttention' in value)
+      (keys.length === 4 && 'backupAttention' in value) ||
+      (keys.length === 5 &&
+        'backupAttention' in value &&
+        'backupRepairAvailable' in value)
     ) ||
     ['requiresPassphrase', 'recoveryAvailable', 'busy'].some(
       (key) => typeof value[key] !== 'boolean',
     ) ||
     typeof backupAttention !== 'string' ||
+    typeof backupRepairAvailable !== 'boolean' ||
     backupAttention.length > 160 ||
     (backupAttention !== '' &&
-      !/^(?:(?:\.recovery-(?:stage|rollback)-[A-Za-z0-9_-]{22})[\\/])?(?:pre-migration-[0-9a-f]{32}\.vault|\.(?:state|protection)-[0-9]+\.tmp|state\.vault)$/.test(
+      !/^(?:\.recovery-(?:stage|rollback)-[A-Za-z0-9_-]{22}|(?:(?:\.recovery-(?:stage|rollback)-[A-Za-z0-9_-]{22})[\\/])?(?:pre-migration-[0-9a-f]{32}\.vault|\.(?:state|protection)-[0-9]+\.tmp|state\.vault))$/.test(
+        backupAttention,
+      )) ||
+    (backupRepairAvailable &&
+      !/^(?:pre-migration-[0-9a-f]{32}\.vault|\.recovery-(?:stage|rollback)-[A-Za-z0-9_-]{22}[\\/](?:pre-migration-[0-9a-f]{32}\.vault|state\.vault))$/.test(
         backupAttention,
       ))
   )
@@ -93,6 +104,7 @@ export function validateStorageSecurity(input: unknown): StorageSecurity {
     recoveryAvailable: value.recoveryAvailable as boolean,
     busy: value.busy as boolean,
     backupAttention,
+    backupRepairAvailable,
   };
 }
 export function validateRecoveryPreview(input: unknown): RecoveryPreview {
@@ -151,6 +163,7 @@ const initial = () => ({
     recoveryAvailable: false,
     busy: false,
     backupAttention: '',
+    backupRepairAvailable: false,
   } as StorageSecurity,
   preview: null as RecoveryPreview | null,
 });
@@ -206,7 +219,7 @@ export function createSecurity(
       operation === 'import-confirm' ||
       operation === '' ||
       (operation === 'repair' &&
-        (!current.loaded || current.summary.backupAttention === ''))
+        (!current.loaded || !current.summary.backupRepairAvailable))
     )
       return;
     cancel();
@@ -233,7 +246,7 @@ export function createSecurity(
       (needsCurrent && !validSecret(currentSecret)) ||
       (needsNew && !validSecret(secret)) ||
       (operation === 'repair' &&
-        (!current.loaded || current.summary.backupAttention === ''))
+        (!current.loaded || !current.summary.backupRepairAvailable))
     ) {
       publish({
         notice:
@@ -306,6 +319,7 @@ export function createSecurity(
             recoveryAvailable: result.storageState === 'unlocked',
             busy: false,
             backupAttention: '',
+            backupRepairAvailable: false,
           },
           notice:
             operation === 'unlock'
@@ -382,6 +396,7 @@ export function createSecurity(
           recoveryAvailable: result.storageState === 'unlocked',
           busy: false,
           backupAttention: '',
+          backupRepairAvailable: false,
         },
         notice: 'Recovery copy restored.',
       });

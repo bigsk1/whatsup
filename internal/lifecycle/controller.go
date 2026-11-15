@@ -72,6 +72,9 @@ func (c *Controller) StartupFallback() {
 	}
 	// External availability checks never run under the controller mutex.
 	tray := c.actions.TrayAvailable()
+	if !tray && c.actions.ConfirmTrayAvailable != nil {
+		tray = c.actions.ConfirmTrayAvailable()
+	}
 	c.mu.Lock()
 	focus := c.actions.StartHidden && c.nativeReady && !c.quitting && !c.revealed && (!c.ready || !tray)
 	if focus {

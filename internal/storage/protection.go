@@ -26,6 +26,7 @@ type ManagedCopyError struct {
 	RelativePath string
 	Cause        error
 	Digest       [32]byte
+	Repairable   bool
 }
 
 func (e *ManagedCopyError) Error() string {
@@ -41,6 +42,12 @@ func managedCopyError(v *Vault, path string, err error) error {
 	result := &ManagedCopyError{RelativePath: rel, Cause: err}
 	if data, readErr := readCipherFile(path, maxManagedRootBytes); readErr == nil {
 		result.Digest = sha256.Sum256(data)
+		// Unsafe paths/permissions, directories, owned crash temporaries and
+		// unbounded envelopes need filesystem attention, not a wrapping retry.
+		info, statErr := os.Lstat(path)
+		result.Repairable = !errors.Is(err, ErrUnsafePath) && statErr == nil && recoveryOwned(info) &&
+			(migrationBackupName.MatchString(filepath.Base(path)) || filepath.Base(path) == "state.vault" && filepath.Dir(path) != v.directory) &&
+			len(data)+len(preservedRootHeader)+24+16 <= maxManagedRootBytes
 	}
 	return result
 }
@@ -494,7 +501,7 @@ func protectManagedCopiesWithPolicyLocked(v *Vault, operations managedCopyIO, po
 			continue
 		}
 		if err != nil {
-			return managedCopyError(v, path, err)
+			return policy.failure(v, path, err)
 		}
 		if bytes.HasPrefix(data, preservedRootHeader) {
 			plain, err := openPreservedRoot(v, path, data)
@@ -537,7 +544,7 @@ func protectManagedCopiesWithPolicyLocked(v *Vault, operations managedCopyIO, po
 				}
 				if same {
 					if err := replaceManagedRootTracked(v, path, sealed, operations); err != nil {
-						return managedCopyError(v, path, err)
+						return policy.failure(v, path, err)
 					}
 				}
 				if !same && len(currentSecrets) > 0 && len(currentSecrets[0]) > 0 {
@@ -551,7 +558,7 @@ func protectManagedCopiesWithPolicyLocked(v *Vault, operations managedCopyIO, po
 							return err
 						}
 						if err := replaceManagedRootTracked(v, path, sealed, operations); err != nil {
-							return managedCopyError(v, path, err)
+							return policy.failure(v, path, err)
 						}
 						same = true
 					} else {
@@ -616,7 +623,7 @@ func protectManagedCopiesWithPolicyLocked(v *Vault, operations managedCopyIO, po
 			return err
 		}
 		if err := replaceManagedRootTracked(v, path, sealed, operations); err != nil {
-			return managedCopyError(v, path, err)
+			return policy.failure(v, path, err)
 		}
 	}
 	return nil

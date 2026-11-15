@@ -232,6 +232,7 @@ describe('security state', () => {
       recoveryAvailable: true,
       busy: false,
       backupAttention: '',
+      backupRepairAvailable: false,
     });
   });
 
@@ -301,6 +302,7 @@ describe('security state', () => {
       recoveryAvailable: false,
       busy: false,
       backupAttention: backup,
+      backupRepairAvailable: true,
     }));
     const { store, changed } = setup(bridge);
     store.begin('repair');
@@ -325,6 +327,7 @@ describe('security state', () => {
       recoveryAvailable: false,
       busy: false,
       backupAttention: backup,
+      backupRepairAvailable: true,
     }));
     const { store } = setup(bridge);
     await store.load();
@@ -343,6 +346,7 @@ describe('security state', () => {
       recoveryAvailable: false,
       busy: false,
       backupAttention: backup,
+      backupRepairAvailable: true,
     }));
     bridge.setAside = vi
       .fn()
@@ -372,6 +376,7 @@ describe('security state', () => {
       recoveryAvailable: false,
       busy: false,
       backupAttention: backup,
+      backupRepairAvailable: true,
     }));
     bridge.setAside = vi.fn(() => held.promise);
     const { store, changed } = setup(bridge);
@@ -418,6 +423,7 @@ describe('security state', () => {
       recoveryAvailable: false,
       busy: false,
       backupAttention: failedCommit ? backup : '',
+      backupRepairAvailable: failedCommit,
     }));
     bridge.commit = vi.fn(async () => {
       failedCommit = true;
@@ -435,5 +441,51 @@ describe('security state', () => {
     await store.submit('', '');
     expect(bridge.setAside).toHaveBeenCalledExactlyOnceWith('');
     expect(JSON.stringify(get(store.state))).not.toContain(secret);
+  });
+  it('keeps a recovery-folder permission failure visible without granting repair', async () => {
+    const bridge = api();
+    const folder = '.recovery-rollback-AQEBAQEBAQEBAQEBAQEBAQ';
+    const summary = {
+      requiresPassphrase: true,
+      recoveryAvailable: true,
+      busy: false,
+      backupAttention: folder,
+      backupRepairAvailable: false,
+    };
+    expect(validateStorageSecurity(summary)).toEqual(summary);
+    expect(() =>
+      validateStorageSecurity({ ...summary, backupRepairAvailable: true }),
+    ).toThrow();
+    for (const name of [
+      'state.vault',
+      '.state-123.tmp',
+      folder + '/.protection-12.tmp',
+    ]) {
+      expect(() =>
+        validateStorageSecurity({
+          ...summary,
+          backupAttention: name,
+          backupRepairAvailable: true,
+        }),
+      ).toThrow();
+    }
+    bridge.get = vi.fn(async () => summary);
+    const { store } = setup(bridge);
+    await store.load();
+    expect(get(store.state).loaded).toBe(true);
+    expect(get(store.state).summary.backupAttention).toBe(folder);
+    store.begin('repair');
+    await store.submit(secret, '');
+    expect(bridge.setAside).not.toHaveBeenCalled();
+    expect(get(store.state).operation).toBe('');
+    // A legacy summary may identify a problem, but grants no new action.
+    expect(
+      validateStorageSecurity({
+        requiresPassphrase: true,
+        recoveryAvailable: true,
+        busy: false,
+        backupAttention: backup,
+      }).backupRepairAvailable,
+    ).toBe(false);
   });
 });

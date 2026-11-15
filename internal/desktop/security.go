@@ -42,10 +42,11 @@ type securityImport struct {
 }
 
 type StorageSecurity struct {
-	RequiresPassphrase bool   `json:"requiresPassphrase"`
-	RecoveryAvailable  bool   `json:"recoveryAvailable"`
-	Busy               bool   `json:"busy"`
-	BackupAttention    string `json:"backupAttention"`
+	RequiresPassphrase    bool   `json:"requiresPassphrase"`
+	RecoveryAvailable     bool   `json:"recoveryAvailable"`
+	Busy                  bool   `json:"busy"`
+	BackupAttention       string `json:"backupAttention"`
+	BackupRepairAvailable bool   `json:"backupRepairAvailable"`
 }
 type RecoveryExportResult struct {
 	Saved bool `json:"saved"`
@@ -84,6 +85,7 @@ func (s *Service) GetStorageSecurity() StorageSecurity {
 	result := StorageSecurity{RequiresPassphrase: s.status().RequiresPassphrase}
 	if s.backupAttention != nil {
 		result.BackupAttention = filepath.ToSlash(s.backupAttention.RelativePath)
+		result.BackupRepairAvailable = s.backupAttention.Repairable && s.backupAttention.Digest != [32]byte{}
 	}
 	if s.security != nil {
 		result.Busy = s.security.operation != nil

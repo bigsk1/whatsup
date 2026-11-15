@@ -143,6 +143,8 @@ func writePacket(session *sessionauth.Session, p packet) error {
 }
 
 func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, conversation *chat.Conversation) error {
+	work, cancel := context.WithCancel(ctx)
+	defer cancel()
 	caps := session.Capabilities()
 	m.mu.Lock()
 	engine := m.transfers
@@ -168,6 +170,8 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 	var epoch uint64
 	var failures <-chan transfer.Failure
 	var output <-chan transfer.Outbound
+	var ingress *attachmentIngress
+	var ingressFailures <-chan error
 	if caps.Attachments && engine == nil {
 		var err error
 		engine, err = m.attachmentEngine(m.record.ID)
@@ -177,11 +181,14 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 	}
 	if caps.Attachments {
 		var err error
-		epoch, err = engine.BeginWithWithdrawals(ctx, func() error { return session.WithLivePeer(m.record.Peer, func() error { return nil }) }, caps.Withdrawals)
+		epoch, err = engine.BeginWithWithdrawals(work, func() error { return session.WithLivePeer(m.record.Peer, func() error { return nil }) }, caps.Withdrawals)
 		if err != nil {
 			return err
 		}
 		defer engine.End(epoch)
+		ingress = newAttachmentIngress(work, engine, epoch)
+		defer ingress.close()
+		ingressFailures = ingress.failures
 		failures, output = engine.Failures(), engine.Output()
 	}
 	// A cancellation must interrupt the initial profile write as well as the
@@ -194,8 +201,6 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 	}
 	incoming := make(chan received, 16)
 	finished := make(chan struct{})
-	work, cancel := context.WithCancel(ctx)
-	defer cancel()
 	go func() {
 		defer close(finished)
 		for {
@@ -348,7 +353,7 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 		case transferPacket:
 			// The session guard is bounded and performs no file IO. The
 			// attachment actor rechecks it before each repository operation.
-			if session.WithLivePeer(m.record.Peer, func() error { return nil }) != nil || engine.SubmitContext(ctx, epoch, got.packet.attachment) != nil {
+			if session.WithLivePeer(m.record.Peer, func() error { return nil }) != nil || ingress.submit(got.packet.attachment) != nil {
 				return errProtocol
 			}
 		case dataPacket:
@@ -428,6 +433,8 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 				if failed.Epoch == epoch {
 					return failed.Err
 				}
+			case err := <-ingressFailures:
+				return err
 			case got := <-incoming:
 				if err := handleReceived(got); err != nil {
 					return err
@@ -444,7 +451,7 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 				if err := writePacket(session, packet{kind: transferPacket, attachment: pendingTransfer.Frame}); err != nil {
 					return err
 				}
-				if err := engine.WrittenContext(ctx, epoch, pendingTransfer.Frame); err != nil {
+				if err := ingress.written(pendingTransfer.Frame); err != nil {
 					return err
 				}
 			}
@@ -466,6 +473,8 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 			if failed.Epoch == epoch {
 				return failed.Err
 			}
+		case err := <-ingressFailures:
+			return err
 		case outbound := <-output:
 			if outbound.Epoch == epoch {
 				pendingTransfer = &outbound

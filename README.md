@@ -1,7 +1,7 @@
 # WhatsUp
 
 WhatsUp is a private desktop messenger for Windows and Linux. The current
-**0.0.14 preview** supports up to 32 saved contacts, with a separate one-to-one
+**0.0.15 preview** supports up to 32 saved contacts, with a separate one-to-one
 conversation and approved device identities for each contact.
 
 It includes encrypted local message history and offline queues, resumable file
@@ -116,9 +116,11 @@ and includes identity, saved contacts, history and attachment data. Import is an
 explicit replacement operation. Losing required secrets can make data
 unrecoverable. Exports and files saved outside WhatsUp are your responsibility.
 If a managed backup prevents going online or changing protection, Security &
-recovery identifies its relative filename and offers **Set aside and retry…**.
-This authenticates the current protection and preserves the backup's exact bytes
-inside an additional encrypted envelope; it does not discard the file.
+recovery identifies the relative file or folder name. For eligible backup files,
+**Set aside and retry…** authenticates the current protection and preserves the
+backup's exact bytes inside an additional encrypted envelope. Unsafe folders,
+permissions or unavailable files require local attention before retrying; the
+app does not offer an automatic repair it cannot safely perform.
 
 **Forget contact…** deletes that contact's local credentials, names, history and
 queue while preserving your identity and other contacts. When the peer is online,

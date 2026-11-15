@@ -174,6 +174,28 @@ func TestForgetSerializesPurgeAndRejectsLateNoticeAndActivation(t *testing.T) {
 	}
 }
 
+func TestForgetStillPurgesWithoutRunningNotificationService(t *testing.T) {
+	for _, startFailed := range []bool{false, true} {
+		fake := &fakeBackend{}
+		if startFailed {
+			fake.startErr = errors.New("synthetic service initialization unavailable")
+		}
+		n := newNotifier(fake)
+		if startFailed && n.Start(context.Background()) == nil {
+			t.Fatal("fixture startup unexpectedly succeeded")
+		}
+		if err := n.ForgetContact(context.Background(), syntheticNotice().ContactID); err != nil {
+			t.Error("saved proof purge incorrectly required running notification service")
+		}
+		fake.mu.Lock()
+		if len(fake.forgotten) != 1 {
+			t.Error("saved proof purge never reached backend")
+		}
+		fake.mu.Unlock()
+		_ = n.Close()
+	}
+}
+
 type receiptBackend struct {
 	receipts      *noticeReceipts
 	proofs        map[string]string

@@ -258,12 +258,25 @@ func (n *Notifier) ForgetContact(ctx context.Context, contactID string) error {
 	n.order = kept
 	live := n.available && !n.closed
 	life := n.life
+	native := n.backend
 	n.mu.Unlock()
-	if !live {
-		return ErrUnavailable
-	}
 	bounded, cancel := context.WithTimeout(ctx, CallTimeout)
 	defer cancel()
+	if !live {
+		// Persistent receipt retirement needs only the app's local store, not a
+		// running notification service or a successful native startup.
+		if native == nil {
+			return ErrUnavailable
+		}
+		done := make(chan error, 1)
+		go func() { done <- native.forget(contactID) }()
+		select {
+		case err := <-done:
+			return err
+		case <-bounded.Done():
+			return ErrUnavailable
+		}
+	}
 	r := request{ctx: bounded, forget: contactID, done: make(chan error, 1)}
 	select {
 	case <-bounded.Done():

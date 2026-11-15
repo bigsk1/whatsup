@@ -40,13 +40,8 @@ var toastOwner struct {
 const defaultToastGUID = "{0F82E845-CB89-4039-BDBF-67CA33254C76}"
 
 func scopedToastActivation(appName string) error {
-	if len(appName) < 1 || len(appName) > 80 {
+	if !validToastAppName(appName) {
 		return ErrUnavailable
-	}
-	for _, r := range appName {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == ' ' || r == '-' || r == '_' || r == '.') {
-			return ErrUnavailable
-		}
 	}
 	appKey, _, err := registry.CreateKey(registry.CURRENT_USER, `Software\Classes\AppUserModelId\`+appName, registry.QUERY_VALUE|registry.SET_VALUE)
 	if err != nil {
@@ -80,6 +75,18 @@ func scopedToastActivation(appName string) error {
 	return nil
 }
 
+func validToastAppName(appName string) bool {
+	if len(appName) < 1 || len(appName) > 80 {
+		return false
+	}
+	for _, r := range appName {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == ' ' || r == '-' || r == '_' || r == '.') {
+			return false
+		}
+	}
+	return true
+}
+
 func toastBuildApproved(info *debug.BuildInfo) bool {
 	if info == nil {
 		return false
@@ -103,7 +110,13 @@ type windowsBackend struct {
 	openReceipts func() (*noticeReceipts, error)
 }
 
-func newBackend(activate func(string)) backend { return &windowsBackend{activate: activate} }
+func newBackend(activate func(string)) backend {
+	name := ""
+	if app := application.Get(); app != nil {
+		name = app.Config().Name
+	}
+	return &windowsBackend{activate: activate, appName: name}
+}
 func (w *windowsBackend) start(ctx context.Context) error {
 	if ctx.Err() != nil {
 		return ErrUnavailable
@@ -112,7 +125,7 @@ func (w *windowsBackend) start(ctx context.Context) error {
 	if !ok || !toastBuildApproved(info) {
 		return ErrUnavailable
 	}
-	if application.Get() == nil {
+	if application.Get() == nil || !validToastAppName(w.appName) || w.appName != application.Get().Config().Name {
 		return ErrUnavailable
 	}
 	toastOwner.Lock()
@@ -134,7 +147,6 @@ func (w *windowsBackend) start(ctx context.Context) error {
 	if scopedToastActivation(application.Get().Config().Name) != nil {
 		return ErrUnavailable
 	}
-	w.appName = application.Get().Config().Name
 	// A transient registry failure affects notice delivery, not native service
 	// lifetime. Later sends retry without requiring a process restart.
 	_, _ = w.ensureReceipts()

@@ -13,7 +13,7 @@ func (s *Service) SetAsideBackup(secret string) (Status, error) {
 	defer clear(data)
 	s.mu.Lock()
 	attention := s.backupAttention
-	if attention == nil || attention.Digest == [32]byte{} || s.vault != nil || s.state == "unlocked" {
+	if attention == nil || !attention.Repairable || attention.Digest == [32]byte{} || s.vault != nil || s.state == "unlocked" {
 		status := s.status()
 		s.mu.Unlock()
 		return status, errors.New("There is no reported backup available to set aside. Retry going online to check local storage.")
