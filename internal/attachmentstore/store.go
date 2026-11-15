@@ -934,7 +934,7 @@ func (s *Scope) collectLocked(id string) error {
 func (s *Scope) cancelReadersLocked(id string) {
 	for reader := range s.readers {
 		if reader.entry.Record.Offer.ID == id {
-			reader.cancel()
+			reader.revokeLocked()
 		}
 	}
 }

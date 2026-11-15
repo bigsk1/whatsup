@@ -20,6 +20,7 @@ type fileReader struct {
 	stopExternal func() bool
 	closeOnce    sync.Once
 	closed       bool
+	fileClosed   bool
 	position     int64
 	unitIndex    int
 	unit         []byte
@@ -192,11 +193,7 @@ func (r *fileReader) Close() error {
 		}
 		r.cancel()
 		r.mu.Lock()
-		r.closed = true
-		clear(r.unit)
-		r.unit = nil
-		clear(r.entry.Key)
-		result = r.file.Close()
+		result = r.releaseLocked()
 		r.mu.Unlock()
 		r.scope.mu.Lock()
 		delete(r.scope.readers, r)
@@ -204,4 +201,26 @@ func (r *fileReader) Close() error {
 		r.scope.operations.Done()
 	})
 	return result
+}
+
+// revokeLocked runs under the scope lock and closes the handle before an object
+// is deleted: Windows refuses to remove a file that still has an open handle,
+// and the cancellation callback that runs Close is asynchronous.
+func (r *fileReader) revokeLocked() {
+	r.cancel()
+	r.mu.Lock()
+	_ = r.releaseLocked()
+	r.mu.Unlock()
+}
+
+func (r *fileReader) releaseLocked() error {
+	r.closed = true
+	clear(r.unit)
+	r.unit = nil
+	clear(r.entry.Key)
+	if r.fileClosed {
+		return nil
+	}
+	r.fileClosed = true
+	return r.file.Close()
 }

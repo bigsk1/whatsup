@@ -55,7 +55,7 @@ func (s *Scope) CollectGarbage() error {
 		return err
 	}
 	for r := range s.readers {
-		r.cancel()
+		r.revokeLocked()
 	}
 	for id, p := range s.pending {
 		clear(p.data)

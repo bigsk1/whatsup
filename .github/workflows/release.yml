@@ -24,7 +24,7 @@ jobs:
           - os: ubuntu-24.04
             platform: linux-x64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    timeout-minutes: 120
     permissions:
       contents: read
     steps:
@@ -51,9 +51,7 @@ jobs:
       - name: Install browser system dependencies
         if: runner.os == 'Linux'
         run: node frontend/node_modules/@playwright/test/cli.js install-deps chromium
-      - name: Test implemented application and advisory policy
-        run: npm run test:app
-      - name: Check and package unsigned preview
+      - name: Test, check and package unsigned preview
         run: npm run package
       - name: Preserve platform package, checksums, SBOM and manifest
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
