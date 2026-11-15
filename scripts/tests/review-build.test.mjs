@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { lstat, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -13,9 +13,12 @@ const now = new Date('2026-11-14T07:08:09.123Z');
 const tools = { go: '1.27.4', node: '26.13.1', wails: 'v3.1.0' };
 
 async function fixture(t) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'whatsup-review-'));
+  // Hosted Windows runners expose TEMP through an 8.3 alias such as RUNNER~1,
+  // which the workspace alias check correctly refuses.
+  const temp = await realpath(os.tmpdir());
+  const root = await mkdtemp(path.join(temp, 'whatsup-review-'));
   t.after(async () => {
-    assert.equal(within(os.tmpdir(), root), true);
+    assert.equal(within(temp, root), true);
     assert.match(path.basename(root), /^whatsup-review-/);
     await rm(root, { recursive: true, force: true });
   });
