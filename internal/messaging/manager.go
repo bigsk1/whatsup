@@ -112,6 +112,7 @@ type managerState struct {
 	preferredRoute         [32]byte
 	preferredAuthenticated uint64
 	peerRouteBudget        routeReadyRetry
+	reconnect              reconnectBackoff
 }
 
 func (Manager) String() string               { return "[private WhatsUp messaging coordinator]" }
@@ -344,6 +345,7 @@ func (m *Manager) Connect(id string) (Snapshot, error) {
 	}
 	if !m.running {
 		m.peerRouteBudget = routeReadyRetry{}
+		m.reconnect = reconnectBackoff{}
 		m.running, m.state = true, "connecting"
 		m.runDone = make(chan struct{})
 		m.bumpLocked()
@@ -412,14 +414,11 @@ func (m *Manager) MetadataChanged() {
 }
 
 func retryDelay(count int) time.Duration {
-	ceiling := time.Second << min(count, 5)
-	if ceiling > 30*time.Second {
-		ceiling = 30 * time.Second
-	}
-	floor := ceiling / 2
-	if floor < time.Second {
-		floor = time.Second
-	}
+	floor, ceiling := retryBounds(count)
+	return jitterRetryDelay(floor, ceiling)
+}
+
+func jitterRetryDelay(floor, ceiling time.Duration) time.Duration {
 	n, err := rand.Int(rand.Reader, big.NewInt(int64(ceiling-floor)+1))
 	if err != nil {
 		return ceiling
@@ -514,25 +513,14 @@ func (m *Manager) run() {
 			close(done)
 		}
 	}()
-	for attempt := 0; m.ctx.Err() == nil; attempt++ {
-		m.mu.Lock()
-		previousAuthentication := m.authenticated
-		m.mu.Unlock()
+	for m.ctx.Err() == nil {
 		err := m.runRouteCycle()
 		if m.ctx.Err() != nil {
 			return
 		}
-		m.mu.Lock()
-		authenticated := m.authenticated
-		m.mu.Unlock()
-		if authenticated != previousAuthentication {
-			attempt = 0
-		}
 		if errors.Is(err, errRoutesChanged) {
-			// A planned generation replacement is not a failed connection. The
-			// loop post must not advance ordinary transport backoff. Repeated
-			// peer hints are budgeted and paced before leaving the live exchange.
-			attempt--
+			// Planned generation replacement does not advance ordinary connection
+			// backoff. Peer hints are budgeted before leaving the live exchange.
 			continue
 		}
 		if errors.Is(err, errPeerRemoved) {
@@ -578,7 +566,7 @@ func (m *Manager) run() {
 		m.changed(retryState(err))
 		// Transport failures retry automatically, never prompt for another
 		// invitation or silently choose a different relay provider.
-		if !m.waitRetry(retryDelay(attempt)) {
+		if !m.waitRetry(m.reconnectDelay(time.Now())) {
 			return
 		}
 	}

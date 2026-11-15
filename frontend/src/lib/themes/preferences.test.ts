@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { defaults, parsePreferences } from './preferences';
+import { paletteCatalog, paletteIDs, skinCatalog, skins } from './catalog';
+import {
+  activePalette,
+  defaults,
+  migrateLegacyPreferences,
+  parsePreferences,
+} from './preferences';
 
 describe('appearance preferences', () => {
   it('handles corrupt, missing, oversized, and unsupported preferences', () => {
@@ -8,32 +14,71 @@ describe('appearance preferences', () => {
       '',
       '{',
       'null',
+      '[]',
       '"dark"',
       '0',
-      'x'.repeat(300),
-      '{"theme":"<script>","accent":"url(evil)"}',
+      'x'.repeat(600),
+      '{"skin":"<script>","palette":"url(evil)","textSize":"9999px"}',
     ]) {
       expect(parsePreferences(raw)).toEqual(defaults);
     }
   });
 
-  it('accepts only supported theme and accent values', () => {
-    expect(parsePreferences('{"theme":"system","accent":"rose"}')).toEqual({
-      theme: 'system',
-      accent: 'rose',
+  it('accepts only catalog values and falls back field by field', () => {
+    expect(
+      parsePreferences(
+        '{"skin":"arcade","palette":"gameboy","lightPalette":"github-light","followSystem":true,"textSize":"large","effects":false}',
+      ),
+    ).toEqual({
+      skin: 'arcade',
+      palette: 'gameboy',
+      lightPalette: 'github-light',
+      followSystem: true,
+      textSize: 'large',
+      effects: false,
     });
-    expect(parsePreferences('{"theme":"light","accent":"unknown"}')).toEqual({
-      theme: 'light',
-      accent: 'teal',
-    });
+    expect(
+      parsePreferences('{"skin":"neon","palette":"unknown","effects":"yes"}'),
+    ).toEqual({ ...defaults, skin: 'neon' });
   });
 
   it('ignores unrelated stored data and returns a fresh preference object', () => {
     expect(
-      parsePreferences('{"theme":"dark","accent":"blue","secret":"synthetic"}'),
-    ).toEqual({ theme: 'dark', accent: 'blue' });
+      parsePreferences('{"skin":"terminal","secret":"synthetic"}'),
+    ).toEqual({ ...defaults, skin: 'terminal' });
     const parsed = parsePreferences(null);
-    parsed.theme = 'light';
-    expect(parsePreferences(null)).toEqual({ theme: 'dark', accent: 'teal' });
+    parsed.skin = 'arcade';
+    expect(parsePreferences(null)).toEqual(defaults);
+  });
+
+  it('migrates the previous light, dark and system appearance', () => {
+    expect(
+      migrateLegacyPreferences('{"theme":"light","accent":"rose"}'),
+    ).toEqual({ ...defaults, palette: 'daybreak' });
+    expect(migrateLegacyPreferences('{"theme":"system"}')).toEqual({
+      ...defaults,
+      followSystem: true,
+    });
+    expect(migrateLegacyPreferences('{"theme":"dark"}')).toEqual(defaults);
+    expect(migrateLegacyPreferences('{bad')).toEqual(defaults);
+  });
+
+  it('follows the system only when requested', () => {
+    const follow = { ...defaults, followSystem: true };
+    expect(activePalette(follow, false)).toBe('daybreak');
+    expect(activePalette(follow, true)).toBe('whatsup');
+    expect(activePalette(defaults, false)).toBe('whatsup');
+  });
+
+  it('keeps the catalog complete, unique and safe for CSS', () => {
+    expect(new Set(paletteCatalog.map((palette) => palette.id))).toEqual(
+      new Set(paletteIDs),
+    );
+    expect(skinCatalog.map((skin) => skin.id)).toEqual([...skins]);
+    for (const palette of paletteCatalog) {
+      const { avatars, ...colors } = palette.colors;
+      for (const value of [...Object.values(colors), ...avatars])
+        expect(value).toMatch(/^#[0-9a-f]{6}$/);
+    }
   });
 });

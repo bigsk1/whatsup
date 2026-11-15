@@ -9,7 +9,7 @@ import (
 // Remove hides a local card and permanently withdraws unfinished work. Terminal
 // encrypted metadata retains the offer ID/hash so a replay cannot resurrect it.
 func (s *Scope) Remove(id string) error {
-	if s == nil || s.scopeState == nil {
+	if s == nil || s.scopeState == nil || !transfer.ValidID(id) {
 		return ErrUnavailable
 	}
 	s.mu.Lock()

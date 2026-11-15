@@ -1,6 +1,6 @@
 <script lang="ts">
   import { groupedFingerprint } from '../state/fingerprint';
-  import { ShieldCheck } from '@lucide/svelte';
+  import Icon from '../icons/Icon.svelte';
   import { hasPairingIdentity, type PairingStatus } from '../pairing';
 
   let {
@@ -65,7 +65,7 @@
 >
   <div class="dialog-heading">
     <div class="dialog-title">
-      <div class="small-icon"><ShieldCheck size={20} /></div>
+      <div class="small-icon"><Icon name="shield" /></div>
       <div>
         <p class="eyebrow">JUST THE TWO OF YOU</p>
         <h2 id="pairing-title">{title}</h2>

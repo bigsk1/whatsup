@@ -376,7 +376,8 @@ func (s *Scope) Offer(offer transfer.Offer) error {
 	} else if !errors.Is(err, ErrUnavailable) {
 		return err
 	}
-	return s.meta.Create(Entry{Version: 1, Revision: 1, Record: transfer.Record{Offer: offer, Direction: transfer.Incoming, State: transfer.Offered}, Units: []Unit{}, CreatedAt: time.Now().UTC()})
+	now := time.Now().UTC()
+	return s.meta.Create(Entry{Version: 1, Revision: 1, Record: transfer.Record{Offer: offer, Direction: transfer.Incoming, State: transfer.Offered, RecordedAt: now}, Units: []Unit{}, CreatedAt: now})
 }
 func (s *Scope) accept(id string, imageOnly bool) (transfer.Progress, error) {
 	if s == nil || s.scopeState == nil {
@@ -600,6 +601,7 @@ func (s *Scope) QueueOutgoing(id string, allowRelayedLarge bool) error {
 			return ErrUnavailable
 		}
 		e.Record.State = transfer.Queued
+		e.Record.RecordedAt = time.Now().UTC()
 		e.Record.AllowRelayedLarge = allowRelayedLarge
 		return nil
 	})

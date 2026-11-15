@@ -1,7 +1,7 @@
 # WhatsUp
 
 WhatsUp is a private desktop messenger for Windows and Linux. The current
-**0.0.15 preview** supports up to 32 saved contacts, with a separate one-to-one
+**0.0.17 preview** supports up to 32 saved contacts, with a separate one-to-one
 conversation and approved device identities for each contact.
 
 It includes encrypted local message history and offline queues, resumable file
@@ -62,6 +62,10 @@ both devices to use the current protocol. Prefer the same preview on both.
 **Queued** means saved encrypted on your device. **Delivered** means the
 receiving app durably saved and acknowledged the message, not that it was read.
 Messages retry after the other app reconnects. Stable IDs prevent duplicates.
+While a contact is unavailable, **Waiting for their device** means automatic
+retries are still enabled. After five minutes of failures, ordinary retries slow
+to roughly two minutes with jitter. Go offline stops them; successful
+authentication restores the normal retry schedule.
 There is no lifetime message-count cap. The default per-contact message quota is
 1 GiB of logical record storage; a full state is shown when it is reached. This
 is not an exact cap on database, journal or filesystem space.
@@ -97,12 +101,33 @@ playback depends on installed GStreamer codecs. Other file types are save-only.
 No HTML, SVG or active Markdown preview is provided. The attachment panel can be
 collapsed without losing transfer state or saved items.
 
+Completed photos and supported videos also appear in the conversation. New
+attachments use the local time when they were first offered or queued; older
+attachments without a recorded time are labelled as saved attachments. Video
+still requires an explicit click. Original-file mode remains save-only.
+Dragging files over an eligible chat highlights the drop area; dropping prepares
+a preview, and sending still requires your action. File paths stay in Go.
+
+**Delete attachment…** removes one attachment from WhatsUp on this device and
+cancels unfinished work. It preserves files saved elsewhere and the peer's copy.
+Small encrypted records remain to reject replays and finish cancellation or
+completion acknowledgements. **Settings → Contact** shows separate message and
+attachment budgets, including queued or accepted file reservations and retained
+records. These are logical quota counters, not physical allocation or free disk
+space. Deleting files can reclaim their reservations without forgetting the contact.
+
 ## Settings and privacy
 
 Settings has Profile, Contact, Appearance, App behavior, Security & recovery,
 and Privacy & diagnostics pages. Shared display names start off; private contact
-names stay local. Display names never replace fingerprint verification. Light,
-dark and system themes and several accent colors are available.
+names stay local. Display names never replace fingerprint verification.
+
+Appearance combines a look (Bubbly, Arcade, Neon City or Terminal) with any of
+eighteen color schemes, including Dracula, Nord, One Dark, Tokyo Night, Catppuccin,
+Solarized, Gruvbox, GitHub and retro console palettes. You can match the system's
+light and dark mode, choose a text size and turn animations and effects off.
+Animations also stop when the system asks for reduced motion. All fonts and icons
+ship inside the app; none load from the network.
 
 Notifications start on and say only **New message**. Contact names and message
 previews are separate opt-ins. Enabling them exposes that content to the desktop

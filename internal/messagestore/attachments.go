@@ -351,7 +351,7 @@ func (a *AttachmentMetadata) Change(id string, change func(*attachmentstore.Entr
 			return e
 		}
 		next.Revision = old.Revision + 1
-		if next.Record.Offer != old.Record.Offer || next.Record.Direction != old.Record.Direction || next.Sequence != old.Sequence || next.CreatedAt != old.CreatedAt || next.Validate() != nil {
+		if next.Record.Offer != old.Record.Offer || next.Record.Direction != old.Record.Direction || next.Sequence != old.Sequence || next.CreatedAt != old.CreatedAt || !attachmentstore.ValidRecordedAtChange(old.Record, next.Record) || next.Validate() != nil {
 			return transfer.ErrIntegrity
 		}
 		if e = a.checkLimits(ctx, tx, next, &old); e != nil {

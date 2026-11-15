@@ -16,7 +16,7 @@ import (
 	"whatsup/internal/storage"
 )
 
-const Version = "0.0.15"
+const Version = "0.0.17"
 
 type Status struct {
 	Version              string `json:"version"`

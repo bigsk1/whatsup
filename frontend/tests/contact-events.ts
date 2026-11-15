@@ -22,9 +22,19 @@ export const notificationActivationID = Number(
     /export function TakeNotificationActivation\([\s\S]*?\$Call\.ByID\((\d+)/,
   )?.[1],
 );
+export const fileDragTakeID = Number(
+  nativeGenerated.match(
+    /export function TakeFileDragHint\([\s\S]*?\$Call\.ByID\((\d+)/,
+  )?.[1],
+);
 const securityID = Number(
   generated.match(
     /export function GetStorageSecurity\([\s\S]*?\$Call\.ByID\((\d+)/,
+  )?.[1],
+);
+const contactStorageID = Number(
+  generated.match(
+    /export function GetContactStorage\([\s\S]*?\$Call\.ByID\((\d+)/,
   )?.[1],
 );
 const relayID = Number(
@@ -59,6 +69,18 @@ export async function serveDefaultAppPreferences(
 ): Promise<boolean> {
   if (await serveDefaultNotificationActivation(route)) return true;
   if (await serveDefaultRelayChange(route)) return true;
+  if (route.request().postDataJSON().args?.methodID === contactStorageID) {
+    await route.fulfill({
+      json: {
+        contactID: route.request().postDataJSON().args.args[0],
+        messagesUsedBytes: 4096,
+        messagesQuotaBytes: 2 ** 30,
+        attachmentsUsedBytes: 4096,
+        attachmentsQuotaBytes: 4 * 2 ** 30,
+      },
+    });
+    return true;
+  }
   if (route.request().postDataJSON().args?.methodID === securityID) {
     await route.fulfill({
       json: { requiresPassphrase: false, recoveryAvailable: true, busy: false },
@@ -142,6 +164,10 @@ export function eventBackedState<T extends { conversation: unknown }>(
 export async function serveDefaultNotificationActivation(
   route: Route,
 ): Promise<boolean> {
+  if (route.request().postDataJSON().args?.methodID === fileDragTakeID) {
+    await route.fulfill({ json: { active: false, revision: 0 } });
+    return true;
+  }
   if (
     route.request().postDataJSON().args?.methodID !== notificationActivationID
   )

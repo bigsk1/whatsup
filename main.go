@@ -56,11 +56,13 @@ func main() {
 	application.RegisterEvent[NativeStorageHint](nativeStorageChangedEvent)
 	application.RegisterEvent[NativeNotificationHint](nativeNotificationActivateEvent)
 	application.RegisterEvent[bool](nativeWindowVisibleEvent)
+	application.RegisterEvent[NativeFileDragHint](nativeFileDragEvent)
 	var native atomic.Pointer[nativeHost]
 	var backend atomic.Pointer[desktop.Service]
 	var focusPending atomic.Bool
 	app := application.New(application.Options{
 		Name: "WhatsUp", Description: "Private one-to-one desktop messenger",
+		Icon:    trayIcon,
 		Windows: windows,
 		Linux:   application.LinuxOptions{ProgramName: desktop.LinuxProgramName, DisableQuitOnLastWindowClosed: true},
 		SingleInstance: &application.SingleInstanceOptions{UniqueID: "org.whatsup.desktop", ExitCode: 0, OnSecondInstanceLaunch: func(_ application.SecondInstanceData) {
@@ -154,10 +156,11 @@ func main() {
 	}
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title: "WhatsUp", Width: 1180, Height: 780, MinWidth: 760, MinHeight: 560,
-		BackgroundColour: application.NewRGB(12, 20, 23), URL: "/",
+		BackgroundColour: application.NewRGB(21, 18, 31), URL: "/",
 		Hidden:          options.Autostart,
 		DevToolsEnabled: false, DefaultContextMenuDisabled: true,
 		NativeFileDropHandler: host.nativeFileDrop,
+		NativeFileDragHandler: host.nativeFileDrag,
 		Linux:                 linuxWindow,
 	})
 	host.attachWindow(window)

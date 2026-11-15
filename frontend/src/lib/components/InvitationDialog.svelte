@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { Copy, Link, Shield } from '@lucide/svelte';
+  import Icon from '../icons/Icon.svelte';
   import {
     validConnectionService,
     validInvitationLink,
@@ -102,7 +102,7 @@
 >
   <div class="dialog-heading">
     <div class="dialog-title">
-      <div class="small-icon"><Link size={20} /></div>
+      <div class="small-icon"><Icon name="link" /></div>
       <div>
         <p class="eyebrow">A PRIVATE INVITATION</p>
         <h2 id="invitation-title">
@@ -197,7 +197,7 @@
             <button
               class="secondary-button compact"
               onclick={() => void copyRelayURL()}
-              ><Copy size={14} /> Copy relay URL</button
+              ><Icon name="copy" size="1.1em" /> Copy relay URL</button
             >
           </div>
           <p class="muted small">
@@ -250,7 +250,7 @@
         class="secondary-button compact copy-button"
         onclick={() => void copyLink()}
       >
-        <Copy size={15} /> Copy invitation
+        <Icon name="copy" size="1.1em" /> Copy invitation
       </button>
       {#if copyNotice}<p class="muted small" role="status">{copyNotice}</p>{/if}
       <p class="muted small service-help">
@@ -273,7 +273,7 @@
     {/if}
     {#if error}<p role="alert" class="invitation-error">{error}</p>{/if}
     <div class="privacy-note">
-      <Shield size={16} />
+      <Icon name="shield" />
       <p>
         Invitations stay in this session. WhatsUp has no analytics or automatic
         diagnostic uploads. Messaging starts after both people approve and

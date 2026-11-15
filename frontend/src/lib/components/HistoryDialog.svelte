@@ -60,8 +60,9 @@
     {#if selectedMessage}
       This deletes the local message. Your contact stays saved.
     {:else}
-      This clears local history and keeps the contact. Unfinished attachments
-      are cancelled.
+      This clears local history and keeps the contact. Photos, videos and files
+      stored in WhatsUp for this contact are deleted too; copies you saved
+      elsewhere stay. Unfinished attachments are cancelled.
     {/if}
     Messages still queued for delivery continue sending until acknowledged.
   </p>

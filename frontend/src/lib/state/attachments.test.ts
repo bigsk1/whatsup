@@ -4,6 +4,7 @@ import {
   createAttachments,
   validateAttachments,
   validateAttachmentDraft,
+  validAttachmentTime,
   type AttachmentBridge,
   type AttachmentItem,
 } from './attachments';
@@ -54,6 +55,124 @@ function deferred<T>() {
   return { promise, resolve };
 }
 describe('attachment state boundary', () => {
+  it('accepts a bounded local UTC timestamp or unknown legacy time, rejecting malformed dates and unknown fields', () => {
+    for (const recordedAt of [
+      '',
+      '2026-11-14T12:00:00Z',
+      '2026-11-14T12:00:00.123456789Z',
+    ]) {
+      expect(validAttachmentTime(recordedAt)).toBe(true);
+      expect(
+        validateAttachments(
+          { ...snapshot(), items: [{ ...item, recordedAt }] },
+          id,
+        ).items[0].recordedAt,
+      ).toBe(recordedAt);
+    }
+    for (const recordedAt of [
+      null,
+      1,
+      '2026-02-31T12:00:00Z',
+      '2026-11-14T12:00:00+01:00',
+      '1960-01-01T00:00:00Z',
+      '2026-11-14T12:00:00.1234567891Z',
+    ])
+      expect(() =>
+        validateAttachments(
+          { ...snapshot(), items: [{ ...item, recordedAt }] },
+          id,
+        ),
+      ).toThrow();
+    expect(() =>
+      validateAttachments(
+        {
+          ...snapshot(),
+          items: [{ ...item, recordedAt: '', path: '/private' }],
+        },
+        id,
+      ),
+    ).toThrow();
+  });
+  it('requires explicit deletion confirmation and closes only that item media capabilities', async () => {
+    const api = mock();
+    const store = createAttachments(api);
+    await store.select(id);
+    await vi.waitFor(() => expect(get(store.state).items).toHaveLength(1));
+    await store.preview({ ...item, mediaType: 'image/png' });
+    expect(get(store.state).image?.id).toBe(file);
+    store.requestDelete(item);
+    expect(api.decision).not.toHaveBeenCalled();
+    store.cancelDelete();
+    await store.confirmDelete();
+    expect(api.decision).not.toHaveBeenCalled();
+    store.requestDelete(item);
+    await store.confirmDelete();
+    expect(api.decision).toHaveBeenCalledExactlyOnceWith(id, file, 'delete');
+    expect(get(store.state).items).toEqual([]); // An old same-revision fixture cannot resurrect it.
+    expect(get(store.state).image).toBeNull();
+    expect(get(store.state).deleteTarget).toBeNull();
+    expect(get(store.state).saved).toEqual({});
+    store.stop();
+  });
+  it('does not delete a replacement selection or retain a late result after lock', async () => {
+    const api = mock(),
+      held = deferred<void>();
+    const store = createAttachments(api);
+    await store.select(id);
+    await vi.waitFor(() => expect(get(store.state).items).toHaveLength(1));
+    store.requestDelete(item);
+    await store.select('');
+    await store.confirmDelete();
+    expect(api.decision).not.toHaveBeenCalled();
+    await store.select(id);
+    await vi.waitFor(() => expect(get(store.state).items).toHaveLength(1));
+    api.decision = vi.fn(() => held.promise);
+    store.requestDelete(item);
+    const deleting = store.confirmDelete();
+    store.stop();
+    held.resolve();
+    await deleting;
+    expect(get(store.state).contactID).toBe('');
+    expect(get(store.state).deleteTarget).toBeNull();
+    expect(get(store.state).items).toEqual([]);
+  });
+  it('keeps a failed deletion retryable and retains the visible item', async () => {
+    const api = mock();
+    api.decision = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Deletion failed'))
+      .mockResolvedValueOnce(undefined);
+    const store = createAttachments(api);
+    await store.select(id);
+    await vi.waitFor(() => expect(get(store.state).items).toHaveLength(1));
+    store.requestDelete(item);
+    await store.confirmDelete();
+    expect(get(store.state).items).toHaveLength(1);
+    expect(get(store.state).deleteTarget?.id).toBe(file);
+    await store.confirmDelete();
+    expect(get(store.state).items).toEqual([]);
+    store.stop();
+  });
+  it('clears a retired list spinner if deletion fails while that list is held', async () => {
+    const api = mock(),
+      held = deferred<unknown>();
+    const store = createAttachments(api);
+    await store.select(id);
+    await vi.waitFor(() => expect(get(store.state).items).toHaveLength(1));
+    api.list = vi.fn(() => held.promise);
+    const listing = store.reload();
+    expect(get(store.state).loading).toBe(true);
+    api.decision = vi.fn().mockRejectedValue(new Error('Deletion failed'));
+    store.requestDelete(item);
+    await store.confirmDelete();
+    expect(get(store.state).loading).toBe(false);
+    expect(get(store.state).busy).toBe(false);
+    held.resolve(snapshot());
+    await listing;
+    expect(get(store.state).loading).toBe(false);
+    expect(get(store.state).deleteTarget?.id).toBe(file);
+    store.stop();
+  });
   it('accepts only the fixed cancellation outcomes returned by Go', () => {
     for (const warning of ['cancellation-pending', 'peer-completed']) {
       const value = {
@@ -93,6 +212,30 @@ describe('attachment state boundary', () => {
     expect(get(store.state).image?.id).toBe(older.id);
     store.invalidate();
     expect(get(store.state).image).toBeNull();
+    store.stop();
+  });
+  it('keeps the newest attachments when loaded history exceeds its bound', async () => {
+    const api = mock();
+    const page = (index: number) => ({
+      ...snapshot(),
+      items: Array.from({ length: 32 }, (_, offset) => ({
+        ...item,
+        id: String(index * 32 + offset).padStart(21, 'F') + 'A',
+      })),
+      hasMore: index < 16,
+      nextCursor: index < 16 ? String(index + 1) : '',
+    });
+    api.list = vi.fn(async () => page(0));
+    api.history = vi.fn(async (_contact: string, cursor: string) =>
+      page(Number(cursor)),
+    );
+    const store = createAttachments(api);
+    await store.select(id);
+    await vi.waitFor(() => expect(get(store.state).hasMore).toBe(true));
+    while (get(store.state).hasMore) await store.older();
+    const items = get(store.state).items;
+    expect(items).toHaveLength(512);
+    expect(items[0].id).toBe(page(0).items[0].id);
     store.stop();
   });
   it('explicit image dismissal retires a pending full-image response', async () => {

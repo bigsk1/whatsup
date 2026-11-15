@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -77,6 +79,37 @@ type savedAttachment struct {
 	reference attachmentReference
 	path      string
 	info      os.FileInfo
+	reveal    *savedRevealPermit
+}
+
+// The permit serializes only this handle's bounded OS reveal, never Service.mu.
+// A copied handle cannot begin another reveal after deletion's return barrier.
+type savedRevealPermit struct {
+	mu      sync.Mutex
+	retired atomic.Bool
+}
+
+func (p *savedRevealPermit) retire() {
+	if p == nil {
+		return
+	}
+	p.retired.Store(true)
+	p.mu.Lock()
+	p.mu.Unlock()
+}
+
+func (p *savedRevealPermit) run(ctx context.Context, reveal func(context.Context) error) error {
+	if p == nil || p.retired.Load() {
+		return errAttachment
+	}
+	bounded, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.retired.Load() || bounded.Err() != nil {
+		return errAttachment
+	}
+	return reveal(bounded)
 }
 
 type attachmentLease struct {
@@ -547,7 +580,7 @@ func (s *Service) attachmentHistoryLocked(l attachmentLease, result *Attachments
 		if progress > record.Offer.Size || record.State == transfer.Complete {
 			progress = record.Offer.Size
 		}
-		view := AttachmentView{Summary: transfer.Summary{ID: record.Offer.ID, Name: record.Offer.Name, MediaType: record.Offer.MediaType, Size: record.Offer.Size, Direction: record.Direction, State: record.State, TransferredBytes: progress, Warning: transfer.WithdrawalWarning(record)}}
+		view := AttachmentView{Summary: transfer.Summary{ID: record.Offer.ID, Name: record.Offer.Name, MediaType: record.Offer.MediaType, Size: record.Offer.Size, Direction: record.Direction, State: record.State, TransferredBytes: progress, Warning: transfer.WithdrawalWarning(record), RecordedAt: transfer.RecordedAtText(record)}}
 		if record.State == transfer.Complete {
 			if mime, typeErr := l.scope.VerifiedMediaType(record.Offer.ID); typeErr == nil {
 				view.MediaType = mime
@@ -697,6 +730,67 @@ func (s *Service) CancelAttachment(id, attachment string) error {
 func (s *Service) WithdrawAttachment(id, attachment string) error {
 	return s.attachmentDecision(id, attachment, "withdraw")
 }
+
+// DeleteAttachment revokes this item's local media and saved-file handles.
+// The exported file itself and the peer's copies are never deleted.
+func (s *Service) DeleteAttachment(id, attachment string) error {
+	type retiredReveal struct {
+		session *attachmentSession
+		handle  string
+		permit  *savedRevealPermit
+	}
+	var reveals []retiredReveal
+	s.mu.Lock()
+	defer func() {
+		s.mu.Unlock()
+		for _, saved := range reveals {
+			saved.permit.retire()
+		}
+		// Keep revoked entries discoverable until the barrier drains, so a
+		// concurrent idempotent Delete joins the same already-started reveals.
+		if len(reveals) != 0 {
+			s.mu.Lock()
+			for _, saved := range reveals {
+				if current, ok := saved.session.saved[saved.handle]; ok && current.reveal == saved.permit {
+					delete(saved.session.saved, saved.handle)
+				}
+			}
+			s.mu.Unlock()
+		}
+	}()
+	l, err := s.attachmentLocked(id)
+	if err != nil || !transfer.ValidID(attachment) {
+		return errAttachment
+	}
+	if _, err := l.scope.Get(attachment); err != nil {
+		return errAttachment
+	}
+	// Retire capabilities even when object cleanup subsequently needs retry.
+	l.session.images.invalidate(id, attachment)
+	for handle, ref := range l.session.assets {
+		if ref.contactID == id && ref.transferID == attachment {
+			delete(l.session.assets, handle)
+		}
+	}
+	for handle, ref := range l.session.drafts {
+		if ref.contactID == id && ref.transferID == attachment {
+			delete(l.session.drafts, handle)
+		}
+	}
+	for handle, saved := range l.session.saved {
+		if saved.reference.contactID == id && saved.reference.transferID == attachment {
+			if saved.reveal != nil {
+				saved.reveal.retired.Store(true)
+			}
+			reveals = append(reveals, retiredReveal{l.session, handle, saved.reveal})
+		}
+	}
+	if err := s.messages.RemoveTransfer(id, attachment); err != nil {
+		s.record(diagnostics.TransferFailed)
+		return attachmentActionError(err)
+	}
+	return nil
+}
 func (s *Service) ResumeAttachment(id, attachment string) error {
 	return s.attachmentDecision(id, attachment, "resume")
 }
@@ -795,6 +889,9 @@ func (s *Service) SaveAttachment(id, attachment string) (SavedAttachment, error)
 	if !s.attachmentCurrentLocked(l) {
 		return SavedAttachment{}, errAttachment
 	}
+	if current, err := l.scope.Get(attachment); err != nil || current.Hidden || current.State != transfer.Complete {
+		return SavedAttachment{}, errAttachment
+	}
 	if len(l.session.saved) >= 256 {
 		return SavedAttachment{}, errAttachment
 	}
@@ -802,7 +899,7 @@ func (s *Service) SaveAttachment(id, attachment string) (SavedAttachment, error)
 	if err != nil {
 		return SavedAttachment{}, err
 	}
-	l.session.saved[handle] = savedAttachment{attachmentReference{id, attachment, "saved"}, filename, info}
+	l.session.saved[handle] = savedAttachment{attachmentReference{id, attachment, "saved"}, filename, info, &savedRevealPermit{}}
 	success = true
 	return SavedAttachment{handle}, nil
 }
@@ -822,7 +919,9 @@ func (s *Service) ShowSavedAttachment(id, handle string) error {
 	if err != nil || !current.Mode().IsRegular() || !os.SameFile(saved.info, current) || l.contact.life.Err() != nil {
 		return errAttachment
 	}
-	if l.options.Reveal(l.contact.life, saved.path) != nil {
+	if err := saved.reveal.run(l.contact.life, func(ctx context.Context) error {
+		return l.options.Reveal(ctx, saved.path)
+	}); err != nil {
 		return errAttachment
 	}
 	return nil

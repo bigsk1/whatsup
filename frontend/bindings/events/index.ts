@@ -14,6 +14,11 @@ import "../github.com/wailsapp/wails/v3/internal/eventcreate.js";
 export const WhatsupContactChanged = "whatsup:contact-changed";
 
 /**
+ * Name of the custom event "whatsup:file-drag".
+ */
+export const WhatsupFileDrag = "whatsup:file-drag";
+
+/**
  * Name of the custom event "whatsup:notification-activate".
  */
 export const WhatsupNotificationActivate = "whatsup:notification-activate";

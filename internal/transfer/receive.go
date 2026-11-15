@@ -66,6 +66,8 @@ func (e *Engine) receive(frame Frame) error {
 			return nil
 		}
 		e.closeReader(job)
+		job.permit.retire()
+		job.permit = &outboundPermit{}
 		job.record = record
 		job.credit = frame.Credit
 		job.accepted = true

@@ -114,6 +114,15 @@ async function desktop(
       case 'GetAppPreferences':
         result = defaultAppPreferences;
         break;
+      case 'GetContactStorage':
+        result = {
+          contactID: args[0],
+          messagesUsedBytes: 4096,
+          messagesQuotaBytes: 2 ** 30,
+          attachmentsUsedBytes: 4096,
+          attachmentsQuotaBytes: 4 * 2 ** 30,
+        };
+        break;
       case 'GetStorageSecurity':
         result = {
           requiresPassphrase: false,

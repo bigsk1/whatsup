@@ -201,6 +201,66 @@ async function expectSelected(workspace: Locator, name: string) {
   ).toHaveClass(/selected/);
 }
 
+test('Contact settings shows separate quota meters from the scoped Go query and refreshes without changing names', async ({
+  page,
+}) => {
+  const { errors, calls } = await fixture(page);
+  const storageID = Number(
+    generated.match(
+      /export function GetContactStorage\([\s\S]*?\$Call\.ByID\((\d+)/,
+    )?.[1],
+  );
+  const requests: unknown[][] = [];
+  let attachmentsUsedBytes = 2 ** 30;
+  await page.route('**/wails/runtime', async (route) => {
+    const body = route.request().postDataJSON();
+    if (body.args?.methodID !== storageID) {
+      await route.fallback();
+      return;
+    }
+    requests.push(body.args.args);
+    await route.fulfill({
+      json: {
+        contactID: body.args.args[0],
+        messagesUsedBytes: 2 ** 20,
+        messagesQuotaBytes: 2 ** 30,
+        attachmentsUsedBytes,
+        attachmentsQuotaBytes: 4 * 2 ** 30,
+      },
+    });
+  });
+  await page.goto('/');
+  const workspace = await openSettings(page, 'Contact');
+  const card = workspace.getByRole('region', {
+    name: 'Contact storage',
+    exact: true,
+  });
+  await expect(card).toContainText('1.0 MiB of 1.00 GiB');
+  await expect(card).toContainText('1.00 GiB of 4.00 GiB');
+  await expect(
+    card.getByRole('progressbar', { name: 'Message text storage' }),
+  ).toHaveAttribute('value', String(2 ** 20));
+  await expect(card).toContainText(
+    'space reserved for queued or accepted files',
+  );
+  attachmentsUsedBytes = 4 * 2 ** 30;
+  await card
+    .getByRole('button', { name: 'Refresh storage usage', exact: true })
+    .click();
+  await expect(card).toContainText('Attachment storage full');
+  expect(requests.length).toBeGreaterThanOrEqual(2);
+  expect(
+    requests.every((args) => args.length === 1 && args[0] === contactID),
+  ).toBe(true);
+  expect(calls.some((call) => call.operation === 'SetContactName')).toBe(false);
+  await workspace
+    .getByRole('button', { name: 'Back to chats', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'Go offline', exact: true }).click();
+  await expect(card).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test('profile is restored locally, sharing stays off until saved, and names never enter browser storage', async ({
   page,
 }) => {
@@ -512,7 +572,7 @@ test('Settings pages stay usable across desktop, short-window and light-theme la
   await workspace
     .getByRole('button', { name: 'Appearance', exact: true })
     .click();
-  await workspace.getByRole('radio', { name: 'Light', exact: true }).check();
+  await workspace.getByRole('radio', { name: 'Daybreak', exact: true }).check();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await expectSelected(workspace, 'Appearance');
   await page.screenshot({

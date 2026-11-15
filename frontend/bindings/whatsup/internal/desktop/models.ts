@@ -28,6 +28,7 @@ export interface AttachmentView {
     "state": string;
     "transferredBytes": number;
     "warning": string;
+    "recordedAt": string;
     "previewURL": string;
 }
 
@@ -39,6 +40,18 @@ export interface Attachments {
     "autoAcceptImages": boolean;
     "nextCursor": string;
     "hasMore": boolean;
+}
+
+/**
+ * ContactStorage exposes only logical quota counters for an approved contact.
+ * Reservations/tombstones count; this is neither OS free space nor exact disk use.
+ */
+export interface ContactStorage {
+    "contactID": string;
+    "messagesUsedBytes": number;
+    "messagesQuotaBytes": number;
+    "attachmentsUsedBytes": number;
+    "attachmentsQuotaBytes": number;
 }
 
 export interface InvitationInspection {

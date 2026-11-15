@@ -96,6 +96,9 @@ func (e Entry) Validate() error {
 	if e.Record.Direction != transfer.Incoming && e.Record.Direction != transfer.Outgoing {
 		return ErrIntegrity
 	}
+	if !transfer.ValidRecordedAt(e.Record.RecordedAt) || e.Record.State == transfer.Draft && !e.Record.RecordedAt.IsZero() {
+		return ErrIntegrity
+	}
 	if (e.Record.PendingWithdrawal || e.Record.PeerCompleted) && e.Record.State != transfer.Declined || e.Record.PendingWithdrawal && e.Record.PeerCompleted {
 		return ErrIntegrity
 	}

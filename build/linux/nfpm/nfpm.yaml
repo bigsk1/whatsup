@@ -3,7 +3,7 @@
 name: whatsup
 arch: ${GOARCH}
 platform: linux
-version: 0.0.15
+version: 0.0.17
 section: net
 priority: optional
 description: Private one-to-one desktop messenger
@@ -13,7 +13,7 @@ contents:
   - src: ./build/bin/whatsup
     dst: /usr/bin/whatsup
   - src: ./build/appicon.png
-    dst: /usr/share/icons/hicolor/128x128/apps/whatsup.png
+    dst: /usr/share/icons/hicolor/1024x1024/apps/whatsup.png
   - src: ./build/linux/desktop
     dst: /usr/share/applications/whatsup.desktop
 depends:

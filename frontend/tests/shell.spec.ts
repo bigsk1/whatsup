@@ -52,20 +52,52 @@ test('opens settings by keyboard, retains focus, and saves appearance only', asy
     dialog.getByRole('button', { name: 'Go online' }),
   ).toBeDisabled();
   await dialog.getByRole('button', { name: 'Appearance', exact: true }).click();
-  await page.getByRole('radio', { name: 'Light', exact: true }).check();
-  await page.getByRole('radio', { name: 'Rose', exact: true }).check();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-  await expect(page.locator('html')).toHaveAttribute('data-accent', 'rose');
+  await page.getByRole('radio', { name: 'Arcade', exact: true }).check();
+  await page.getByRole('radio', { name: 'Daybreak', exact: true }).check();
+  await page.getByRole('radio', { name: 'Large', exact: true }).check();
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute('data-theme', 'light');
+  await expect(html).toHaveAttribute('data-skin', 'arcade');
+  await expect(html).toHaveAttribute('data-palette', 'daybreak');
+  await expect(html).toHaveAttribute('data-text-size', 'large');
   await page.keyboard.press('Escape');
   await expect(dialog).not.toBeVisible();
   await expect(trigger).toBeFocused();
   await page.reload();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-  await expect(page.locator('html')).toHaveAttribute('data-accent', 'rose');
+  await expect(html).toHaveAttribute('data-theme', 'light');
+  await expect(html).toHaveAttribute('data-skin', 'arcade');
+  await expect(html).toHaveAttribute('data-palette', 'daybreak');
   const stored = await page.evaluate(() => ({ ...localStorage }));
   expect(stored).toEqual({
-    'whatsup.appearance.v1': '{"theme":"light","accent":"rose"}',
+    'whatsup.appearance.v2':
+      '{"skin":"arcade","palette":"daybreak","lightPalette":"daybreak","followSystem":false,"textSize":"large","effects":true}',
   });
+});
+
+test('migrates the previous light appearance and replaces its stored key', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    if (!sessionStorage.getItem('seeded')) {
+      sessionStorage.setItem('seeded', '1');
+      localStorage.setItem(
+        'whatsup.appearance.v1',
+        '{"theme":"light","accent":"rose"}',
+      );
+    }
+  });
+  await page.goto('/');
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute('data-theme', 'light');
+  await expect(html).toHaveAttribute('data-palette', 'daybreak');
+  await page
+    .getByRole('button', { name: 'Open settings', exact: true })
+    .click();
+  await page.getByRole('button', { name: 'Appearance', exact: true }).click();
+  await page.getByRole('radio', { name: 'Neon City', exact: true }).check();
+  await expect(html).toHaveAttribute('data-skin', 'neon');
+  const stored = await page.evaluate(() => Object.keys(localStorage));
+  expect(stored).toEqual(['whatsup.appearance.v2']);
 });
 
 test('follows system appearance and ignores malformed stored preferences', async ({
@@ -73,7 +105,7 @@ test('follows system appearance and ignores malformed stored preferences', async
 }) => {
   await page.emulateMedia({ colorScheme: 'light' });
   await page.addInitScript(() =>
-    localStorage.setItem('whatsup.appearance.v1', '{invalid'),
+    localStorage.setItem('whatsup.appearance.v2', '{invalid'),
   );
   await page.goto('/');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
@@ -81,10 +113,24 @@ test('follows system appearance and ignores malformed stored preferences', async
     .getByRole('button', { name: 'Open settings', exact: true })
     .click();
   await page.getByRole('button', { name: 'Appearance', exact: true }).click();
-  await page.getByRole('radio', { name: 'System', exact: true }).check();
+  await page
+    .getByRole('checkbox', { name: 'Match system light and dark' })
+    .check();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await expect(page.locator('html')).toHaveAttribute(
+    'data-palette',
+    'daybreak',
+  );
+  await page
+    .getByRole('radio', { name: 'GitHub Light in light mode', exact: true })
+    .check();
+  await expect(page.locator('html')).toHaveAttribute(
+    'data-palette',
+    'github-light',
+  );
   await page.emulateMedia({ colorScheme: 'dark' });
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(page.locator('html')).toHaveAttribute('data-palette', 'whatsup');
 });
 
 test('renders untrusted search text as text without remote assets or HTML', async ({
@@ -120,14 +166,14 @@ test('handles an unavailable preference store without breaking the interface', a
     .getByRole('button', { name: 'Open settings', exact: true })
     .click();
   await page.getByRole('button', { name: 'Appearance', exact: true }).click();
-  await page.getByRole('radio', { name: 'Blue', exact: true }).check();
+  await page.getByRole('radio', { name: 'Nord', exact: true }).check();
   await page
     .getByRole('button', { name: 'Back to chats', exact: true })
     .click();
   await expect(page.getByRole('alert')).toContainText(
     'This device could not save the preference.',
   );
-  await expect(page.locator('html')).toHaveAttribute('data-accent', 'blue');
+  await expect(page.locator('html')).toHaveAttribute('data-palette', 'nord');
 });
 
 test('keeps its main controls visible at a narrow window size', async ({

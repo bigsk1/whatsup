@@ -403,7 +403,7 @@ func (m *Manager) visitOverlappingListeners(ctx context.Context, routes []approv
 	if len(routes) != 2 || window <= 0 {
 		return ErrUnavailable
 	}
-	for attempt := 0; ctx.Err() == nil; attempt++ {
+	for ctx.Err() == nil {
 		for _, route := range routes {
 			if err := route.validate(); err != nil {
 				return routeFailure(err)
@@ -448,7 +448,7 @@ func (m *Manager) visitOverlappingListeners(ctx context.Context, routes []approv
 				return errLocalRouteRefresh
 			}
 		}
-		timer := time.NewTimer(retryDelay(attempt))
+		timer := time.NewTimer(m.reconnectDelay(time.Now()))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -460,7 +460,7 @@ func (m *Manager) visitOverlappingListeners(ctx context.Context, routes []approv
 }
 
 func (m *Manager) listenRoute(ctx context.Context, route approvedRoute, alternatives ...approvedRoute) error {
-	for attempt := 0; ctx.Err() == nil; attempt++ {
+	for ctx.Err() == nil {
 		if err := route.validate(); err != nil {
 			return routeFailure(err)
 		}
@@ -493,7 +493,7 @@ func (m *Manager) listenRoute(ctx context.Context, route approvedRoute, alternat
 			m.bumpLocked()
 		}
 		m.mu.Unlock()
-		timer := time.NewTimer(retryDelay(attempt))
+		timer := time.NewTimer(m.reconnectDelay(time.Now()))
 		select {
 		case <-ctx.Done():
 			timer.Stop()

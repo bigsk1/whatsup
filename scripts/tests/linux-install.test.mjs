@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,9 +9,11 @@ import test from 'node:test';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const installer = path.join(root, 'scripts/install-linux-review.py');
+const launcher = path.join(root, 'scripts/install-linux-launcher.py');
 const python = process.platform === 'win32' ? 'python' : 'python3';
 const pythonAvailable = spawnSync(python, ['--version'], { windowsHide: true, stdio: 'ignore', timeout: 10000 }).status === 0;
 const options = { skip: pythonAvailable ? false : 'Python is only required for Linux installation checks' };
+const launcherOptions = { skip: process.platform === 'linux' ? options.skip : 'Linux user-owned launcher/icon integration' };
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 async function bundleFixture(t) {
@@ -88,4 +90,102 @@ test('Linux installer refuses a source symlink and enforces root before installa
   const result = spawnSync(python, ['-I', '-B', '-c', code, installer], { cwd: root, windowsHide: true, encoding: 'utf8', timeout: 10000 });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /requires root/);
+});
+
+async function launcherFixture(t) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'whatsup-launcher-icon-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await mkdir(path.join(directory, 'build'), { mode: 0o700 });
+  await mkdir(path.join(directory, 'scripts'), { mode: 0o700 });
+  const icon = await readFile(path.join(root, 'build/appicon.png'));
+  await writeFile(path.join(directory, 'build/appicon.png'), icon, { mode: 0o600 });
+  return { directory, icon };
+}
+
+function checkLauncher(code, directory) {
+  return spawnSync(python, ['-I', '-B', '-c', code, launcher, directory], {
+    cwd: root, windowsHide: true, encoding: 'utf8', timeout: 10000,
+  });
+}
+
+test('Linux review launchers install the exact new icon and retain rendering, menu, desktop and dock behavior', launcherOptions, async (t) => {
+  const { directory, icon } = await launcherFixture(t);
+  const code = `import importlib.util,json,os,stat,subprocess,sys
+from pathlib import Path
+from unittest.mock import patch
+spec=importlib.util.spec_from_file_location('launcher',sys.argv[1])
+m=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+root=Path(sys.argv[2]); m.__file__=str(root/'scripts/install-linux-launcher.py')
+home=root/'home'; home.mkdir(mode=0o700)
+desktop=home/'Desktop'; desktop.mkdir(mode=0o700)
+data=home/'data with spaces'
+calls=[]
+def command(args):
+ calls.append(args)
+ if args[:2]==['/usr/bin/xdg-user-dir','DESKTOP']: output=str(desktop)+'\\n'
+ elif args[:2]==['/usr/bin/gsettings','get']: output="['org.gnome.Terminal.desktop', 'whatsup-development.desktop']\\n"
+ else: output=''
+ return subprocess.CompletedProcess(args,0,stdout=output,stderr='')
+with patch.object(m,'command',side_effect=command), patch.object(m.Path,'home',return_value=home), patch.dict(m.os.environ,{'XDG_DATA_HOME':str(data),'XDG_CURRENT_DESKTOP':'GNOME'}), patch.object(m.sys,'argv',['install-linux-launcher.py','--software-rendering','--desktop-shortcut','--pin-to-dock']), patch.object(m.os,'geteuid',return_value=1000):
+ assert m.main()==0
+installed=data/'icons/whatsup-development.png'
+assert installed.read_bytes()==(root/'build/appicon.png').read_bytes()
+assert stat.S_IMODE(installed.stat().st_mode)==0o644 and installed.stat().st_uid==os.getuid()
+for relative in ['applications/whatsup.desktop','applications/whatsup-development.desktop']:
+ entry=(data/relative).read_text()
+ assert 'Icon='+str(installed)+'\\n' in entry and 'internet-chat' not in entry
+ assert 'Exec=/opt/whatsup-development/whatsup --software-rendering\\n' in entry
+ assert 'StartupWMClass=whatsup\\n' in entry
+assert 'NoDisplay=true\\n' in (data/'applications/whatsup-development.desktop').read_text()
+assert (desktop/'whatsup.desktop').read_text()==(data/'applications/whatsup.desktop').read_text()
+assert stat.S_IMODE((desktop/'whatsup.desktop').stat().st_mode)==0o755
+assert ['/usr/bin/gsettings','set','org.gnome.shell','favorite-apps',"['org.gnome.Terminal.desktop', 'whatsup.desktop']"] in calls
+assert all(call[0] in ['/usr/bin/desktop-file-validate','/usr/bin/xdg-user-dir','/usr/bin/gio','/usr/bin/gsettings','/usr/bin/update-desktop-database'] for call in calls)
+`;
+  const result = checkLauncher(code, directory);
+  assert.equal(result.status, 0, result.stderr);
+  const receipt = JSON.parse(result.stdout);
+  assert.equal(receipt.icon.sha256, hash(icon));
+  assert.equal(receipt.icon.size, icon.length);
+  assert.equal(receipt.icon.width, icon.readUInt32BE(16));
+  assert.equal(receipt.icon.height, icon.readUInt32BE(20));
+  assert.equal(receipt.menuLauncherInstalled, true);
+  assert.equal(receipt.desktopShortcutInstalled, true);
+  assert.equal(receipt.dockPinned, true);
+  assert.equal(receipt.appLaunched, false);
+  assert.equal(receipt.rootChanged, false);
+});
+
+test('Linux icon installation rejects unsafe or malformed assets without replacing an existing icon', launcherOptions, async (t) => {
+  const { directory } = await launcherFixture(t);
+  const code = `import importlib.util,sys
+from pathlib import Path
+spec=importlib.util.spec_from_file_location('launcher',sys.argv[1])
+m=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+root=Path(sys.argv[2]); m.__file__=str(root/'scripts/install-linux-launcher.py')
+data=root/'data'; data.mkdir(mode=0o700)
+source=root/'build/appicon.png'; original=source.read_bytes()
+target,_=m.install_icon(data)
+def refused():
+ try: m.install_icon(data)
+ except m.LauncherError: pass
+ else: raise AssertionError('unsafe image accepted')
+ assert target.read_bytes()==original
+for invalid in [b'',b'not a PNG'*8,original[:-12],b'x'*(m.MAX_ICON_BYTES+1)]:
+ source.write_bytes(invalid); refused()
+source.write_bytes(original)
+other=root/'other.png'; other.write_bytes(original)
+source.unlink(); source.symlink_to(other); refused()
+source.unlink(); source.write_bytes(original)
+target.unlink(); target.symlink_to(other)
+try: m.install_icon(data)
+except m.LauncherError: pass
+else: raise AssertionError('existing icon symlink accepted')
+assert target.is_symlink() and other.read_bytes()==original
+assert not list((data/'icons').glob('.whatsup-icon-*'))
+`;
+  const result = checkLauncher(code, directory);
+  assert.equal(result.status, 0, result.stderr);
 });

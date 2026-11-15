@@ -1,6 +1,7 @@
 import { mount } from 'svelte';
 import App from './App.svelte';
 import { applyPreferences, readPreferences } from './lib/themes/preferences';
+import './fonts';
 import './app.css';
 
 applyPreferences(readPreferences());

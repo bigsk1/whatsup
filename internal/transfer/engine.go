@@ -18,8 +18,9 @@ type Options struct {
 }
 
 type Outbound struct {
-	Epoch uint64
-	Frame Frame
+	Epoch  uint64
+	Frame  Frame
+	permit *outboundPermit
 }
 type Failure struct {
 	Epoch uint64
@@ -57,6 +58,7 @@ type withdrawalFlight struct {
 }
 
 type sendJob struct {
+	permit                                                                               *outboundPermit
 	credit                                                                               [16]byte
 	record                                                                               Record
 	offered, offerQueued, accepted, remotePaused, waitingWrite, finishSent, blockedRelay bool
@@ -295,6 +297,7 @@ func (e *Engine) end() {
 	}
 	e.finalCancel, e.finalDone = nil, nil
 	for _, job := range e.jobs {
+		job.permit.retire()
 		e.closeReader(job)
 	}
 	e.jobs = map[string]*sendJob{}
@@ -388,6 +391,7 @@ func (e *Engine) reload() error {
 		if len(e.pending) >= MaxOffers+MaxActive+4 {
 			break
 		}
+		job.permit = &outboundPermit{}
 		if err := e.emit(Frame{Kind: OfferFrame, ID: id, SHA256: job.record.Offer.SHA256, Offer: job.record.Offer}); err != nil {
 			return err
 		}
@@ -476,10 +480,10 @@ func (e *Engine) run() {
 		if e.live() {
 			if len(e.pending) > 0 {
 				out = e.output
-				value = Outbound{e.epoch, e.pending[0]}
+				value = e.outbound(e.pending[0])
 			} else if staged != nil {
 				out = e.output
-				value = Outbound{e.epoch, *staged}
+				value = e.outbound(*staged)
 			}
 		}
 		select {
@@ -663,6 +667,7 @@ func (e *Engine) fileFailure(offer Offer, err error) error {
 }
 func (e *Engine) drop(id string) {
 	if job := e.jobs[id]; job != nil {
+		job.permit.retire()
 		e.closeReader(job)
 		job.accepted = false
 		job.remotePaused = true

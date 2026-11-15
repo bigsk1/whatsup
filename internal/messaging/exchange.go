@@ -448,11 +448,16 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 				continue
 			}
 			if removal == nil && pendingTransfer.Epoch == epoch {
-				if err := writePacket(session, packet{kind: transferPacket, attachment: pendingTransfer.Frame}); err != nil {
+				written, err := pendingTransfer.WriteIfCurrent(func() error {
+					return writePacket(session, packet{kind: transferPacket, attachment: pendingTransfer.Frame})
+				})
+				if err != nil {
 					return err
 				}
-				if err := ingress.written(pendingTransfer.Frame); err != nil {
-					return err
+				if written {
+					if err := ingress.written(pendingTransfer.Frame); err != nil {
+						return err
+					}
 				}
 			}
 			pendingTransfer = nil

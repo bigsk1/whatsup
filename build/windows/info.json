@@ -1,12 +1,12 @@
 {
 	"fixed": {
-		"file_version": "0.0.15",
-		"product_version": "0.0.15"
+		"file_version": "0.0.17",
+		"product_version": "0.0.17"
 	},
 	"info": {
 		"0409": {
-			"FileVersion": "0.0.15",
-			"ProductVersion": "0.0.15",
+			"FileVersion": "0.0.17",
+			"ProductVersion": "0.0.17",
 			"CompanyName": "",
 			"FileDescription": "Private one-to-one desktop messenger",
 			"LegalCopyright": "",

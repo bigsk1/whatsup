@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>WhatsUp (16-24 px)</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7c5cff"/>
+      <stop offset="1" stop-color="#2ee6c5"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="200" fill="url(#tile)"/>
+  <path d="M300 170H724A170 170 0 0 1 894 340V590A170 170 0 0 1 724 760H460L200 930L236 744A170 170 0 0 1 130 590V340A170 170 0 0 1 300 170Z" fill="#fff"/>
+  <rect x="330" y="330" width="110" height="150" rx="55" fill="#1b1340"/>
+  <rect x="584" y="330" width="110" height="150" rx="55" fill="#1b1340"/>
+  <path d="M340 570Q512 700 684 570" fill="none" stroke="#1b1340" stroke-width="64" stroke-linecap="round"/>
+</svg>

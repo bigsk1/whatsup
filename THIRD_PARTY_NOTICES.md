@@ -6,22 +6,23 @@ No public license for WhatsUp has been selected.
 
 ## Wails
 
-The retained build assets originated from the Wails v3.1.0 scaffolding: the icons
-at `build/appicon.png` and `build/windows/icon.ico`, platform build and installer
-templates under `build/`, and generated TypeScript bindings under
-`frontend/bindings/`. The local recipes and metadata have been adapted for WhatsUp.
-These files are derived from Wails source distributed under the MIT License.
+The retained build assets originated from the Wails v3.1.0 scaffolding: platform
+build and installer templates under `build/` and generated TypeScript bindings
+under `frontend/bindings/`. The local recipes and metadata have been adapted for
+WhatsUp. These files are derived from Wails source distributed under the MIT License.
 
 Copyright (c) 2018-Present Lea Anthony.
 
 The full notice is retained at [third_party/licenses/wails-MIT.txt](third_party/licenses/wails-MIT.txt).
 Source: [Wails v3.1.0](https://github.com/wailsapp/wails/tree/v3.1.0),
 [upstream license](https://github.com/wailsapp/wails/blob/v3.1.0/LICENSE).
-The current icons are scaffold placeholders, not WhatsUp branding.
+The application icons (`build/appicon.svg`, `build/appicon-small.svg`,
+`build/appicon.png` and `build/windows/icon.ico`) and the in-app logo are original
+WhatsUp artwork and no longer derive from the Wails placeholder icon.
 
 The application applies a private, reviewed native integration patch to Wails
-3.1.0 for Go-only file drops, bounded completed-reader media responses and
-minimal Windows notification activation metadata. The
+3.1.0 for Go-only file drops and bounded drag-state hints, bounded
+completed-reader media responses and minimal Windows notification activation metadata. The
 patch and immutable upstream basis are recorded in `config/wails-patch.json`.
 The exact upstream module and its MIT notice are preserved during the build.
 
@@ -59,6 +60,32 @@ direct-only enforcement.
 
 Source: [reviewed Tailcat revision](https://github.com/tailscale/tailcat/tree/e00cdde6ff787f801361ff85ed085775c775d4c5),
 [upstream BSD-3-Clause license](https://github.com/tailscale/tailcat/blob/e00cdde6ff787f801361ff85ed085775c775d4c5/LICENSE).
+
+## Interface fonts
+
+The interface bundles these fonts from `@fontsource` packages version 5.3.0. Each
+is distributed under the SIL Open Font License, Version 1.1, and is served only
+from the application bundle, never from a remote font service.
+
+| Font | Copyright | License |
+| --- | --- | --- |
+| Nunito | 2014 The Nunito Project Authors | [OFL-1.1](third_party/licenses/fonts/nunito-OFL-1.1.txt) |
+| Press Start 2P | 2012 The Press Start 2P Project Authors, Reserved Font Name "Press Start 2P" | [OFL-1.1](third_party/licenses/fonts/press-start-2p-OFL-1.1.txt) |
+| VT323 | 2011 The VT323 Project Authors | [OFL-1.1](third_party/licenses/fonts/vt323-OFL-1.1.txt) |
+| Orbitron | 2018 The Orbitron Project Authors | [OFL-1.1](third_party/licenses/fonts/orbitron-OFL-1.1.txt) |
+| Rajdhani | 2014 Indian Type Foundry | [OFL-1.1](third_party/licenses/fonts/rajdhani-OFL-1.1.txt) |
+| JetBrains Mono | 2020 The JetBrains Mono Project Authors | [OFL-1.1](third_party/licenses/fonts/jetbrains-mono-OFL-1.1.txt) |
+
+## Interface icons
+
+The Bubbly and Neon City looks use icons from `phosphor-svelte` version 3.1.1,
+Copyright (c) 2020 Phosphor Icons, distributed under the MIT License. The full
+notice is retained at [third_party/licenses/phosphor-MIT.txt](third_party/licenses/phosphor-MIT.txt).
+
+The Arcade and Terminal looks use path data adapted from pixelarticons version
+2.4.2, Copyright (c) 2019 Gerrit Halfmann, distributed under the MIT License, in
+`frontend/src/lib/icons/pixel-paths.ts`. The full notice is retained at
+[third_party/licenses/pixelarticons-MIT.txt](third_party/licenses/pixelarticons-MIT.txt).
 
 ## Dependency and binary distribution boundary
 

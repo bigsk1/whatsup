@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { UserRoundMinus } from '@lucide/svelte';
+  import Icon from '../icons/Icon.svelte';
 
   let {
     contactID,
@@ -55,7 +55,7 @@
 >
   <div class="dialog-heading">
     <div class="dialog-title">
-      <div class="small-icon"><UserRoundMinus size={20} /></div>
+      <div class="small-icon"><Icon name="forget" /></div>
       <h2 id="forget-contact-title">Forget contact and delete conversation</h2>
     </div>
   </div>

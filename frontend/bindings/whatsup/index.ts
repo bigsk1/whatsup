@@ -5,6 +5,7 @@ export {
 };
 
 export type {
+    NativeFileDragHint,
     NativeNotificationHint,
     NativeStorageHint
 } from "./models.js";

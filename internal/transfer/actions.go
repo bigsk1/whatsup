@@ -142,7 +142,7 @@ func (e *Engine) Summaries() ([]Summary, error) {
 			if progress > r.Offer.Size {
 				progress = r.Offer.Size
 			}
-			values = append(values, Summary{ID: r.Offer.ID, Name: r.Offer.Name, MediaType: r.Offer.MediaType, Size: r.Offer.Size, Direction: r.Direction, State: state, TransferredBytes: progress, Warning: warning})
+			values = append(values, Summary{ID: r.Offer.ID, Name: r.Offer.Name, MediaType: r.Offer.MediaType, Size: r.Offer.Size, Direction: r.Direction, State: state, TransferredBytes: progress, Warning: warning, RecordedAt: RecordedAtText(r)})
 		}
 		return nil
 	}})

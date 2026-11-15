@@ -26,6 +26,7 @@ mkdir -p "$stage_dir/scripts" "$stage_dir/build/linux/apparmor" "$stage_dir/bin"
 cp -- "$script_dir/install-linux-review.py" "$stage_dir/scripts/install-linux-review.py"
 cp -- "$script_dir/install-linux-launcher.py" "$stage_dir/scripts/install-linux-launcher.py"
 cp -- "$script_dir/../build/linux/apparmor/whatsup-development" "$stage_dir/build/linux/apparmor/whatsup-development"
+cp -- "$script_dir/../build/appicon.png" "$stage_dir/build/appicon.png"
 for name in whatsup build-manifest.json SHA256SUMS whatsup-webview-check probe-manifest.json; do
   cp -- "$bundle/$name" "$stage_dir/bin/$name"
 done

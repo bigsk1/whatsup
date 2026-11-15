@@ -68,7 +68,7 @@ export function connectionLabel(state: ConversationSnapshot['state']): string {
     (
       {
         connected: 'Connected',
-        connecting: 'Connecting…',
+        connecting: 'Waiting for their device',
         'identity-changed': 'Identity could not be verified',
         'update-required': 'Compatible app update needed',
         'route-unavailable':

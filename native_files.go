@@ -80,6 +80,7 @@ func (h *nativeHost) configureFiles() error {
 }
 
 func (h *nativeHost) nativeFileDrop(paths []string) {
+	h.resetNativeDrag()
 	if h.life.Err() != nil || len(paths) != 1 || len(paths[0]) == 0 || len(paths[0]) > 32768 {
 		return
 	}

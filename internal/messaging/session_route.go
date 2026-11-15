@@ -185,6 +185,7 @@ func (m *Manager) sessionRouteCandidates(parent context.Context, raw net.Conn, r
 		return err
 	}
 	m.authenticated++
+	m.reconnect = reconnectBackoff{}
 	if route.association == m.preferredRoute {
 		m.preferredAuthenticated++
 		// Only success on the currently preferred route is handover progress.

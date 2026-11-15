@@ -97,7 +97,7 @@ func (r *Registry) Transfers(contactID string) ([]transfer.Summary, error) {
 		if record.Direction == transfer.Outgoing && record.State != transfer.Draft && record.State != transfer.Complete && record.State != transfer.Declined && record.Offer.Size > transfer.LargeFileBytes && !record.AllowRelayedLarge && !direct {
 			warning = "relay-approval"
 		}
-		values = append(values, transfer.Summary{ID: record.Offer.ID, Name: record.Offer.Name, MediaType: record.Offer.MediaType, Size: record.Offer.Size, Direction: record.Direction, State: record.State, TransferredBytes: progress, Warning: warning})
+		values = append(values, transfer.Summary{ID: record.Offer.ID, Name: record.Offer.Name, MediaType: record.Offer.MediaType, Size: record.Offer.Size, Direction: record.Direction, State: record.State, TransferredBytes: progress, Warning: warning, RecordedAt: transfer.RecordedAtText(record)})
 	}
 	return values, nil
 }
@@ -192,6 +192,38 @@ func (r *Registry) WithdrawTransfer(contactID, id string) error {
 		r.MetadataChanged(contactID)
 	}
 	return err
+}
+
+// RemoveTransfer is local deletion, including offline or text-only contacts.
+// Keep actor creation excluded while removing directly from an idle scope.
+func (r *Registry) RemoveTransfer(contactID, id string) error {
+	m, err := r.manager(contactID)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if m.refreshLocked() != nil || m.record.ID != contactID || m.conversation == nil || m.state == "failed" || !transfer.ValidID(id) {
+		m.mu.Unlock()
+		return ErrUnavailable
+	}
+	engine := m.transfers
+	if engine == nil {
+		scope, scopeErr := m.application.AttachmentStore(contactID)
+		if scopeErr == nil {
+			scopeErr = scope.Remove(id)
+		}
+		if scopeErr == nil {
+			m.bumpLocked()
+		}
+		m.mu.Unlock()
+		return scopeErr
+	}
+	m.mu.Unlock()
+	if err := engine.Remove(id); err != nil {
+		return err
+	}
+	r.MetadataChanged(contactID)
+	return nil
 }
 func (r *Registry) AllowTransferRelay(contactID, id string) error {
 	e, err := r.transferEngine(contactID)

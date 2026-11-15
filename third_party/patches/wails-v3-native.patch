@@ -636,9 +636,35 @@
  	C.enableDND((*C.GtkWidget)(w.webview), C.uintptr_t(w.parent.id))
  }
  
+@@ -1603,6 +1607,17 @@
+ 	return C.gboolean(0)
+ }
+ 
++//export onNativeFileDrag
++func onNativeFileDrag(active C.int, data C.uintptr_t) {
++	window, ok := globalApplication.Window.GetByID(uint(data))
++	if !ok || window == nil {
++		return
++	}
++	if w, ok := window.(*WebviewWindow); ok {
++		w.deliverNativeFileDrag(active != 0)
++	}
++}
++
+ //export onDropEnter
+ func onDropEnter(data C.uintptr_t) {
+ 	windowId := uint(data)
 --- a/pkg/application/linux_cgo.h
 +++ b/pkg/application/linux_cgo.h
-@@ -170,6 +170,7 @@
+@@ -71,6 +71,7 @@
+ extern void menuActionActivated(guint id);
+ extern void fileDialogCallback(guint request_id, char **files, int count, gboolean cancelled);
+ extern void alertDialogCallback(guint request_id, int button_index);
++extern void onNativeFileDrag(int, uintptr_t);
+ extern void onDropEnter(uintptr_t);
+ extern void onDropLeave(uintptr_t);
+ extern void onDropMotion(gint, gint, uintptr_t);
+@@ -170,6 +171,7 @@
  // ============================================================================
  
  void enableDND(GtkWidget *widget, uintptr_t winID);
@@ -864,7 +890,7 @@
 +}
 --- /dev/null
 +++ b/pkg/application/testdata/whatsup-native-uri/main.c
-@@ -0,0 +1,41 @@
+@@ -0,0 +1,53 @@
 +#include "../../whatsup_native_drop_linux.c"
 +
 +static unsigned int received;
@@ -883,7 +909,19 @@
 +    if (actual != expected || received != count) exit(2);
 +}
 +
++void onNativeFileDrag(int active, uintptr_t window) { (void)active; (void)window; }
++
 +int main(void) {
++    const char *uri_mimes[] = { "text/uri-list" };
++    const char *text_mimes[] = { "text/plain" };
++    GdkContentFormats *uri = gdk_content_formats_new(uri_mimes, 1);
++    GdkContentFormats *text = gdk_content_formats_new(text_mimes, 1);
++    if (!whatsup_native_drag_copy_supported(uri, GDK_ACTION_COPY) ||
++        whatsup_native_drag_copy_supported(uri, GDK_ACTION_MOVE) ||
++        whatsup_native_drag_copy_supported(text, GDK_ACTION_COPY) ||
++        whatsup_native_drag_copy_supported(NULL, GDK_ACTION_COPY)) exit(3);
++    gdk_content_formats_unref(uri);
++    gdk_content_formats_unref(text);
 +    const char *valid = "file:///tmp/synthetic.png\r\n";
 +    check(valid, strlen(valid), TRUE, 1);
 +    const char *comments = "#comment\r\nfile:///tmp/synthetic%20file.pdf\r\n";
@@ -903,12 +941,28 @@
 +    memset(oversized,'a',262145);
 +    check(oversized,262145,FALSE,0);
 +    g_free(oversized);
-+    puts("{\"cases\":8,\"passed\":true}");
++    puts("{\"cases\":12,\"passed\":true}");
 +    return 0;
 +}
 --- a/pkg/application/webview_window.go
 +++ b/pkg/application/webview_window.go
-@@ -499,6 +499,9 @@
+@@ -168,9 +168,12 @@
+ }
+ 
+ type WebviewWindow struct {
+-	options WebviewWindowOptions
+-	impl    webviewWindowImpl
+-	id      uint
++	nativeFileDragMu     sync.Mutex
++	nativeFileDragActive bool
++	nativeFileDragSerial uint64
++	options              WebviewWindowOptions
++	impl                 webviewWindowImpl
++	id                   uint
+ 
+ 	// notchWindow is set only by WindowManager.NewNotchWindow. It is kept
+ 	// outside WebviewWindowOptions so the lower-level constructor cannot create
+@@ -499,6 +502,9 @@
  }
  
  func (w *WebviewWindow) Run() {
@@ -918,7 +972,7 @@
  	if w.impl != nil {
  		return
  	}
-@@ -1946,6 +1949,10 @@
+@@ -1946,6 +1952,10 @@
  	if w.impl == nil || w.isDestroyed() {
  		return
  	}
@@ -929,7 +983,7 @@
  
  	filenamesJSON, err := json.Marshal(filenames)
  	if err != nil {
-@@ -1973,6 +1980,22 @@
+@@ -1973,6 +1983,22 @@
  	})
  }
  
@@ -965,7 +1019,7 @@
  		w.disableDND()
 --- a/pkg/application/webview_window_options.go
 +++ b/pkg/application/webview_window_options.go
-@@ -187,6 +187,11 @@
+@@ -187,6 +187,15 @@
  	// When enabled, files dragged from the OS onto elements with the
  	// `data-file-drop-target` attribute will trigger a FilesDropped event.
  	EnableFileDrop bool
@@ -974,6 +1028,10 @@
 +	// It is mutually exclusive with EnableFileDrop. The callback runs on the UI
 +	// thread and must only enqueue work. Paths never enter browser DOM objects.
 +	NativeFileDropHandler func(paths []string) `json:"-"`
++	// NativeFileDragHandler receives only native copy-format presence and a
++	// per-window serial. It never receives or reads file names or contents.
++	// NativeFileDropHandler is required; this callback grants no drop authority.
++	NativeFileDragHandler func(active bool, serial uint64) `json:"-"`
  
  	// Permissions controls how capability requests (camera, microphone, …)
  	// from the web content are handled, per PermissionType. Unset entries use
@@ -1359,8 +1417,101 @@
 +	}
 +}
 --- /dev/null
++++ b/pkg/application/whatsup_native_drag.go
+@@ -0,0 +1,34 @@
++package application
++
++// The serial remains exactly representable by the renderer. Reserve the last
++// value for an inactive retirement, never wrap back to a live old generation.
++const whatsUpNativeDragLastSerial uint64 = 1<<53 - 1
++
++func (w *WebviewWindow) deliverNativeFileDrag(active bool) {
++	w.updateNativeFileDrag(active, false)
++}
++
++// ResetNativeFileDrag retires queued native hints without reading OS drag data
++// or waiting on the native UI thread. Actual drop permission is unchanged.
++func (w *WebviewWindow) ResetNativeFileDrag() {
++	w.updateNativeFileDrag(false, true)
++}
++
++func (w *WebviewWindow) updateNativeFileDrag(active, reset bool) {
++	if w == nil || w.isDestroyed() || w.options.NativeFileDropHandler == nil || w.options.NativeFileDragHandler == nil {
++		return
++	}
++	w.nativeFileDragMu.Lock()
++	if w.nativeFileDragSerial >= whatsUpNativeDragLastSerial || !reset && w.nativeFileDragActive == active {
++		w.nativeFileDragMu.Unlock()
++		return
++	}
++	w.nativeFileDragSerial++
++	if w.nativeFileDragSerial == whatsUpNativeDragLastSerial {
++		active = false
++	}
++	w.nativeFileDragActive = active
++	serial := w.nativeFileDragSerial
++	w.nativeFileDragMu.Unlock()
++	w.options.NativeFileDragHandler(active, serial)
++}
+--- /dev/null
++++ b/pkg/application/whatsup_native_drag_test.go
+@@ -0,0 +1,53 @@
++package application
++
++import "testing"
++
++func TestWhatsUpNativeDragHintsAreScalarDeduplicatedAndRetired(t *testing.T) {
++	type hint struct {
++		active bool
++		serial uint64
++	}
++	var got []hint
++	drops := 0
++	w := &WebviewWindow{options: WebviewWindowOptions{NativeFileDropHandler: func([]string) { drops++ }, NativeFileDragHandler: func(active bool, serial uint64) { got = append(got, hint{active, serial}) }}}
++	w.deliverNativeFileDrag(false)
++	w.deliverNativeFileDrag(true)
++	for range 1000 {
++		w.deliverNativeFileDrag(true)
++	}
++	w.ResetNativeFileDrag()
++	w.deliverNativeFileDrag(false)
++	w.deliverNativeFileDrag(true)
++	w.deliverNativeFileDrag(false)
++	if len(got) != 4 || got[0] != (hint{true, 1}) || got[1] != (hint{false, 2}) || got[2] != (hint{true, 3}) || got[3] != (hint{false, 4}) || drops != 0 {
++		t.Fatal("hover read/delivered files or escaped scalar transition bounds")
++	}
++	w.destroyed = true
++	w.deliverNativeFileDrag(true)
++	if len(got) != 4 {
++		t.Fatal("destroyed window emitted a stale native hint")
++	}
++}
++
++func TestWhatsUpNativeDragRequiresPrivateDropModeAndNeverWraps(t *testing.T) {
++	called := 0
++	w := &WebviewWindow{options: WebviewWindowOptions{NativeFileDragHandler: func(bool, uint64) { called++ }}}
++	w.deliverNativeFileDrag(true)
++	if called != 0 {
++		t.Fatal("browser drop mode exposed native hints")
++	}
++	w.options.NativeFileDropHandler = func([]string) { t.Fatal("hover staged a file") }
++	w.nativeFileDragSerial = whatsUpNativeDragLastSerial - 1
++	w.options.NativeFileDragHandler = func(active bool, serial uint64) {
++		called++
++		if active || serial != whatsUpNativeDragLastSerial {
++			t.Fatal("exhausted serial was reused for an active hint")
++		}
++	}
++	w.deliverNativeFileDrag(true)
++	w.ResetNativeFileDrag()
++	w.deliverNativeFileDrag(true)
++	if called != 1 {
++		t.Fatal("serial exhaustion did not retire the hint stream")
++	}
++}
+--- /dev/null
 +++ b/pkg/application/whatsup_native_drop_linux.c
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,151 @@
 +//go:build linux && !android && !gtk3 && !purego && !server
 +
 +#include "linux_cgo.h"
@@ -1467,15 +1618,27 @@
 +    g_input_stream_read_bytes_async(state->stream, 16u << 10, G_PRIORITY_DEFAULT, state->cancel, whatsup_native_drop_read, state);
 +}
 +
++static gboolean whatsup_native_drag_copy_supported(GdkContentFormats *formats, GdkDragAction actions) {
++    return (actions & GDK_ACTION_COPY) && formats != NULL && gdk_content_formats_contain_mime_type(formats, "text/uri-list");
++}
++
 +static gboolean whatsup_native_drop_accept(GtkDropTargetAsync *target, GdkDrop *drop, gpointer data) { return TRUE; }
 +static GdkDragAction whatsup_native_drop_enter(GtkDropTargetAsync *target, GdkDrop *drop, double x, double y, gpointer data) {
 +    GdkDragAction actions = gdk_drop_get_actions(drop);
++    GdkContentFormats *formats = gdk_drop_get_formats(drop);
++    gboolean active = whatsup_native_drag_copy_supported(formats, actions);
++    onNativeFileDrag(active ? 1 : 0, (uintptr_t)data);
 +    if (actions & GDK_ACTION_COPY) return GDK_ACTION_COPY;
 +    if (actions & GDK_ACTION_MOVE) return GDK_ACTION_MOVE;
 +    if (actions & GDK_ACTION_LINK) return GDK_ACTION_LINK;
 +    return actions & GDK_ACTION_ASK;
 +}
++static void whatsup_native_drop_leave(GtkDropTargetAsync *target, GdkDrop *drop, gpointer data) {
++    onNativeFileDrag(0, (uintptr_t)data);
++}
++
 +static gboolean whatsup_native_drop_received(GtkDropTargetAsync *target, GdkDrop *drop, double x, double y, gpointer data) {
++    onNativeFileDrag(0, (uintptr_t)data);
 +    // Consume unsupported actions/formats too; they must not fall through.
 +    if (whatsup_native_drop_pending >= 8 || !(gdk_drop_get_actions(drop) & GDK_ACTION_COPY)) { gdk_drop_finish(drop, 0); return TRUE; }
 +    whatsup_native_drop_pending++;
@@ -1496,6 +1659,7 @@
 +    g_signal_connect(target, "accept", G_CALLBACK(whatsup_native_drop_accept), (gpointer)winID);
 +    g_signal_connect(target, "drag-enter", G_CALLBACK(whatsup_native_drop_enter), (gpointer)winID);
 +    g_signal_connect(target, "drag-motion", G_CALLBACK(whatsup_native_drop_enter), (gpointer)winID);
++    g_signal_connect(target, "drag-leave", G_CALLBACK(whatsup_native_drop_leave), (gpointer)winID);
 +    g_signal_connect(target, "drop", G_CALLBACK(whatsup_native_drop_received), (gpointer)winID);
 +    gtk_widget_add_controller(window, GTK_EVENT_CONTROLLER(target));
 +}
@@ -1534,13 +1698,13 @@
 +		t.Fatalf("native URI probe compile: %v\n%s", err, output)
 +	}
 +	output, err := exec.CommandContext(ctx, binary).CombinedOutput()
-+	if err != nil || strings.TrimSpace(string(output)) != `{"cases":8,"passed":true}` {
++	if err != nil || strings.TrimSpace(string(output)) != `{"cases":12,"passed":true}` {
 +		t.Fatalf("native URI bounds/local-only probe failed: %v", err)
 +	}
 +}
 --- /dev/null
 +++ b/pkg/application/whatsup_native_drop_windows.go
-@@ -0,0 +1,216 @@
+@@ -0,0 +1,223 @@
 +//go:build windows && !server && (amd64 || arm64)
 +
 +package application
@@ -1626,6 +1790,7 @@
 +		return
 +	}
 +	d := w.nativeDrop
++	w.parent.ResetNativeFileDrag()
 +	w.nativeDrop = nil
 +	_, _, _ = nativeDropRevoke.Call(uintptr(w.hwnd))
 +	nativeDropRelease(d.native)
@@ -1687,6 +1852,7 @@
 +		return 0x80004003
 +	}
 +	d.accepted = nativeDropSupports(data)
++	d.window.parent.deliverNativeFileDrag(d.accepted && *(*uint32)(unsafe.Pointer(effect))&1 != 0)
 +	if d.accepted {
 +		*(*uint32)(unsafe.Pointer(effect)) &= 1
 +	} else {
@@ -1699,6 +1865,7 @@
 +	if effect == 0 || d == nil {
 +		return 0x80004003
 +	}
++	d.window.parent.deliverNativeFileDrag(d.accepted && *(*uint32)(unsafe.Pointer(effect))&1 != 0)
 +	if d.accepted {
 +		*(*uint32)(unsafe.Pointer(effect)) &= 1
 +	} else {
@@ -1709,10 +1876,14 @@
 +func nativeDropLeave(this uintptr) uintptr {
 +	if d := nativeDropState(this); d != nil {
 +		d.accepted = false
++		d.window.parent.deliverNativeFileDrag(false)
 +	}
 +	return 0
 +}
 +func nativeDropDrop(this, data, key, point, effect uintptr) uintptr {
++	if d := nativeDropState(this); d != nil {
++		d.window.parent.ResetNativeFileDrag()
++	}
 +	if effect == 0 {
 +		return 0x80004003
 +	}
@@ -1759,7 +1930,7 @@
 +}
 --- /dev/null
 +++ b/pkg/application/whatsup_native_drop_windows_test.go
-@@ -0,0 +1,106 @@
+@@ -0,0 +1,143 @@
 +//go:build windows && !server && (amd64 || arm64)
 +
 +package application
@@ -1775,6 +1946,7 @@
 +	vtable    *[12]uintptr
 +	handle    uintptr
 +	supported bool
++	reads     int
 +}
 +
 +var whatsUpDropFixtureTable = [12]uintptr{0, 0, 0, windows.NewCallback(whatsUpDropFixtureData), 0, windows.NewCallback(whatsUpDropFixtureQuery)}
@@ -1792,6 +1964,7 @@
 +		return 0x80040064
 +	}
 +	object := (*whatsUpDropFixture)(unsafe.Pointer(this))
++	object.reads++
 +	*(*nativeDropMedium)(unsafe.Pointer(out)) = nativeDropMedium{kind: 1, handle: object.handle}
 +	object.handle = 0
 +	return 0
@@ -1866,6 +2039,41 @@
 +		}
 +	}
 +}
++
++func TestWhatsUpNativeWindowsDragUsesFormatOnlyAndClearsOnLeaveDrop(t *testing.T) {
++	var hints []bool
++	dropped := 0
++	parent := &WebviewWindow{options: WebviewWindowOptions{NativeFileDropHandler: func([]string) { dropped++ }, NativeFileDragHandler: func(active bool, _ uint64) { hints = append(hints, active) }}}
++	object := &whatsUpDropFixture{vtable: &whatsUpDropFixtureTable, supported: true}
++	native := &windowsWebviewWindow{parent: parent}
++	memory, err := windows.LocalAlloc(0, uint32(unsafe.Sizeof(uintptr(0))))
++	if err != nil {
++		t.Fatal(err)
++	}
++	address := uintptr(memory)
++	*(*uintptr)(unsafe.Pointer(address)) = uintptr(unsafe.Pointer(&nativeDropVTable))
++	state := &whatsUpNativeDrop{native: address, window: native}
++	state.refs.Store(1)
++	nativeDropObjects.Lock()
++	nativeDropObjects.entries[address] = state
++	nativeDropObjects.Unlock()
++	defer nativeDropRelease(address)
++	var effect uint32 = 1
++	if nativeDropEnter(address, uintptr(unsafe.Pointer(object)), 0, 0, uintptr(unsafe.Pointer(&effect))) != 0 {
++		t.Fatal("native drag enter failed")
++	}
++	for range 1000 {
++		effect = 1
++		nativeDropOver(address, 0, 0, uintptr(unsafe.Pointer(&effect)))
++	}
++	nativeDropLeave(address)
++	effect = 1
++	nativeDropEnter(address, uintptr(unsafe.Pointer(object)), 0, 0, uintptr(unsafe.Pointer(&effect)))
++	nativeDropDrop(address, 0, 0, 0, uintptr(unsafe.Pointer(&effect)))
++	if len(hints) != 4 || !hints[0] || hints[1] || !hints[2] || hints[3] || object.reads != 0 || dropped != 0 {
++		t.Fatal("hover read data, staged files, repeated motion, or retained stale state")
++	}
++}
 --- /dev/null
 +++ b/pkg/application/whatsup_native_windows_test.go
 @@ -0,0 +1,58 @@
@@ -1929,18 +2137,18 @@
 +}
 --- a/pkg/services/notifications/notifications_windows.go
 +++ b/pkg/services/notifications/notifications_windows.go
-@@ -46,6 +46,11 @@
+@@ -44,6 +44,11 @@
+ type NotificationPayload struct {
+ 	Action  string              `json:"action"`
  	Options NotificationOptions `json:"payload,omitempty"`
- }
- 
++}
++
 +type notificationActivationOptions struct {
 +	ID   string                 `json:"id"`
 +	Data map[string]interface{} `json:"data,omitempty"`
-+}
-+
+ }
+ 
  // Creates a new Notifications Service.
- func New() *NotificationService {
- 	notificationServiceOnce.Do(func() {
 @@ -568,9 +573,15 @@
  
  // encodePayload combines an action ID and user data into a single encoded string

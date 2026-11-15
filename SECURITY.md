@@ -1,6 +1,6 @@
 # Security information
 
-WhatsUp 0.0.15 is unsigned preview software, not a supported public release.
+WhatsUp 0.0.17 is unsigned preview software, not a supported public release.
 It has not undergone an independent security audit or certification. Do not
 rely on the preview for sensitive communication.
 
@@ -107,6 +107,15 @@ Clear history cancels unfinished attachments while keeping the contact; queued
 text retains its delivery obligation. Forget removes one contact's local state
 and sends an authenticated removal notice when connected. Neither action erases
 a peer's copies, earlier exports, notification history, physical media or memory.
+Single-attachment deletion revokes its local media and saved-file handles and
+retires queued file writes. Encrypted terminal IDs/hashes remain for replay
+rejection, cancellation retries and completion receipts. It never deletes a
+previously exported file. Per-contact storage meters read authenticated logical
+quota counters; they do not report physical allocation or OS free space.
+Attachment timeline times are generated locally and stored inside encrypted
+records, not supplied by a peer or added to readable SQLite columns. Native
+drag highlighting sends only a boolean and revision; staging and file paths
+remain on the Go side and an actual drop does not send a file automatically.
 
 ## Desktop and disclosure boundaries
 

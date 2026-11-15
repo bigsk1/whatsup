@@ -11,12 +11,15 @@ if __name__ == "__main__" and not sys.flags.isolated:
 
 import argparse
 import ast
+import hashlib
 import json
 import os
 from pathlib import Path
 import stat
 import subprocess
 import tempfile
+
+MAX_ICON_BYTES = 4 * 1024 * 1024
 
 
 class LauncherError(Exception):
@@ -86,13 +89,64 @@ def install_entry(target: Path, content: str, mode: int) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
-def desktop_entry(software: bool, *, hidden: bool = False) -> str:
+def install_icon(data_directory: Path) -> tuple[Path, dict]:
+    # This is the reviewed build asset, not a caller-selected image or path.
+    source = Path(__file__).absolute().parent.parent / "build/appicon.png"
+    no_symlink_components(source)
+    info = source.lstat()
+    if not stat.S_ISREG(info.st_mode) or not 33 <= info.st_size <= MAX_ICON_BYTES:
+        raise LauncherError("The bundled application icon must be a bounded regular PNG")
+    descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+    with os.fdopen(descriptor, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        if (before.st_dev, before.st_ino, before.st_size) != (info.st_dev, info.st_ino, info.st_size):
+            raise LauncherError("The bundled application icon changed while opening")
+        content = stream.read(MAX_ICON_BYTES + 1)
+        after = os.fstat(stream.fileno())
+    if len(content) != before.st_size or len(content) > MAX_ICON_BYTES or (
+        before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+    ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+        raise LauncherError("The bundled application icon changed while reading")
+    if content[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" or content[-12:] != b"\x00\x00\x00\x00IEND\xaeB`\x82":
+        raise LauncherError("The bundled application icon is not a complete PNG")
+    width, height = int.from_bytes(content[16:20], "big"), int.from_bytes(content[20:24], "big")
+    if not 0 < width <= 4096 or not 0 < height <= 4096:
+        raise LauncherError("The bundled application icon dimensions exceed the supported bound")
+    icons = data_directory / "icons"
+    owned_directory(icons, create=True)
+    target = icons / "whatsup-development.png"
+    regular_target(target)
+    descriptor, temporary = tempfile.mkstemp(prefix=".whatsup-icon-", suffix=".png", dir=icons)
+    temporary_path = Path(temporary)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+            os.fchmod(output.fileno(), 0o644)
+        regular_target(target)
+        os.replace(temporary_path, target)
+        directory_fd = os.open(icons, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        if target.read_bytes() != content:
+            raise LauncherError("The installed application icon differs from the bundled bytes")
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return target, {"path": str(target), "sha256": hashlib.sha256(content).hexdigest(),
+                    "size": len(content), "width": width, "height": height}
+
+
+def desktop_entry(software: bool, icon: Path, *, hidden: bool = False) -> str:
     options = " --software-rendering" if software else ""
+    icon_value = str(icon).replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
     return (
         "[Desktop Entry]\nVersion=1.0\nName=WhatsUp (Development)\n"
         "Comment=Private WhatsUp native startup and storage review\n"
         f"Exec=/opt/whatsup-development/whatsup{options}\n"
-        "TryExec=/opt/whatsup-development/whatsup\nIcon=internet-chat\n"
+        f"TryExec=/opt/whatsup-development/whatsup\nIcon={icon_value}\n"
         "Terminal=false\nType=Application\nCategories=Network;InstantMessaging;\n"
         "StartupWMClass=whatsup\n"
         + ("NoDisplay=true\n" if hidden else "")
@@ -173,10 +227,11 @@ def main() -> int:
     result = {"menuLauncherInstalled": False, "compatibilityAliasInstalled": False,
               "desktopShortcutInstalled": False, "desktopShortcutTrusted": False,
               "dockPinned": False, "appLaunched": False, "rootChanged": False, "warnings": []}
-    content = desktop_entry(options.software_rendering)
+    icon, result["icon"] = install_icon(data)
+    content = desktop_entry(options.software_rendering, icon)
     install_entry(applications / "whatsup.desktop", content, 0o644)
     result["menuLauncherInstalled"] = True
-    install_entry(applications / "whatsup-development.desktop", desktop_entry(options.software_rendering, hidden=True), 0o644)
+    install_entry(applications / "whatsup-development.desktop", desktop_entry(options.software_rendering, icon, hidden=True), 0o644)
     result["compatibilityAliasInstalled"] = True
     for enabled, operation in [(options.desktop_shortcut, lambda: install_desktop_shortcut(content, result)),
                                (options.pin_to_dock, lambda: pin_to_dock(result))]:

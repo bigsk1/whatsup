@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -115,13 +116,16 @@ type Record struct {
 	// with local cancellation; it never restores local file-read authority.
 	PendingWithdrawal bool
 	PeerCompleted     bool
+	// RecordedAt is a local event time, never supplied by the peer or sent in
+	// an offer. omitzero preserves canonical encrypted records from older builds.
+	RecordedAt time.Time `json:"RecordedAt,omitzero"`
 }
 
 func (Record) String() string   { return "[private WhatsUp attachment record]" }
 func (Record) GoString() string { return "[private WhatsUp attachment record]" }
 
 func validRecord(r Record) bool {
-	if r.Offer.Validate() != nil || !checkpoint(r.Offer, r.NextChunk) || (r.PendingWithdrawal || r.PeerCompleted) && r.State != Declined || r.PendingWithdrawal && r.PeerCompleted {
+	if r.Offer.Validate() != nil || !ValidRecordedAt(r.RecordedAt) || !checkpoint(r.Offer, r.NextChunk) || (r.PendingWithdrawal || r.PeerCompleted) && r.State != Declined || r.PendingWithdrawal && r.PeerCompleted {
 		return false
 	}
 	if r.Direction == Incoming {
@@ -179,4 +183,5 @@ type Summary struct {
 	State            string `json:"state"`
 	TransferredBytes uint64 `json:"transferredBytes"`
 	Warning          string `json:"warning"`
+	RecordedAt       string `json:"recordedAt"`
 }

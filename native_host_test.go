@@ -245,9 +245,9 @@ func TestNativeStartupReconcilesOwnedEntryWithoutEnablingDefaults(t *testing.T) 
 	}
 }
 
-func TestNativeLifecycleExposesOnlyLifecycleAndOpaqueActivation(t *testing.T) {
+func TestNativeLifecycleExposesOnlyLifecycleAndOpaqueHints(t *testing.T) {
 	kind := reflect.TypeOf(&nativeLifecycle{})
-	if kind.NumMethod() != 3 || kind.Method(0).Name != "ServiceShutdown" || kind.Method(1).Name != "ServiceStartup" || kind.Method(2).Name != "TakeNotificationActivation" {
+	if kind.NumMethod() != 4 || kind.Method(0).Name != "ServiceShutdown" || kind.Method(1).Name != "ServiceStartup" || kind.Method(2).Name != "TakeFileDragHint" || kind.Method(3).Name != "TakeNotificationActivation" {
 		t.Fatal("native operations escaped the narrow lifecycle boundary")
 	}
 }

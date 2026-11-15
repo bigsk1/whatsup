@@ -527,7 +527,7 @@ test('Connect keeps retrying until the saved contact arrives without another inv
   await page.goto('/');
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(
-    page.getByText('Waiting for your contact.', { exact: false }),
+    page.getByText('Waiting for their device.', { exact: false }),
   ).toBeVisible();
   expect(
     calls.find((call) => call.operation === 'ConnectContact')?.args,
@@ -573,7 +573,7 @@ test('an unfinished saved record cannot reveal history or send before fresh auth
   );
   await page.getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(
-    page.getByText('Waiting for your contact.', { exact: false }),
+    page.getByText('Waiting for their device.', { exact: false }),
   ).toBeVisible();
   state.conversation = approved({
     state: 'connected',
@@ -727,7 +727,7 @@ for (const entry of ['header', 'settings'] as const) {
         .getByRole('button', { name: 'Back to chats', exact: true })
         .click();
     await expect(page.locator('.conversation-header')).toContainText(
-      'Connecting',
+      'Waiting for their device',
     );
     await expect
       .poll(
@@ -1197,7 +1197,7 @@ test('an identity verification failure stops connecting without replacing or rea
   );
   await page.goto('/');
   await expect(
-    page.getByText('Waiting for your contact.', { exact: false }),
+    page.getByText('Waiting for their device.', { exact: false }),
   ).toBeVisible();
   state.conversation = approved({
     state: 'identity-changed',

@@ -86,6 +86,8 @@ type nativeHost struct {
 	activation        string
 	activationSink    func(NativeNotificationHint)
 	deliver           func(context.Context, messaging.Incoming) error
+	drag              *nativeDragPublisher
+	dragSink          func(NativeFileDragHint)
 }
 
 func newNativeTasks(record func(diagnostics.Event)) *nativeHost {
@@ -96,6 +98,11 @@ func newNativeTasks(record func(diagnostics.Event)) *nativeHost {
 	h := &nativeHost{record: record, life: life, cancel: cancel,
 		incoming: make(chan messaging.Incoming, 64), incomingDone: make(chan struct{})}
 	h.closeToTray.Store(preferences.Defaults().CloseToTray)
+	h.drag = newNativeDragPublisher(life, func(hint NativeFileDragHint) {
+		if h.dragSink != nil {
+			h.dragSink(hint)
+		}
+	})
 	go h.incomingLoop()
 	return h
 }
@@ -116,8 +123,12 @@ func newNativeHost(app *application.App, backend *desktop.Service, record func(d
 	h.app, h.backend, h.entry = app, backend, entry
 	h.visibilitySink = func(eligible bool) { app.Event.Emit(nativeWindowVisibleEvent, eligible) }
 	h.activationSink = func(hint NativeNotificationHint) { app.Event.Emit(nativeNotificationActivateEvent, hint) }
+	h.dragSink = func(hint NativeFileDragHint) { app.Event.Emit(nativeFileDragEvent, hint) }
 	h.unlock, h.lock = backend.UnlockStorage, backend.LockStorage
 	h.emitStorage = func(state string) {
+		if state != "unlocked" {
+			h.resetNativeDrag()
+		}
 		if state != "locked" && state != "unlocked" {
 			state = "unavailable"
 		}
@@ -238,6 +249,7 @@ func (h *nativeHost) attachWindow(window *application.WebviewWindow) {
 		h.setVisible(window.IsVisible() && !window.IsMinimised())
 	})
 	window.OnWindowEvent(events.Common.WindowLostFocus, func(*application.WindowEvent) {
+		h.resetNativeDrag()
 		h.focused.Store(false)
 		h.publishReadEligibility()
 	})
@@ -250,6 +262,9 @@ func (h *nativeHost) attachWindow(window *application.WebviewWindow) {
 }
 
 func (h *nativeHost) setVisible(visible bool) {
+	if !visible {
+		h.resetNativeDrag()
+	}
 	h.visible.Store(visible)
 	h.publishReadEligibility()
 }
@@ -282,6 +297,7 @@ func (h *nativeHost) show() {
 }
 
 func (h *nativeHost) hide() {
+	h.resetNativeDrag()
 	if h.life.Err() != nil {
 		return
 	}
@@ -505,6 +521,7 @@ func (h *nativeHost) stopStartup() {
 }
 
 func (h *nativeHost) enqueueOffline() {
+	h.resetNativeDrag()
 	// Retire clicks queued before the explicit offline action. Later clicks may
 	// request a window/selection, but cannot open storage or start networking.
 	h.takeNotificationActivation()
@@ -535,6 +552,8 @@ func (h *nativeHost) stopTasks() {
 		return
 	}
 	h.stopOnce.Do(func() {
+		h.resetNativeDrag()
+		h.drag.close()
 		h.actionMu.Lock()
 		h.stopped = true
 		h.cancel()
@@ -546,9 +565,19 @@ func (h *nativeHost) stopTasks() {
 	})
 }
 
-// nativeLifecycle exposes lifecycle hooks and one opaque selection request.
+// nativeLifecycle exposes lifecycle hooks and scalar display/selection hints.
 // It never exposes notification delivery or native-window operations.
 type nativeLifecycle struct{ host *nativeHost }
+
+// TakeFileDragHint reads the latest display-only native drag state. Zero arms
+// notifications after listener installation; an exact emitted revision also
+// acknowledges that notification. It grants no file access or staging authority.
+func (n *nativeLifecycle) TakeFileDragHint(ackRevision uint64) NativeFileDragHint {
+	if n == nil || n.host == nil {
+		return NativeFileDragHint{}
+	}
+	return n.host.drag.take(ackRevision)
+}
 
 // TakeNotificationActivation atomically consumes a pending notification click.
 // It grants no access to storage, contacts or message content.

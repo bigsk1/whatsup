@@ -89,6 +89,14 @@ export function DeclineRelayChange(id: string, requestID: string): $CancellableP
     return $Call.ByID(3699637706, id, requestID);
 }
 
+/**
+ * DeleteAttachment revokes this item's local media and saved-file handles.
+ * The exported file itself and the peer's copies are never deleted.
+ */
+export function DeleteAttachment(id: string, attachment: string): $CancellablePromise<void> {
+    return $Call.ByID(2190100743, id, attachment);
+}
+
 export function DeleteMessage(contactID: string, messageID: string): $CancellablePromise<messaging$0.Snapshot> {
     return $Call.ByID(122046625, contactID, messageID);
 }
@@ -133,6 +141,10 @@ export function GetAttachmentHistory(id: string, cursor: string): $CancellablePr
 
 export function GetAttachments(id: string): $CancellablePromise<$models.Attachments> {
     return $Call.ByID(1522039443, id);
+}
+
+export function GetContactStorage(contactID: string): $CancellablePromise<$models.ContactStorage> {
+    return $Call.ByID(2752863434, contactID);
 }
 
 export function GetContacts(): $CancellablePromise<messaging$0.ContactSummary[] | null> {

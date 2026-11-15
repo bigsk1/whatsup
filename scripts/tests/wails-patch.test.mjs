@@ -35,7 +35,7 @@ test('Wails source approval checks the whole tree and cannot be forged or waive 
   const directory = await fixture(t);
   const approved = verifyWailsPatch(directory);
   assert.equal(isVerifiedWailsPatch(approved), true);
-  assert.equal(approved.patchVersion, 2);
+  assert.equal(approved.patchVersion, 3);
   assert.equal(isVerifiedWailsPatch({ ...approved }), false);
   assert.equal(isVerifiedWailsPatch(ensureWailsPatch(directory, { executable: 'must-not-run-for-a-verified-existing-tree' })), true);
   const tailcat = verifyTailcatPatch(root, policy.reviewedGoPins);
@@ -48,7 +48,7 @@ test('Wails source approval checks the whole tree and cannot be forged or waive 
   assert.throws(() => assertToolBuildInfo(`${info}\n\t=>\t${target}\t(devel)`, wails, 'v3.1.0', graph, '1.27.4', [tailcat, approved]), /Installed tool.*replacement/);
 });
 
-async function upgradeFixture(t, { invalidModule = false } = {}) {
+async function upgradeFixture(t, { invalidModule = false, previousPatchVersion = 2 } = {}) {
   const directory = await fixture(t);
   const location = path.join(directory, target);
   const pristine = path.join(directory, 'pristine');
@@ -68,7 +68,7 @@ async function upgradeFixture(t, { invalidModule = false } = {}) {
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
   manifest.upstreamTree = tree(pristine);
   manifest.patchedTree = tree(candidate);
-  manifest.previousPatchedTrees = [{ patchVersion: 1, ...previous }];
+  manifest.previousPatchedTrees = [{ patchVersion: previousPatchVersion, ...previous }];
   manifest.patch.size = Buffer.byteLength(patch);
   manifest.patch.sha256 = createHash('sha256').update(patch).digest('hex');
   await writeFile(path.join(directory, manifest.patch.path), patch);
@@ -86,13 +86,15 @@ async function upgradeFixture(t, { invalidModule = false } = {}) {
 }
 
 test('setup stages an exact reviewed prior Wails tree upgrade and then remains frozen', async (t) => {
-  const value = await upgradeFixture(t);
-  assert.throws(() => verifyWailsPatch(value.directory), /changed or unsafe/);
-  assert.equal(ensureWailsPatch(value.directory, { spawn: value.spawn }).patchVersion, 2);
-  assert.equal(value.downloads(), 1);
-  assert.equal(await readFile(path.join(value.location, 'pkg/native.go'), 'utf8'), 'package application\n// reviewed synthetic\n');
-  ensureWailsPatch(value.directory, { spawn() { throw new Error('frozen setup must not download'); } });
-  await assert.rejects(() => readFile(path.join(value.directory, '.local/modules', `wails-v3-previous-${process.pid}`, 'go.mod')), /ENOENT/);
+  for (const previousPatchVersion of [1, 2]) {
+    const value = await upgradeFixture(t, { previousPatchVersion });
+    assert.throws(() => verifyWailsPatch(value.directory), /changed or unsafe/);
+    assert.equal(ensureWailsPatch(value.directory, { spawn: value.spawn }).patchVersion, 3);
+    assert.equal(value.downloads(), 1);
+    assert.equal(await readFile(path.join(value.location, 'pkg/native.go'), 'utf8'), 'package application\n// reviewed synthetic\n');
+    ensureWailsPatch(value.directory, { spawn() { throw new Error('frozen setup must not download'); } });
+    await assert.rejects(() => readFile(path.join(value.directory, '.local/modules', `wails-v3-previous-${process.pid}`, 'go.mod')), /ENOENT/);
+  }
 });
 
 test('setup never upgrades an unknown or concurrently changed Wails tree', async (t) => {

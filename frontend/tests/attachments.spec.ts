@@ -9,6 +9,7 @@ import {
   nativeHint,
   messagePage,
   serveDefaultAppPreferences,
+  fileDragTakeID,
 } from './contact-events';
 import type {
   AttachmentDraft,
@@ -69,6 +70,7 @@ async function desktop(
     hasMore: false,
     peer,
     protocol,
+    dragHint: { active: false, revision: 0 },
   };
   let draftSequence = 0;
   const nextDraftHandle = () =>
@@ -109,6 +111,10 @@ async function desktop(
     }),
   );
   await page.route('**/wails/runtime', async (route) => {
+    if (route.request().postDataJSON().args?.methodID === fileDragTakeID) {
+      await route.fulfill({ json: state.dragHint });
+      return;
+    }
     if (await serveDefaultAppPreferences(route)) return;
     const body = route.request().postDataJSON(),
       name = operations.get(body.args?.methodID),
@@ -219,6 +225,10 @@ async function desktop(
         break;
       case 'DeclineAttachment':
         state.items = [];
+        state.revision++;
+        break;
+      case 'DeleteAttachment':
+        state.items = state.items.filter((value) => value.id !== args[1]);
         state.revision++;
         break;
       case 'CancelAttachment':
@@ -857,6 +867,127 @@ test('a connected protocol-3 peer blocks file transfer while saved files and off
   await expect(
     page.getByRole('article', { name: 'Sent attachment' }),
   ).toContainText('queued');
+  expect(errors).toEqual([]);
+});
+
+test('single attachment deletion needs confirmation, removes only its local card and keeps the contact', async ({
+  page,
+}) => {
+  const { calls, errors } = await desktop(page, [
+    { ...item, state: 'complete', transferredBytes: item.size },
+  ]);
+  await expandAttachments(page);
+  await page
+    .getByRole('button', { name: 'Delete attachment…', exact: true })
+    .click();
+  const dialog = page.getByRole('dialog', {
+    name: 'Delete this attachment from WhatsUp?',
+    exact: true,
+  });
+  await expect(dialog).toContainText('Copies you saved elsewhere');
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  expect(calls.some((call) => call.name === 'DeleteAttachment')).toBe(false);
+  await page
+    .getByRole('button', { name: 'Delete attachment…', exact: true })
+    .click();
+  await dialog
+    .getByRole('button', { name: 'Delete from WhatsUp', exact: true })
+    .click();
+  await expect(dialog).not.toBeVisible();
+  await expect(
+    page.getByRole('article', { name: 'Received attachment' }),
+  ).toHaveCount(0);
+  expect(
+    calls
+      .filter((call) => call.name === 'DeleteAttachment')
+      .map((call) => call.args),
+  ).toEqual([[contactID, fileID]]);
+  await expect(
+    page.getByRole('button', { name: 'Go offline', exact: true }),
+  ).toBeVisible();
+  expect(calls.some((call) => call.name === 'ForgetContact')).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test('native drag hints highlight eligible chat and clear on leave, Settings and lock without selecting any path', async ({
+  page,
+}) => {
+  const { calls, state, errors } = await desktop(page);
+  const overlay = page.getByText('Drop files to prepare an attachment', {
+    exact: true,
+  });
+  state.dragHint = { active: true, revision: 1 };
+  await nativeHint(page, 'whatsup:file-drag', state.dragHint);
+  await expect(overlay).toBeVisible();
+  expect(
+    calls.some(
+      (call) =>
+        call.name === 'ChooseAttachment' || call.name === 'SendAttachment',
+    ),
+  ).toBe(false);
+  state.dragHint = { active: false, revision: 2 };
+  await nativeHint(page, 'whatsup:file-drag', state.dragHint);
+  await expect(overlay).toHaveCount(0);
+  await nativeHint(page, 'whatsup:file-drag', { active: true, revision: 1 });
+  await expect(overlay).toHaveCount(0);
+  await page
+    .getByRole('button', { name: 'Open settings', exact: true })
+    .click();
+  state.dragHint = { active: true, revision: 3 };
+  await nativeHint(page, 'whatsup:file-drag', state.dragHint);
+  await expect(overlay).toHaveCount(0);
+  await page
+    .getByRole('button', { name: 'Back to chats', exact: true })
+    .click();
+  state.dragHint = { active: true, revision: 4 };
+  await nativeHint(page, 'whatsup:file-drag', state.dragHint);
+  await expect(overlay).toBeVisible();
+  state.storage = 'locked';
+  await nativeHint(page, 'whatsup:storage-changed', { state: 'locked' });
+  await expect(overlay).toHaveCount(0);
+  state.dragHint = { active: true, revision: 5 };
+  await nativeHint(page, 'whatsup:file-drag', state.dragHint);
+  await expect(overlay).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('completed media appears inside the conversation with its local timestamp and click-only video', async ({
+  page,
+}) => {
+  const recordedAt = '2026-11-14T12:01:00.123456789Z';
+  const { calls, errors } = await desktop(page, [
+    {
+      ...item,
+      state: 'complete',
+      mediaType: 'video/mp4',
+      recordedAt,
+      transferredBytes: item.size,
+    },
+  ]);
+  const timeline = page.getByRole('log', { name: 'Messages', exact: true });
+  await expect(
+    timeline.getByRole('article', { name: 'Received attachment' }),
+  ).toBeVisible();
+  await expect(timeline.locator('time')).toHaveAttribute(
+    'datetime',
+    recordedAt,
+  );
+  await expect(timeline.locator('video')).toHaveCount(0);
+  expect(calls.some((call) => call.name === 'PreviewAttachment')).toBe(false);
+  await timeline
+    .getByRole('button', { name: 'Play video', exact: true })
+    .click();
+  await expect(timeline.locator('video')).toHaveAttribute(
+    'src',
+    '/local-media/' + token,
+  );
+  await expect(timeline.locator('video')).not.toHaveAttribute('autoplay');
+  await expandAttachments(page);
+  await expect(
+    page
+      .getByRole('region', { name: 'Attachments', exact: true })
+      .getByRole('article', { name: 'Received attachment' }),
+  ).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 

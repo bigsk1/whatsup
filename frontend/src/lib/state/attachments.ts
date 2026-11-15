@@ -21,6 +21,7 @@ export interface AttachmentItem {
   transferredBytes: number;
   previewURL: string;
   warning: string;
+  recordedAt?: string;
 }
 export interface AttachmentSnapshot {
   contactID: string;
@@ -55,6 +56,21 @@ const handle = (value: unknown): value is string =>
   typeof value === 'string' && /^[A-Za-z0-9_-]{32}$/.test(value);
 export const mediaURL = (value: unknown): value is string =>
   typeof value === 'string' && /^\/local-media\/[A-Za-z0-9_-]{32}$/.test(value);
+export function validAttachmentTime(value: unknown): value is string {
+  if (value === '') return true;
+  if (
+    typeof value !== 'string' ||
+    value.length > 30 ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(value)
+  )
+    return false;
+  const parsed = Date.parse(value);
+  return (
+    Number.isFinite(parsed) &&
+    parsed >= 0 &&
+    new Date(parsed).toISOString().slice(0, 19) === value.slice(0, 19)
+  );
+}
 function metadata(value: Record<string, unknown>) {
   if (
     typeof value.name !== 'string' ||
@@ -116,7 +132,11 @@ export function validateAttachments(
     const record = object(input);
     metadata(record);
     if (
-      Object.keys(record).length !== 9 ||
+      !(
+        (Object.keys(record).length === 9 && !('recordedAt' in record)) ||
+        (Object.keys(record).length === 10 && 'recordedAt' in record)
+      ) ||
+      ('recordedAt' in record && !validAttachmentTime(record.recordedAt)) ||
       !validID(record.id) ||
       !['incoming', 'outgoing'].includes(record.direction as string) ||
       ![
@@ -152,6 +172,9 @@ export function validateAttachments(
       transferredBytes: record.transferredBytes as number,
       previewURL: record.previewURL as string,
       warning: record.warning as string,
+      ...('recordedAt' in record
+        ? { recordedAt: record.recordedAt as string }
+        : {}),
     };
   });
   const drafts = value.drafts.map(validateAttachmentDraft);
@@ -212,6 +235,9 @@ const bridge: AttachmentBridge = {
       case 'withdraw':
         await native.WithdrawAttachment(id, file);
         break;
+      case 'delete':
+        await native.DeleteAttachment(id, file);
+        break;
       case 'resume':
         await native.ResumeAttachment(id, file);
         break;
@@ -254,6 +280,7 @@ const empty = () => ({
   videos: {} as Record<string, string>,
   image: null as { id: string; name: string; url: string } | null,
   saved: {} as Record<string, string>,
+  deleteTarget: null as { id: string; name: string } | null,
 });
 export function createAttachments(api: AttachmentBridge = bridge) {
   let wireAllowed = true,
@@ -269,6 +296,7 @@ export function createAttachments(api: AttachmentBridge = bridge) {
     stop: (() => void) | undefined,
     timer: ReturnType<typeof setTimeout> | undefined;
   let imageGeneration = 0;
+  const hidden = new Set<string>();
   let loading = false,
     again = false;
   let desiredTarget = '',
@@ -288,6 +316,7 @@ export function createAttachments(api: AttachmentBridge = bridge) {
   }
   function stopRequests() {
     generation++;
+    hidden.clear();
     if (timer) clearTimeout(timer);
     timer = undefined;
     loading = false;
@@ -310,7 +339,7 @@ export function createAttachments(api: AttachmentBridge = bridge) {
       if (value.revision >= revision) {
         revision = value.revision;
         publish({
-          items: value.items,
+          items: value.items.filter((item) => !hidden.has(item.id)),
           drafts: value.drafts,
           autoAcceptImages: value.autoAcceptImages,
           nextCursor: value.nextCursor,
@@ -413,9 +442,10 @@ export function createAttachments(api: AttachmentBridge = bridge) {
           return;
         const keep = new Map(current.items.map((item) => [item.id, item]));
         for (const item of page.items)
-          if (!keep.has(item.id)) keep.set(item.id, item);
+          if (!hidden.has(item.id) && !keep.has(item.id))
+            keep.set(item.id, item);
         publish({
-          items: [...keep.values()].slice(-512),
+          items: [...keep.values()].slice(0, 512),
           nextCursor: page.nextCursor,
           hasMore: page.hasMore,
         });
@@ -479,6 +509,49 @@ export function createAttachments(api: AttachmentBridge = bridge) {
         return Promise.resolve();
       }
       return action((id) => api.decision(id, item.id, kind));
+    },
+    requestDelete(item: AttachmentItem) {
+      if (
+        current.busy ||
+        !validID(current.contactID) ||
+        !current.items.some((stored) => stored.id === item.id)
+      )
+        return;
+      publish({ deleteTarget: { id: item.id, name: item.name }, notice: '' });
+    },
+    cancelDelete() {
+      if (!current.busy) publish({ deleteTarget: null, notice: '' });
+    },
+    confirmDelete() {
+      const target = current.deleteTarget;
+      if (
+        !target ||
+        current.busy ||
+        !current.items.some((item) => item.id === target.id)
+      )
+        return Promise.resolve();
+      stopRequests();
+      imageGeneration++;
+      const epoch = generation;
+      const videos = { ...current.videos },
+        saved = { ...current.saved };
+      delete videos[target.id];
+      delete saved[target.id];
+      publish({
+        loading: false,
+        videos,
+        saved,
+        ...(current.image?.id === target.id ? { image: null } : {}),
+      });
+      return action(async (id) => {
+        await api.decision(id, target.id, 'delete');
+        if (epoch !== generation || id !== current.contactID) return;
+        hidden.add(target.id);
+        publish({
+          deleteTarget: null,
+          items: current.items.filter((item) => item.id !== target.id),
+        });
+      });
     },
     setAutoAccept(enabled: boolean) {
       return action((id) => api.autoAccept(id, enabled));

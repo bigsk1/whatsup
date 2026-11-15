@@ -1,32 +1,19 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import {
-    ArrowUpRight,
-    Check,
-    ChevronDown,
-    CircleHelp,
-    CirclePlus,
-    Info,
-    LockKeyhole,
-    MessageCircle,
-    MoreHorizontal,
-    Paperclip,
-    Search,
-    Send,
-    Settings,
-    Shield,
-    Smile,
-    Users,
-    Wifi,
-    WifiOff,
-    X,
-  } from '@lucide/svelte';
+  import Icon from './lib/icons/Icon.svelte';
+  import Logo from './lib/brand/Logo.svelte';
+  import Avatar from './lib/components/Avatar.svelte';
+  import EmojiPicker from './lib/components/EmojiPicker.svelte';
+  import { presenceTone, type Tone } from './lib/presence';
   import SettingsDialog from './lib/components/SettingsDialog.svelte';
   import PairingDialog from './lib/components/PairingDialog.svelte';
   import InvitationDialog from './lib/components/InvitationDialog.svelte';
   import ForgetContactDialog from './lib/components/ForgetContactDialog.svelte';
   import HistoryDialog from './lib/components/HistoryDialog.svelte';
   import ImageViewer from './lib/components/ImageViewer.svelte';
+  import DeleteAttachmentDialog from './lib/components/DeleteAttachmentDialog.svelte';
+  import InlineAttachment from './lib/components/InlineAttachment.svelte';
+  import { conversationTimeline } from './lib/state/timeline';
   import { createNotificationActivation } from './lib/state/notification-activation';
   import { createHistoryActions } from './lib/state/history';
   import { createAppPreferences } from './lib/state/preferences';
@@ -56,6 +43,8 @@
     type Preferences,
   } from './lib/themes/preferences';
   import { createProfile } from './lib/state/profile';
+  import { createContactStorage } from './lib/state/storage';
+  import { createFileDrag } from './lib/state/file-drag';
   import type { LocalProfile } from './lib/profile';
 
   const appPreferences = createAppPreferences();
@@ -116,6 +105,10 @@
   const contacts = createContacts();
   const attachments = createAttachments();
   const attachmentsState = attachments.state;
+  const contactStorage = createContactStorage();
+  const contactStorageState = contactStorage.state;
+  const fileDrag = createFileDrag();
+  const fileDragState = fileDrag.state;
   const relayChange = createRelayChange();
   const relayState = relayChange.state;
   const relayActions = {
@@ -135,6 +128,14 @@
   const conversation = $derived(selectedConversation($contactsState));
   const attachmentsSelected = $derived(
     $attachmentsState.contactID === conversation.contactID,
+  );
+  const timeline = $derived(
+    conversationTimeline(
+      conversation.messages,
+      attachmentsSelected && status.attachmentsAvailable
+        ? $attachmentsState.items
+        : [],
+    ),
   );
   const activation = createNotificationActivation((id) => {
     settings.close();
@@ -172,6 +173,19 @@
     conversation.state !== 'peer-removed',
   );
   $effect(() => {
+    fileDrag.select(
+      conversation.contactID,
+      native &&
+        status.storageState === 'unlocked' &&
+        status.attachmentsAvailable &&
+        attachmentStageAllowed &&
+        $sessionState.windowVisible &&
+        !settingsOpen &&
+        !$attachmentsState.deleteTarget &&
+        !busy,
+    );
+  });
+  $effect(() => {
     attachments.setConnection(conversation.state, conversation.peerProtocol);
     if (
       native &&
@@ -202,6 +216,8 @@
   });
 
   function clearConversation() {
+    fileDrag.select('', false);
+    contactStorage.stop();
     relayChange.stop();
     attachments.stop();
     historyActions.reset();
@@ -360,7 +376,9 @@
     ),
   );
   const connectionLabel = $derived(
-    connecting ? 'Connecting…' : describeConnection(conversation.state),
+    connecting
+      ? 'Waiting for their device'
+      : describeConnection(conversation.state),
   );
 
   const beginInvitation = (url: string, consent: boolean) =>
@@ -441,11 +459,13 @@
 
   onMount(() => {
     mounted = true;
+    fileDrag.start();
     contacts.setVisible(!document.hidden);
     const stopActivation = activation.mount();
     const stopSession = session.mount(
       () => {
         void activation.ready();
+        void fileDrag.ready();
         void refresh();
       },
       {
@@ -460,6 +480,8 @@
           if (visible && conversationEnabled()) void contacts.reload();
           if (visible && conversationEnabled()) void attachments.reload();
           if (visible && conversationEnabled()) void relayChange.reload();
+          if (visible && conversationEnabled()) void contactStorage.reload();
+          if (visible && conversationEnabled()) void fileDrag.ready();
         },
       },
     );
@@ -481,6 +503,8 @@
         void contacts.reload();
         void attachments.reload();
         void relayChange.reload();
+        void contactStorage.reload();
+        void fileDrag.ready();
       }
     };
     window.addEventListener('focus', recoverContacts);
@@ -493,6 +517,7 @@
       clearProfile();
       stopSession();
       stopActivation();
+      fileDrag.stop();
       appPreferences.stop();
       security.reset();
       media.removeEventListener('change', updateSystemTheme);
@@ -510,6 +535,36 @@
         ? 'Local storage locked'
         : 'Local storage unavailable',
   );
+  const online = $derived(native && status.storageState === 'unlocked');
+  const headerTone = $derived(presenceTone(conversation.state, connecting));
+  const selfTone: Tone = $derived(!native ? 'idle' : online ? 'ok' : 'danger');
+  const footerTone: Tone = $derived(hasContact ? headerTone : selfTone);
+  const footerLabel = $derived(
+    hasContact
+      ? connectionLabel
+      : native
+        ? online
+          ? 'Online · no conversation session'
+          : 'Offline · no conversation session'
+        : 'No network session',
+  );
+  let composerInput = $state<HTMLTextAreaElement>();
+
+  function insertEmoji(emoji: string) {
+    if (!conversation.canSend || busy) return;
+    const contactID = conversation.contactID;
+    const start = composerInput?.selectionStart ?? draft.length;
+    const end = composerInput?.selectionEnd ?? draft.length;
+    const next = draft.slice(0, start) + emoji + draft.slice(end);
+    if (next.length > 16 * 1024) return;
+    contacts.setDraft(contactID, next);
+    void tick().then(() => {
+      if (!composerInput || conversation.contactID !== contactID) return;
+      const caret = start + emoji.length;
+      composerInput.focus();
+      composerInput.setSelectionRange(caret, caret);
+    });
+  }
 </script>
 
 <svelte:head><title>WhatsUp — Your conversations, closer</title></svelte:head>
@@ -522,115 +577,87 @@
   >Skip to conversation</a
 >
 <div class="app-shell" hidden={settingsOpen}>
-  <nav class="navigation-rail" aria-label="Main navigation">
-    <a href="#conversation" class="brand-mark" aria-label="WhatsUp home"
-      ><MessageCircle size={25} strokeWidth={2.2} /><span class="brand-spark"
-      ></span></a
-    >
-    <div class="rail-navigation">
-      <button
-        class="rail-button active"
-        aria-label="Conversations"
-        aria-current="page"
-        ><MessageCircle size={23} strokeWidth={1.7} /></button
-      >
-      <button
-        class="rail-button"
-        aria-label="About contacts"
-        onclick={() => aboutDialog.showModal()}
-        ><Users size={23} strokeWidth={1.7} /></button
-      >
-    </div>
-    <div class="rail-bottom">
-      <button
-        class="rail-button"
-        aria-label="About WhatsUp"
-        onclick={() => aboutDialog.showModal()}
-        ><CircleHelp size={22} strokeWidth={1.7} /></button
-      >
-      <button
-        class="rail-button"
-        aria-label="Open settings"
-        title="Settings (Ctrl+,)"
-        onclick={openSettings}><Settings size={22} strokeWidth={1.7} /></button
-      >
-      <div class="device-avatar" aria-label="This device"><span>Y</span></div>
-    </div>
-  </nav>
-
   <aside class="contacts-panel" aria-labelledby="contacts-heading">
-    <header class="contacts-header">
-      <div>
-        <p class="eyebrow">A LITTLE CLOSER</p>
-        <h1 id="contacts-heading">
-          WhatsUp<span class="wordmark-dot">.</span>
-        </h1>
+    <header class="sidebar-brand">
+      <Logo size="2.6rem" label="WhatsUp" />
+      <div class="wordmark">
+        <h1 id="contacts-heading">WhatsUp<span>.</span></h1>
+        <small>Private, encrypted chat</small>
       </div>
       <button
-        class="icon-button"
+        class="icon-button accent"
         aria-label="New conversation"
         disabled={!canStartInvitation}
         onclick={() => invitationDialog.show()}
-        title="Unlock storage to create or join a private invitation"
-        ><CirclePlus size={22} strokeWidth={1.7} /></button
+        title={canStartInvitation
+          ? 'Start a conversation'
+          : 'Go online to create or join a private invitation'}
+        ><Icon name="plus" /></button
       >
     </header>
     <label class="search-box"
-      ><Search size={17} /><span class="sr-only">Search contacts</span><input
+      ><Icon name="search" size="1.1em" /><span class="sr-only"
+        >Search contacts</span
+      ><input
         type="search"
-        placeholder="Search conversations"
+        placeholder="Search chats"
         bind:value={search}
         maxlength="100"
       />{#if search}<button
           aria-label="Clear search"
           class="clear-search"
-          onclick={() => (search = '')}><X size={15} /></button
+          onclick={() => (search = '')}><Icon name="close" size="1em" /></button
         >{/if}</label
     >
     <div class="contacts-list-label">
-      <span>CONVERSATIONS</span><span class="count"
+      <span>Chats</span><span class="count"
         >{$contactsState.contacts.length}</span
       >
     </div>
-    {#if matchingContacts.length > 0}
-      <ContactList
-        contacts={matchingContacts}
-        selectedID={conversation.contactID}
-        onselect={selectConversation}
-      />
-    {:else}
-      <div class="empty-contacts">
-        <div class="contact-empty-icon">
-          <Users size={26} strokeWidth={1.4} /><span></span>
+    <div class="contacts-scroll">
+      {#if matchingContacts.length > 0}
+        <ContactList
+          contacts={matchingContacts}
+          selectedID={conversation.contactID}
+          onselect={selectConversation}
+        />
+      {:else}
+        <div class="empty-contacts">
+          <div class="empty-art" aria-hidden="true">
+            <Icon name={search ? 'search' : 'users'} />
+          </div>
+          <h2>
+            {search ? 'No matching conversations' : 'Your people go here'}
+          </h2>
+          <p>
+            {search
+              ? `No conversations match “${search}”.`
+              : 'Invite someone you trust. Each chat is private between the two of you.'}
+          </p>
+          {#if search}<button class="text-button" onclick={() => (search = '')}
+              >Clear search</button
+            >{:else}<span class="subtle-pill"
+              ><Icon name="lock" size="1em" /> Invite only</span
+            >{/if}
         </div>
-        <h2>{search ? 'No matching conversations' : 'Your people go here'}</h2>
-        <p>
-          {search
-            ? `No conversations match “${search}”.`
-            : 'A quiet space for the people you choose.'}
-        </p>
-        {#if search}<button class="text-button" onclick={() => (search = '')}
-            >Clear search</button
-          >{:else}<span class="subtle-pill"
-            ><LockKeyhole size={12} /> Invite only</span
-          >{/if}
-      </div>
-    {/if}
-    <div class="sidebar-note">
-      <Shield size={17} strokeWidth={1.6} />
-      <p>Every conversation.<br /><strong>Just the two of you.</strong></p>
+      {/if}
     </div>
     <footer class="device-footer">
-      <div class="mini-device"><span>Y</span></div>
-      <div>
-        <strong>{ownName}</strong><span
-          >{native ? 'Desktop development build' : 'Browser preview'}</span
-        >
+      <Avatar
+        name={ownName}
+        seed={status.identityFingerprint || ownName}
+        size="small"
+        presence={selfTone}
+      />
+      <div class="me">
+        <strong>{ownName}</strong>
+        <span>{native ? 'Desktop development build' : 'Browser preview'}</span>
       </div>
       <button
         class="icon-button"
-        aria-label="Device settings"
-        onclick={openSettings}><MoreHorizontal size={19} /></button
+        aria-label="Open settings"
+        title="Settings (Ctrl+,)"
+        onclick={openSettings}><Icon name="settings" /></button
       >
     </footer>
   </aside>
@@ -638,62 +665,85 @@
   <main id="conversation" class="conversation-panel" tabindex="-1">
     <header class="conversation-header">
       <div class="header-identity">
-        <div class="header-icon">
-          <MessageCircle size={20} strokeWidth={1.6} />
-        </div>
+        {#if hasContact}
+          <Avatar
+            name={contactName}
+            seed={conversation.peerFingerprint}
+            size="large"
+            presence={headerTone}
+          />
+        {:else}
+          <span class="header-logo"><Logo size="2.75rem" /></span>
+        {/if}
         <div>
           <h2>
             {hasContact ? contactName : 'Your conversations, closer'}
           </h2>
-          <p>
-            {hasContact ? connectionLabel : 'A private space. A familiar face.'}
-            {#if hasContact}<span aria-label="Conversation connection path">
+          <p class="header-meta">
+            {#if hasContact}<span class="status-pill tone-{headerTone}"
+                ><span class="status-dot"></span><span>{connectionLabel}</span
+                ></span
+              ><span aria-label="Conversation connection path">
                 · {conversation.path}</span
-              >{/if}
+              >{:else}<span>A private space. A familiar face.</span>{/if}
           </p>
         </div>
       </div>
       <div class="conversation-actions">
         {#if hasContact && conversation.canConnect}
           <button
-            class="secondary-button compact"
+            class="primary-button compact"
             disabled={connecting || busy}
             onclick={() => void connectConversation()}
-            >{connecting ? 'Connecting…' : 'Connect'}</button
+            ><Icon name="plug" size="1.1em" /><span class="label-text"
+              >{connecting ? 'Connecting…' : 'Connect'}</span
+            ></button
           >
         {/if}
         {#if hasContact}
           <button
-            class="secondary-button compact"
+            class="icon-button"
+            aria-label="Clear history…"
+            title="Clear history…"
             disabled={busy || $historyState.busy}
-            onclick={() => historyDialog.show()}>Clear history…</button
+            onclick={() => historyDialog.show()}><Icon name="eraser" /></button
           >
           <button
-            class="secondary-button compact"
+            class="icon-button"
+            aria-label="Forget contact…"
+            title="Forget contact…"
             disabled={busy}
-            onclick={showForgetContact}>Forget contact…</button
+            onclick={showForgetContact}><Icon name="forget" /></button
           >
+          <span class="divider" aria-hidden="true"></span>
         {/if}
         <button
-          class="secondary-button compact"
+          class="secondary-button compact power-button"
+          class:online={status.storageState === 'unlocked'}
+          class:offline={status.storageState !== 'unlocked'}
           disabled={!native || busy}
+          title={status.storageState === 'unlocked'
+            ? 'Disconnect and lock local data'
+            : 'Unlock local data and reconnect'}
           onclick={storageAction}
-          >{status.storageState === 'unlocked'
-            ? 'Go offline'
-            : 'Go online'}</button
+          ><Icon name="power" size="1.1em" /><span class="label-text"
+            >{status.storageState === 'unlocked'
+              ? 'Go offline'
+              : 'Go online'}</span
+          ></button
+        >
+        <button
+          class="icon-button"
+          aria-label="About this build"
+          title="About WhatsUp"
+          onclick={() => aboutDialog.showModal()}><Icon name="info" /></button
         >
       </div>
-      <button
-        class="icon-button"
-        aria-label="About this build"
-        onclick={() => aboutDialog.showModal()}
-        ><Info size={20} strokeWidth={1.7} /></button
-      >
     </header>
 
     {#if notice || $sessionState.notice}
       <div class="notice" role="alert">
-        <Info size={18} />
+        <Icon name="info" />
         <p>{notice || $sessionState.notice}</p>
         {#if native}<button
             class="text-button"
@@ -702,14 +752,14 @@
           >{/if}<button
           class="icon-button"
           aria-label="Dismiss notice"
-          onclick={() => (notice = '')}><X size={16} /></button
+          onclick={() => (notice = '')}><Icon name="close" /></button
         >
       </div>
     {/if}
 
     {#if conversationNotice}
       <div class="notice" role="alert">
-        <Info size={18} />
+        <Icon name="info" />
         <p>{conversationNotice}</p>
         <button class="text-button" onclick={() => void contacts.reloadLatest()}
           >Try again</button
@@ -717,14 +767,14 @@
         <button
           class="icon-button"
           aria-label="Dismiss conversation notice"
-          onclick={() => contacts.dismissNotice()}><X size={16} /></button
+          onclick={() => contacts.dismissNotice()}><Icon name="close" /></button
         >
       </div>
     {/if}
 
     {#if pairing.state === 'pending' || (pairing.state === 'reconnect-required' && !savedPairingIsConversation)}
       <div class="notice" role="status">
-        <Shield size={18} />
+        <Icon name="shield" />
         <p>
           {pairingNotice ||
             (pairing.state === 'reconnect-required'
@@ -742,7 +792,7 @@
     {/if}
     {#if pairing.state === 'completed' && !hasContact}
       <div class="notice" role="status">
-        <Shield size={18} />
+        <Icon name="shield" />
         <p>Contact approved. Waiting for the saved conversation.</p>
       </div>
     {/if}
@@ -750,55 +800,72 @@
     {#if hasContact}
       <section class="message-space" aria-label="Conversation">
         {#if conversation.state === 'peer-removed'}
-          <p class="connection-notice" role="status">
-            This contact removed you. Messaging and automatic reconnect have
-            stopped. Your saved history and files stay on this device.
+          <p class="connection-notice tone-danger" role="status">
+            <Icon name="forget" /><span
+              >This contact removed you. Messaging and automatic reconnect have
+              stopped. Your saved history and files stay on this device.</span
+            >
           </p>
         {:else if conversation.state === 'identity-changed'}
-          <p class="connection-notice" role="alert">
-            Your contact's identity could not be verified. The connection
-            stopped; your saved contact was not changed.
+          <p class="connection-notice tone-danger" role="alert">
+            <Icon name="warning" /><span
+              >Your contact's identity could not be verified. The connection
+              stopped; your saved contact was not changed.</span
+            >
           </p>
         {:else if conversation.state === 'update-required'}
-          <p class="connection-notice" role="alert">
-            Your saved contact is using an incompatible messaging protocol.
-            Update both apps to compatible builds, then choose Connect. Your
-            saved contact and queued messages are retained.
+          <p class="connection-notice tone-danger" role="alert">
+            <Icon name="reload" /><span
+              >Your saved contact is using an incompatible messaging protocol.
+              Update both apps to compatible builds, then choose Connect. Your
+              saved contact and queued messages are retained.</span
+            >
           </p>
         {:else if conversation.state === 'route-unavailable'}
-          <p class="connection-notice" role="alert">
-            The approved connection route could not be reached. Check the
-            connection service and choose Connect to retry. Your queued messages
-            and saved contact are retained.
+          <p class="connection-notice tone-danger" role="alert">
+            <Icon name="globe" /><span
+              >The approved connection route could not be reached. Check the
+              connection service and choose Connect to retry. Your queued
+              messages and saved contact are retained.</span
+            >
           </p>
         {:else if conversation.state === 'authentication-failed'}
-          <p class="connection-notice" role="alert">
-            The saved contact could not authenticate. Check that both apps use
-            compatible builds and their device clocks are correct. WhatsUp will
-            retry; your saved contact has not been replaced.
+          <p class="connection-notice tone-danger" role="alert">
+            <Icon name="key" /><span
+              >The saved contact could not authenticate. Check that both apps
+              use compatible builds and their device clocks are correct. WhatsUp
+              will retry; your saved contact has not been replaced.</span
+            >
           </p>
         {:else if conversation.state === 'capacity-reached'}
-          <p class="connection-notice" role="alert">
-            This preview's local message storage is full. New messages cannot be
-            saved. Existing history and queued messages are retained.
+          <p class="connection-notice tone-danger" role="alert">
+            <Icon name="warning" /><span
+              >This preview's local message storage is full. New messages cannot
+              be saved. Existing history and queued messages are retained.</span
+            >
           </p>
         {:else if conversation.state === 'peer-capacity-reached'}
-          <p class="connection-notice" role="alert">
-            Your contact's message storage is full. Automatic retries stopped.
-            Your undelivered messages remain queued on this device; they have
-            not been marked delivered.
+          <p class="connection-notice tone-danger" role="alert">
+            <Icon name="warning" /><span
+              >Your contact's message storage is full. Automatic retries
+              stopped. Your undelivered messages remain queued on this device;
+              they have not been marked delivered.</span
+            >
           </p>
         {:else if conversation.state === 'connecting'}
-          <p class="connection-notice" role="status">
-            Waiting for your contact. Both devices need to be unlocked and
-            connected. WhatsUp will keep trying while this connection is
-            enabled.
+          <p class="connection-notice tone-warn" role="status">
+            <Icon name="wifi" /><span
+              >Waiting for their device. Both apps need to be online. Retries
+              slow down after several minutes; Go offline stops them.</span
+            >
           </p>
         {:else if conversation.state !== 'connected'}
-          <p class="connection-notice" role="status">
-            {conversation.canSend
-              ? 'You are offline. Messages stay encrypted on this device until your contact reconnects.'
-              : 'Connect to authenticate your saved contact before opening this conversation.'}
+          <p class="connection-notice tone-danger" role="status">
+            <Icon name="wifiOff" /><span
+              >{conversation.canSend
+                ? 'You are offline. Messages stay encrypted on this device until your contact reconnects.'
+                : 'Connect to authenticate your saved contact before opening this conversation.'}</span
+            >
           </p>
         {/if}
         <div
@@ -832,47 +899,70 @@
                 : 'Load older messages'}
             </button>
           {/if}
-          {#each conversation.messages as message (message.id)}
-            <article
-              class="message-bubble"
-              class:outgoing={message.direction === 'outgoing'}
-              aria-label={message.direction === 'outgoing'
-                ? 'Your message'
-                : 'Contact message'}
-            >
-              <p class="message-text" dir="auto">{message.text}</p>
-              <footer>
-                <button
-                  class="text-button"
-                  aria-label="Delete local message"
-                  disabled={busy || $historyState.busy}
-                  onclick={() => historyDialog.show(message.id)}
-                  >Delete locally</button
-                >
-                <time datetime={message.createdAt}
-                  >{new Date(message.createdAt).toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}</time
-                >
-                {#if message.direction === 'outgoing'}
-                  <span class="delivery-status"
-                    >{message.delivered ? 'Delivered' : 'Queued'}</span
+          {#each timeline as entry (entry.key)}
+            {#if entry.kind === 'message'}
+              {@const message = entry.message}
+              <article
+                class="message-bubble"
+                class:outgoing={message.direction === 'outgoing'}
+                aria-label={message.direction === 'outgoing'
+                  ? 'Your message'
+                  : 'Contact message'}
+              >
+                <p class="message-text" dir="auto">{message.text}</p>
+                <footer>
+                  <button
+                    class="text-button"
+                    aria-label="Delete local message"
+                    disabled={busy || $historyState.busy}
+                    onclick={() => historyDialog.show(message.id)}
+                    >Delete locally</button
                   >
-                {/if}
-              </footer>
-            </article>
+                  <time datetime={message.createdAt}
+                    >{new Date(message.createdAt).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}</time
+                  >
+                  {#if message.direction === 'outgoing'}
+                    <span
+                      class="delivery-status"
+                      class:delivered={message.delivered}
+                      ><Icon
+                        name={message.delivered ? 'checks' : 'check'}
+                        size="1.1em"
+                      />{message.delivered ? 'Delivered' : 'Queued'}</span
+                    >
+                  {/if}
+                </footer>
+              </article>
+            {:else}
+              <InlineAttachment
+                item={entry.attachment}
+                busy={$attachmentsState.busy}
+                video={$attachmentsState.videos[entry.attachment.id] ?? ''}
+                saved={Boolean($attachmentsState.saved[entry.attachment.id])}
+                onpreview={(item) => void attachments.preview(item)}
+                onsave={(item) => void attachments.save(item)}
+                onreveal={(item) => void attachments.reveal(item)}
+                ondelete={(item) => attachments.requestDelete(item)}
+              />
+            {/if}
           {:else}
-            <p class="conversation-empty">
-              {conversation.canSend
-                ? 'Your conversation is ready. Write the first message.'
-                : 'Your contact is saved. Messages become available after authentication.'}
-            </p>
+            <div class="conversation-empty">
+              <Logo size="3.5rem" />
+              <p>
+                {conversation.canSend
+                  ? 'Your conversation is ready. Write the first message.'
+                  : 'Your contact is saved. Messages become available after authentication.'}
+              </p>
+            </div>
           {/each}
         </div>
         {#if status.attachmentsAvailable}
           {#key conversation.contactID}
             <AttachmentPanel
+              inlineMedia={true}
               items={attachmentsSelected ? $attachmentsState.items : []}
               wireAllowed={attachmentWireAllowed}
               stageAllowed={attachmentStageAllowed}
@@ -900,35 +990,22 @@
               onpreview={(item) => void attachments.preview(item)}
               onsave={(item) => void attachments.save(item)}
               onreveal={(item) => void attachments.reveal(item)}
+              ondelete={(item) => attachments.requestDelete(item)}
             />
           {/key}
         {/if}
       </section>
     {:else}
       <section class="welcome-space" aria-labelledby="welcome-heading">
-        <div class="welcome-art" aria-hidden="true">
-          <div class="orbit orbit-one"></div>
-          <div class="orbit orbit-two"></div>
-          <div class="art-dot art-dot-one"></div>
-          <div class="art-dot art-dot-two"></div>
-          <div class="art-dash"></div>
-          <div class="bubble bubble-back">
-            <span></span><span></span><span></span>
-          </div>
-          <div class="bubble bubble-front">
-            <MessageCircle size={51} strokeWidth={1.25} /><span
-              class="bubble-check"><Check size={15} strokeWidth={2.4} /></span
-            >
-          </div>
-        </div>
-        <span class="welcome-kicker">GOOD CONVERSATIONS START HERE</span>
+        <div class="welcome-logo"><Logo size="100%" /></div>
+        <span class="eyebrow welcome-kicker">Good conversations start here</span
+        >
         <h2 id="welcome-heading">
           Less noise.<br />More <span>connection.</span>
         </h2>
         <p class="welcome-description">
-          A space for real conversations with someone you trust.<br
-            class="desktop-break"
-          /> Just you, them, and what’s on your mind.
+          A space for real conversations with the people you trust. Every chat
+          is encrypted between your two devices.
         </p>
         <div class="welcome-action">
           <button
@@ -936,9 +1013,7 @@
             disabled={!canStartInvitation}
             onclick={() => invitationDialog.show()}
             title="Unlock storage to create or join a private invitation"
-            ><CirclePlus size={18} /> Start a conversation <ArrowUpRight
-              size={16}
-            /></button
+            ><Icon name="plus" /> Start a conversation</button
           >
           <p>
             {native && status.storageState === 'unlocked'
@@ -947,9 +1022,10 @@
           </p>
         </div>
         <div class="welcome-details">
-          <span><Users size={15} /> Always one to one</span><span
-            class="detail-divider"
-          ></span><span><LockKeyhole size={14} /> You choose who joins</span>
+          <span><Icon name="users" size="1em" /> Private one-on-one chats</span
+          ><span><Icon name="lock" size="1em" /> You choose who joins</span
+          ><span><Icon name="image" size="1em" /> Photos, videos and files</span
+          >
         </div>
       </section>
     {/if}
@@ -966,14 +1042,16 @@
           aria-label={status.attachmentsAvailable && hasContact
             ? 'Choose attachment'
             : 'Attach file unavailable'}
+          title="Attach a photo, video or file"
           disabled={!status.attachmentsAvailable ||
             !attachmentStageAllowed ||
             !hasContact ||
             busy ||
             $attachmentsState.busy}
           onclick={() => void attachments.pick(false)}
-          ><Paperclip size={21} strokeWidth={1.6} /></button
+          ><Icon name="attach" /></button
         ><textarea
+          bind:this={composerInput}
           aria-label={hasContact
             ? 'Message'
             : 'Message unavailable without an approved contact'}
@@ -1010,41 +1088,39 @@
               void queueMessage();
             }
           }}
-          rows="1"></textarea><button
-          class="icon-button emoji-button"
-          aria-label="Emoji unavailable"
-          disabled><Smile size={21} strokeWidth={1.6} /></button
-        ><button
+          rows="1"></textarea><EmojiPicker
+          disabled={!conversation.canSend || busy}
+          onpick={insertEmoji}
+        /><button
           class="send-button"
           aria-label={hasContact ? 'Send message' : 'Send message unavailable'}
           disabled={!conversation.canSend ||
             sending ||
             busy ||
             !validMessageText(draft)}
-          onclick={() => void queueMessage()}
-          ><Send size={19} strokeWidth={1.7} /></button
+          onclick={() => void queueMessage()}><Icon name="send" /></button
         >
       </div>
       <p class="composer-caption">
+        {#if hasContact && conversation.canSend && status.attachmentsAvailable}<Icon
+            name="dragDrop"
+            size="1.1em"
+          />{/if}
         {hasContact
           ? conversation.canSend
-            ? 'Enter to send · Shift+Enter for a new line. Queued messages stay here until your contact receives them.'
+            ? status.attachmentsAvailable
+              ? 'Enter to send · Shift+Enter for a new line · Drop a file anywhere to attach it.'
+              : 'Enter to send · Shift+Enter for a new line. Queued messages stay here until your contact receives them.'
             : 'Connect to authenticate your contact. Nothing is sent before verification.'
           : 'No contact selected. Nothing is sent or queued.'}
       </p>
     </div>
     <footer class="network-footer">
-      <span
-        >{#if conversation.state === 'connected'}<Wifi
-            size={13}
-          />{:else}<WifiOff size={13} />{/if}
-        {hasContact
-          ? connectionLabel
-          : native
-            ? 'No conversation session'
-            : 'No network session'}</span
-      ><span class="footer-divider"></span><span
-        ><LockKeyhole size={12} /> {storageLabel}</span
+      <span class="connection-chip tone-{footerTone}"
+        ><span class="status-dot"></span>{footerLabel}</span
+      ><span
+        ><Icon name={online ? 'unlock' : 'lock'} size="1.1em" />
+        {storageLabel}</span
       ><span class="build-label"
         >{native
           ? `Development · v${status.version}`
@@ -1053,6 +1129,21 @@
     </footer>
   </main>
 </div>
+
+<DeleteAttachmentDialog
+  target={$attachmentsState.deleteTarget}
+  busy={$attachmentsState.busy}
+  notice={$attachmentsState.notice}
+  onconfirm={() => void attachments.confirmDelete()}
+  oncancel={() => attachments.cancelDelete()}
+/>
+
+{#if $fileDragState}
+  <div class="file-drag-highlight" role="status" aria-live="polite">
+    <span>Drop files to prepare an attachment</span>
+    <small>You choose Send after the preview.</small>
+  </div>
+{/if}
 
 <SettingsDialog
   bind:this={settings}
@@ -1067,6 +1158,9 @@
   onsecurity={securityAction}
   onreloadsecurity={() => void security.load()}
   relay={$relayState}
+  contactStorage={$contactStorageState}
+  oncontactstorage={(id) => contactStorage.select(id)}
+  onreloadstorage={() => void contactStorage.reload()}
   onrelay={relayActions}
   onpreferences={updatePreferences}
   onstorage={storageAction}
@@ -1168,16 +1262,16 @@
 >
   <div class="dialog-heading">
     <div class="dialog-title">
-      <div class="small-icon"><MessageCircle size={19} /></div>
+      <Logo size="2.75rem" />
       <div>
-        <p class="eyebrow">SAY SOMETHING REAL</p>
+        <p class="eyebrow">Say something real</p>
         <h2 id="about-title">About WhatsUp</h2>
       </div>
     </div>
     <button
       class="icon-button"
       aria-label="Close about"
-      onclick={() => aboutDialog.close()}><X size={19} /></button
+      onclick={() => aboutDialog.close()}><Icon name="close" /></button
     >
   </div>
   <div class="dialog-body">
@@ -1186,7 +1280,7 @@
       and Linux.
     </p>
     <div class="build-notice">
-      <Info size={18} />
+      <Icon name="info" />
       <p>
         This is a development build. Pairing requires your chosen connection
         service and explicit consent. Messages and attachments use approved
@@ -1215,7 +1309,7 @@
       onclick={() => {
         aboutDialog.close();
         openSettings();
-      }}>Personalize your space <ChevronDown size={15} /></button
+      }}><Icon name="palette" /> Personalize your space</button
     >
   </div>
   <div class="dialog-footer">
@@ -1225,83 +1319,3 @@
     >
   </div>
 </dialog>
-
-<style>
-  .conversation-actions {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 8px;
-    margin-left: auto;
-    margin-right: 14px;
-  }
-  @media (max-width: 740px) {
-    .conversation-actions {
-      order: 3;
-      width: 100%;
-      justify-content: flex-start;
-      margin: 0;
-    }
-  }
-  .message-space {
-    display: flex;
-    flex: 1;
-    min-height: 0;
-    flex-direction: column;
-    overflow: hidden;
-  }
-  .connection-notice {
-    margin: 18px 30px 0;
-    padding: 11px 14px;
-    border: 1px solid var(--border-soft);
-    border-radius: 9px;
-    font-size: 11px;
-    line-height: 1.7;
-    color: var(--muted);
-  }
-  .message-history {
-    display: flex;
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    flex-direction: column;
-    gap: 13px;
-    padding: 24px 30px;
-  }
-  .message-bubble {
-    max-width: min(82%, 620px);
-    align-self: flex-start;
-    padding: 12px 15px 9px;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: var(--surface);
-  }
-  .message-bubble.outgoing {
-    align-self: flex-end;
-    background: var(--accent-soft);
-  }
-  .message-text {
-    color: var(--text);
-    font-size: 13px;
-    line-height: 1.7;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    unicode-bidi: isolate;
-  }
-  .message-bubble footer {
-    display: flex;
-    justify-content: flex-end;
-    gap: 10px;
-    margin-top: 7px;
-    font-size: 9px;
-    color: var(--muted);
-  }
-  .conversation-empty {
-    margin: auto;
-    max-width: 310px;
-    text-align: center;
-    font-size: 12px;
-    line-height: 1.8;
-    color: var(--muted);
-  }
-</style>
