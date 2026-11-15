@@ -101,7 +101,7 @@ export async function verifyReleasePackage(directory, context, platform) {
       || manifest.inAppUpdatesEnabled !== false || manifest.releaseEligible !== false
       || checks?.functional !== 'passed' || checks?.integration !== 'passed' || checks?.nativeBuild !== 'passed'
       || !validSecurityScans(checks.scans) || checks.scans.some((scan) => scan.passed !== true)
-      || checks.goRaceEnabled !== (platform === 'linux-x64')
+      || checks.goRaceEnabled !== true
       || checks.nativeUIAcceptance !== 'not-run-by-this-command'
       || !Number.isFinite(checkedAt) || checkedAt > now + 5 * 60_000 || now - checkedAt > 24 * 60 * 60_000) {
     throw new Error('Package checks are missing, failed, stale or inconsistent with an unsigned preview');

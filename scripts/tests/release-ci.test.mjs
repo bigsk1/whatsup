@@ -57,7 +57,7 @@ async function fixture(t, platform = 'win32-x64', changes = {}) {
   const manifest = { version: '0.1.0', platform: platform.split('-')[0], arch: 'x64', sourceCommit: commit,
     sourceDigestSHA256: digest, sourceDirty: false, unsignedPreview: true, schemaVersion: 1,
     signed: false, authenticode: false, inAppUpdatesEnabled: false, releaseEligible: false,
-    checks: { functional: 'passed', integration: 'passed', nativeBuild: 'passed', goRaceEnabled: platform === 'linux-x64',
+    checks: { functional: 'passed', integration: 'passed', nativeBuild: 'passed', goRaceEnabled: true,
       recordedAt: new Date().toISOString(), nativeUIAcceptance: 'not-run-by-this-command', scans: scanNames.map((name) => ({ name, passed: true })) },
     packaging: toolEvidence(platform === 'win32-x64' ? 'nsis' : 'nfpm', platform),
     sbom: { ...toolEvidence('cyclonedx-gomod', platform),
@@ -159,11 +159,16 @@ async function rewriteCovered(value, filename, mutate) {
   await writeFile(path.join(value.directory, 'SHA256SUMS'), [...sums].map(([name, hash]) => `${hash}  ${name}\n`).join(''));
 }
 
-test('scan failures, missing Linux race, SBOM substitution and updater flags fail even with matching hashes', async (t) => {
+test('scan failures, missing race, SBOM substitution and updater flags fail even with matching hashes', async (t) => {
+  for (const platform of ['win32-x64', 'linux-x64']) {
+    const value = await fixture(t, platform);
+    await verifyReleasePackage(value.directory, value.context, platform);
+    await rewriteCovered(value, 'build-manifest.json', (manifest) => { manifest.checks.goRaceEnabled = false; return manifest; });
+    await assert.rejects(verifyReleasePackage(value.directory, value.context, platform), /checks are missing/);
+  }
   for (const mutate of [
     (manifest) => { manifest.checks.scans.pop(); return manifest; },
     (manifest) => { manifest.checks.scans[0].passed = false; return manifest; },
-    (manifest) => { manifest.checks.goRaceEnabled = false; return manifest; },
     (manifest) => { manifest.inAppUpdatesEnabled = true; return manifest; },
     (manifest) => { manifest.packaging.lockSHA256 = 'f'.repeat(64); return manifest; },
     (manifest) => { manifest.packagingToolScans = []; return manifest; },
