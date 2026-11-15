@@ -97,6 +97,9 @@ export function createContacts(bridge: ContactsBridge = contactsBridge) {
   let listGeneration = 0;
   let unsubscribe: (() => void) | undefined;
   let refreshing: Promise<void> | undefined;
+  // Nonzero only while a refresh loop can still observe refreshAgain.
+  let activeRefresh = 0;
+  let refreshTokens = 0;
   let refreshAgain = false;
   let scheduled = false;
   const removed = new Set<string>();
@@ -119,6 +122,7 @@ export function createContacts(bridge: ContactsBridge = contactsBridge) {
   function retireList() {
     listGeneration += 1;
     refreshing = undefined;
+    activeRefresh = 0;
     refreshAgain = false;
   }
 
@@ -245,79 +249,90 @@ export function createContacts(bridge: ContactsBridge = contactsBridge) {
 
   async function reload() {
     if (!enabled) return;
-    if (refreshing) {
+    if (activeRefresh && refreshing) {
       refreshAgain = true;
       return refreshing;
     }
     const epoch = generation;
     const listEpoch = listGeneration;
     const currentList = () => live(epoch) && listEpoch === listGeneration;
-    const task = (async () => {
-      do {
-        refreshAgain = false;
-        publish({ loading: true });
-        try {
-          const values = await bridge.contacts();
-          if (!currentList()) return;
-          const contacts = values
-            .filter((item) => !removed.has(item.contactID))
-            .map((value) => {
-              const existing = current.contacts.find(
-                (item) => item.contactID === value.contactID,
-              );
-              if (value.revision < (versions.get(value.contactID) ?? 0))
-                return existing;
-              versions.set(value.contactID, value.revision);
-              return value;
-            })
-            .filter((value): value is ContactSummary => value !== undefined);
-          const ids = new Set(contacts.map((item) => item.contactID));
-          const retain = <T>(values: Record<string, T>) =>
-            Object.fromEntries(
-              Object.entries(values).filter(([id]) => ids.has(id)),
-            );
-          const selectedID = ids.has(current.selectedID)
-            ? current.selectedID
-            : (contacts[0]?.contactID ?? '');
-          publish({
-            contacts,
-            loaded: true,
-            selectedID,
-            pages: retain(current.pages),
-            drafts: retain(current.drafts),
-            notice: '',
-          });
-          if (
-            selectedID &&
-            (!current.pages[selectedID] ||
-              current.pages[selectedID].revision <
-                (versions.get(selectedID) ?? 0))
-          )
-            await loadPage(selectedID);
-          else if (selectedID) void markVisibleRead(selectedID);
-        } catch {
-          if (currentList()) {
-            // Fail closed after malformed or unavailable summaries. Retain no
-            // decrypted messages behind a composer with uncertain authority.
-            publish({
-              contacts: [],
-              loaded: false,
-              selectedID: '',
-              pages: {},
-              notice:
-                'Conversation status could not be verified. No message will be sent. Try again or disconnect and lock.',
-            });
-          }
-        } finally {
-          if (currentList()) publish({ loading: false });
-        }
-      } while (currentList() && refreshAgain);
-    })();
+    const token = (refreshTokens += 1);
+    activeRefresh = token;
+    const task = refreshLoop();
     refreshing = task;
     try {
       await task;
     } finally {
       if (refreshing === task) refreshing = undefined;
+    }
+
+    async function refreshLoop() {
+      try {
+        do {
+          refreshAgain = false;
+          publish({ loading: true });
+          try {
+            const values = await bridge.contacts();
+            if (!currentList()) return;
+            const contacts = values
+              .filter((item) => !removed.has(item.contactID))
+              .map((value) => {
+                const existing = current.contacts.find(
+                  (item) => item.contactID === value.contactID,
+                );
+                if (value.revision < (versions.get(value.contactID) ?? 0))
+                  return existing;
+                versions.set(value.contactID, value.revision);
+                return value;
+              })
+              .filter((value): value is ContactSummary => value !== undefined);
+            const ids = new Set(contacts.map((item) => item.contactID));
+            const retain = <T>(values: Record<string, T>) =>
+              Object.fromEntries(
+                Object.entries(values).filter(([id]) => ids.has(id)),
+              );
+            const selectedID = ids.has(current.selectedID)
+              ? current.selectedID
+              : (contacts[0]?.contactID ?? '');
+            publish({
+              contacts,
+              loaded: true,
+              selectedID,
+              pages: retain(current.pages),
+              drafts: retain(current.drafts),
+              notice: '',
+            });
+            if (
+              selectedID &&
+              (!current.pages[selectedID] ||
+                current.pages[selectedID].revision <
+                  (versions.get(selectedID) ?? 0))
+            )
+              await loadPage(selectedID);
+            else if (selectedID) void markVisibleRead(selectedID);
+          } catch {
+            if (currentList()) {
+              // Fail closed after malformed or unavailable summaries. Retain no
+              // decrypted messages behind a composer with uncertain authority.
+              publish({
+                contacts: [],
+                loaded: false,
+                selectedID: '',
+                pages: {},
+                notice:
+                  'Conversation status could not be verified. No message will be sent. Try again or disconnect and lock.',
+              });
+            }
+          } finally {
+            if (currentList()) publish({ loading: false });
+          }
+        } while (currentList() && refreshAgain);
+      } finally {
+        // Clear with no await after the last refreshAgain check, so a reload
+        // arriving while this task settles starts a new pass instead of
+        // joining a finished one.
+        if (activeRefresh === token) activeRefresh = 0;
+      }
     }
   }
 
@@ -346,6 +361,7 @@ export function createContacts(bridge: ContactsBridge = contactsBridge) {
     unsubscribe?.();
     unsubscribe = undefined;
     refreshing = undefined;
+    activeRefresh = 0;
     refreshAgain = scheduled = false;
     removed.clear();
     versions.clear();

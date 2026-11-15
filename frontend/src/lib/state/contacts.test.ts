@@ -160,6 +160,25 @@ describe('contact and paging DTO boundaries', () => {
 });
 
 describe('event-driven contact state', () => {
+  it('never drops a reload requested while a finished refresh is settling', async () => {
+    for (let delay = 0; delay < 24; delay += 1) {
+      const { bridge, controller } = fixture();
+      await controller.start();
+      const before = vi.mocked(bridge.contacts).mock.calls.length;
+      const list = deferred<ContactSummary[]>();
+      vi.mocked(bridge.contacts).mockReturnValueOnce(list.promise);
+      const refresh = controller.reload();
+      list.resolve([contact(), contact(second)]);
+      for (let tick = 0; tick < delay; tick += 1) await Promise.resolve();
+      const later = controller.reload();
+      await Promise.all([refresh, later]);
+      expect(
+        vi.mocked(bridge.contacts).mock.calls.length - before,
+        `reload after ${delay} microtasks`,
+      ).toBe(2);
+      controller.stop();
+    }
+  });
   it('restores an unchanged contact only from a post-failure read after Forget fails, and retires older responses', async () => {
     const { bridge, controller } = fixture();
     await controller.start();
