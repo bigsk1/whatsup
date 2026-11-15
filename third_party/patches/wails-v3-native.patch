@@ -462,7 +462,7 @@
 +}
 --- /dev/null
 +++ b/internal/webview2/pkg/edge/whatsup_reader_stream_windows_test.go
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,202 @@
 +//go:build windows && (amd64 || arm64)
 +
 +package edge
@@ -482,6 +482,48 @@
 +type whatsUpStreamReader struct {
 +	*bytes.Reader
 +	closes, maximum int
++}
++
++// WebView2 passes only native memory to the stream callbacks. Tests do the
++// same, so checkptr (enabled by -race) can reject any Go address passed as a
++// uintptr; IStream.Read would pass Go buffers.
++func whatsUpNativeValue[T any](t *testing.T, value T) *T {
++	t.Helper()
++	memory, err := windows.LocalAlloc(0, uint32(unsafe.Sizeof(value)))
++	if err != nil || memory == 0 {
++		t.Fatal("native fixture allocation")
++	}
++	t.Cleanup(func() { _, _ = windows.LocalFree(windows.Handle(memory)) })
++	pointer := (*T)(unsafe.Pointer(memory))
++	*pointer = value
++	return pointer
++}
++func whatsUpNativeRead(stream *IStream, p []byte) (int, error) {
++	if len(p) == 0 {
++		return 0, nil
++	}
++	memory, err := windows.LocalAlloc(0, uint32(8+len(p)))
++	if err != nil || memory == 0 {
++		return 0, io.ErrShortBuffer
++	}
++	defer windows.LocalFree(windows.Handle(memory))
++	count := memory
++	buffer := memory + 8
++	*(*uint32)(unsafe.Pointer(count)) = 0
++	hr, _, _ := stream.vtbl.Read.Call(uintptr(unsafe.Pointer(stream)), buffer, uintptr(len(p)), count)
++	n := int(*(*uint32)(unsafe.Pointer(count)))
++	if n > len(p) {
++		return 0, io.ErrShortBuffer
++	}
++	copy(p, unsafe.Slice((*byte)(unsafe.Pointer(buffer)), n))
++	switch windows.Handle(hr) {
++	case windows.S_OK:
++		return n, nil
++	case windows.S_FALSE:
++		return n, io.EOF
++	default:
++		return 0, syscall.Errno(hr)
++	}
 +}
 +
 +func TestWhatsUpReaderMarshalsFromSTAIntoBackgroundMTA(t *testing.T) {
@@ -523,7 +565,7 @@
 +		native := (*IStream)(unsafe.Pointer(pointer))
 +		defer native.Release()
 +		bytes := make([]byte, 23)
-+		n, err := native.Read(bytes)
++		n, err := whatsUpNativeRead(native, bytes)
 +		if err == nil && (n != 23 || string(bytes) != "synthetic native stream") {
 +			err = io.ErrUnexpectedEOF
 +		}
@@ -554,7 +596,7 @@
 +		t.Fatal(err)
 +	}
 +	defer stream.Release()
-+	_, err = stream.IStream().Read(make([]byte, 3))
++	_, err = whatsUpNativeRead(stream.IStream(), make([]byte, 3))
 +	if err == nil || err == io.EOF || stream.Err() == nil || r.closes != 1 {
 +		t.Fatalf("truncated content accepted: %v closes=%d", err, r.closes)
 +	}
@@ -584,31 +626,31 @@
 +	}
 +	native := stream.IStream()
 +	data := make([]byte, len(body)+1)
-+	n, err := native.Read(data)
++	n, err := whatsUpNativeRead(native, data)
 +	if n != len(body) || err != io.EOF || !bytes.Equal(data[:n], body) || r.maximum > 64<<10 {
 +		t.Fatalf("native read n=%d err=%v maximum=%d", n, err, r.maximum)
 +	}
-+	var position uint64
-+	hr, _, _ = syscall.SyscallN(readerStreamVTable[5], uintptr(unsafe.Pointer(stream.native)), 3, 0, uintptr(unsafe.Pointer(&position)))
-+	if hr != 0 || position != 3 {
-+		t.Fatalf("seek=%x/%d", hr, position)
++	position := whatsUpNativeValue(t, uint64(0))
++	hr, _, _ = syscall.SyscallN(readerStreamVTable[5], uintptr(unsafe.Pointer(stream.native)), 3, 0, uintptr(unsafe.Pointer(position)))
++	if hr != 0 || *position != 3 {
++		t.Fatalf("seek=%x/%d", hr, *position)
 +	}
-+	n, err = native.Read(data[:4])
++	n, err = whatsUpNativeRead(native, data[:4])
 +	if n != 4 || err != nil || string(data[:4]) != "3456" {
 +		t.Fatal("seek/read mismatch")
 +	}
-+	var stat readerStatSTG
-+	hr, _, _ = syscall.SyscallN(readerStreamVTable[12], uintptr(unsafe.Pointer(stream.native)), uintptr(unsafe.Pointer(&stat)), 1)
-+	if hr != 0 || stat.Size != uint64(len(body)) || stat.Type != 2 || unsafe.Sizeof(stat) != 80 {
++	stat := whatsUpNativeValue(t, readerStatSTG{})
++	hr, _, _ = syscall.SyscallN(readerStreamVTable[12], uintptr(unsafe.Pointer(stream.native)), uintptr(unsafe.Pointer(stat)), 1)
++	if hr != 0 || stat.Size != uint64(len(body)) || stat.Type != 2 || unsafe.Sizeof(*stat) != 80 {
 +		t.Fatal("native STATSTG layout/length")
 +	}
-+	var marshal uintptr
-+	hr = readerQueryInterface(uintptr(unsafe.Pointer(stream.native)), uintptr(unsafe.Pointer(&readerIMarshal)), uintptr(unsafe.Pointer(&marshal)))
-+	if hr != 0 || marshal == 0 {
++	marshal := whatsUpNativeValue(t, uintptr(0))
++	hr = readerQueryInterface(uintptr(unsafe.Pointer(stream.native)), uintptr(unsafe.Pointer(whatsUpNativeValue(t, readerIMarshal))), uintptr(unsafe.Pointer(marshal)))
++	if hr != 0 || *marshal == 0 {
 +		t.Fatal("free-threaded marshaler missing")
 +	}
-+	vtable := *(*[3]uintptr)(unsafe.Pointer(*(*uintptr)(unsafe.Pointer(marshal))))
-+	_, _, _ = syscall.SyscallN(vtable[2], marshal)
++	vtable := *(*[3]uintptr)(unsafe.Pointer(*(*uintptr)(unsafe.Pointer(*marshal))))
++	_, _, _ = syscall.SyscallN(vtable[2], *marshal)
 +	stream.Release()
 +	select {
 +	case <-stream.Done():
@@ -1930,7 +1972,7 @@
 +}
 --- /dev/null
 +++ b/pkg/application/whatsup_native_drop_windows_test.go
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,167 @@
 +//go:build windows && !server && (amd64 || arm64)
 +
 +package application
@@ -1951,9 +1993,32 @@
 +
 +var whatsUpDropFixtureTable = [12]uintptr{0, 0, 0, windows.NewCallback(whatsUpDropFixtureData), 0, windows.NewCallback(whatsUpDropFixtureQuery)}
 +
++// OLE passes only native memory to these callbacks. Fixtures do the same, so
++// checkptr (enabled by -race) can reject any Go address passed as a uintptr.
++func whatsUpNativeValue[T any](t *testing.T, value T) *T {
++	t.Helper()
++	memory, err := windows.LocalAlloc(0, uint32(unsafe.Sizeof(value)))
++	if err != nil || memory == 0 {
++		t.Fatal("native fixture allocation")
++	}
++	t.Cleanup(func() { _, _ = windows.LocalFree(windows.Handle(memory)) })
++	pointer := (*T)(unsafe.Pointer(memory))
++	*pointer = value
++	return pointer
++}
++func whatsUpDropFixtureObject(t *testing.T, handle uintptr) *whatsUpDropFixture {
++	return whatsUpNativeValue(t, whatsUpDropFixture{vtable: whatsUpNativeValue(t, whatsUpDropFixtureTable), handle: handle, supported: true})
++}
++
++// The production caller passes its own FORMATETC and STGMEDIUM, as real OLE
++// expects. Native code copies them, so this fake does the same instead of
++// turning those Go addresses back into pointers.
++var whatsUpMoveMemory = windows.NewLazySystemDLL("kernel32.dll").NewProc("RtlMoveMemory")
++
 +func whatsUpDropFixtureQuery(this, format uintptr) uintptr {
 +	object := (*whatsUpDropFixture)(unsafe.Pointer(this))
-+	value := (*nativeDropFormat)(unsafe.Pointer(format))
++	var value nativeDropFormat
++	whatsUpMoveMemory.Call(uintptr(unsafe.Pointer(&value)), format, unsafe.Sizeof(value))
 +	if !object.supported || value.format != 15 || value.aspect != 1 || value.index != -1 || value.medium != 1 {
 +		return 0x80040064
 +	}
@@ -1965,7 +2030,8 @@
 +	}
 +	object := (*whatsUpDropFixture)(unsafe.Pointer(this))
 +	object.reads++
-+	*(*nativeDropMedium)(unsafe.Pointer(out)) = nativeDropMedium{kind: 1, handle: object.handle}
++	medium := nativeDropMedium{kind: 1, handle: object.handle}
++	whatsUpMoveMemory.Call(out, uintptr(unsafe.Pointer(&medium)), unsafe.Sizeof(medium))
 +	object.handle = 0
 +	return 0
 +}
@@ -2005,7 +2071,7 @@
 +			paths[index] = `C:\synthetic\drop.pdf`
 +		}
 +		handle := whatsUpDropFixtureHandle(t, paths)
-+		object := &whatsUpDropFixture{vtable: &whatsUpDropFixtureTable, handle: handle, supported: true}
++		object := whatsUpDropFixtureObject(t, handle)
 +		var received []string
 +		parent := &WebviewWindow{options: WebviewWindowOptions{NativeFileDropHandler: func(paths []string) { received = paths }}}
 +		native := &windowsWebviewWindow{parent: parent}
@@ -2020,17 +2086,17 @@
 +		nativeDropObjects.Lock()
 +		nativeDropObjects.entries[address] = state
 +		nativeDropObjects.Unlock()
-+		var effect uint32 = 1
-+		hr := nativeDropDrop(address, uintptr(unsafe.Pointer(object)), 0, 0, uintptr(unsafe.Pointer(&effect)))
++		effect := whatsUpNativeValue(t, uint32(1))
++		hr := nativeDropDrop(address, uintptr(unsafe.Pointer(object)), 0, 0, uintptr(unsafe.Pointer(effect)))
 +		nativeDropRelease(address)
 +		if hr != 0 || object.handle != 0 {
 +			t.Fatal("native data not consumed")
 +		}
 +		if count <= 16 {
-+			if effect != 1 || len(received) != count || received[0] != paths[0] {
++			if *effect != 1 || len(received) != count || received[0] != paths[0] {
 +				t.Fatal("native local paths not delivered")
 +			}
-+		} else if effect != 0 || len(received) != 0 {
++		} else if *effect != 0 || len(received) != 0 {
 +			t.Fatal("oversized drop reached application")
 +		}
 +		size, _, _ := windows.NewLazySystemDLL("kernel32.dll").NewProc("GlobalSize").Call(handle)
@@ -2044,7 +2110,7 @@
 +	var hints []bool
 +	dropped := 0
 +	parent := &WebviewWindow{options: WebviewWindowOptions{NativeFileDropHandler: func([]string) { dropped++ }, NativeFileDragHandler: func(active bool, _ uint64) { hints = append(hints, active) }}}
-+	object := &whatsUpDropFixture{vtable: &whatsUpDropFixtureTable, supported: true}
++	object := whatsUpDropFixtureObject(t, 0)
 +	native := &windowsWebviewWindow{parent: parent}
 +	memory, err := windows.LocalAlloc(0, uint32(unsafe.Sizeof(uintptr(0))))
 +	if err != nil {
@@ -2058,18 +2124,18 @@
 +	nativeDropObjects.entries[address] = state
 +	nativeDropObjects.Unlock()
 +	defer nativeDropRelease(address)
-+	var effect uint32 = 1
-+	if nativeDropEnter(address, uintptr(unsafe.Pointer(object)), 0, 0, uintptr(unsafe.Pointer(&effect))) != 0 {
++	effect := whatsUpNativeValue(t, uint32(1))
++	if nativeDropEnter(address, uintptr(unsafe.Pointer(object)), 0, 0, uintptr(unsafe.Pointer(effect))) != 0 {
 +		t.Fatal("native drag enter failed")
 +	}
 +	for range 1000 {
-+		effect = 1
-+		nativeDropOver(address, 0, 0, uintptr(unsafe.Pointer(&effect)))
++		*effect = 1
++		nativeDropOver(address, 0, 0, uintptr(unsafe.Pointer(effect)))
 +	}
 +	nativeDropLeave(address)
-+	effect = 1
-+	nativeDropEnter(address, uintptr(unsafe.Pointer(object)), 0, 0, uintptr(unsafe.Pointer(&effect)))
-+	nativeDropDrop(address, 0, 0, 0, uintptr(unsafe.Pointer(&effect)))
++	*effect = 1
++	nativeDropEnter(address, uintptr(unsafe.Pointer(object)), 0, 0, uintptr(unsafe.Pointer(effect)))
++	nativeDropDrop(address, 0, 0, 0, uintptr(unsafe.Pointer(effect)))
 +	if len(hints) != 4 || !hints[0] || hints[1] || !hints[2] || hints[3] || object.reads != 0 || dropped != 0 {
 +		t.Fatal("hover read data, staged files, repeated motion, or retained stale state")
 +	}

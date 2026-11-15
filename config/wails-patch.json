@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "module": "github.com/wailsapp/wails/v3",
   "version": "v3.1.0",
-  "patchVersion": 3,
+  "patchVersion": 4,
   "replacement": "./.local/modules/wails-v3",
   "upstreamSum": "h1:ld0AXSicXiTTsIvmTq3qNn9FzCP8vIHRSJdkRLgaAo8=",
   "upstreamGoModSum": "h1:tzDY3W1jzN3ksSqfGalTt7K3PwnGfIqtl+IgIXlXz0I=",
@@ -18,14 +18,14 @@
     "size": 41908357
   },
   "patchedTree": {
-    "sha256": "17ee4f285ede5aa2dae649766dcef9d9e455cf6f73e516b04e53870ee89a84c9",
+    "sha256": "dce0d16f4d04a759405a19f3af4909fe50a917e8bfe08351eb3dc28563069975",
     "count": 4559,
-    "size": 41972670
+    "size": 41975244
   },
   "patch": {
     "path": "third_party/patches/wails-v3-native.patch",
-    "sha256": "3bacb2e24cbc243458ee8bf5fa6b1b2d485a91c084a518a57c6f777d8edccf12",
-    "size": 75539
+    "sha256": "1ef73b0039603b924f323182ca671805c0a281b5ba0d93c7217cd7f88ea0d795",
+    "size": 78179
   },
   "files": [
     {
@@ -55,8 +55,8 @@
     {
       "path": "internal/webview2/pkg/edge/whatsup_reader_stream_windows_test.go",
       "upstreamSHA256": null,
-      "sha256": "dcbd1ab55292310e94c62215e0e8f8e228fa3cbf7afcb7a9e39268044580d35c",
-      "size": 4957
+      "sha256": "9e5c86646d40208774384ba305f80fe5f2209ecca421d1457a46d09055bc4c1e",
+      "size": 6433
     },
     {
       "path": "pkg/application/linux_cgo.go",
@@ -175,8 +175,8 @@
     {
       "path": "pkg/application/whatsup_native_drop_windows_test.go",
       "upstreamSHA256": null,
-      "sha256": "34c0efc0f2bf160fe85b1bd29615b2d6df761a2f1853e2101d80d3c433bbb7c5",
-      "size": 5114
+      "sha256": "18077e151e5eb960eb46a5e88625110c9986ab04187205343b4c08ecd92dd0f1",
+      "size": 6212
     },
     {
       "path": "pkg/application/whatsup_native_windows_test.go",
@@ -209,6 +209,12 @@
       "sha256": "3468f55865c8f58cd2a760d1154a545886504c8b3afef8f73975727b9af4f91f",
       "count": 4557,
       "size": 41965568
+    },
+    {
+      "patchVersion": 3,
+      "sha256": "17ee4f285ede5aa2dae649766dcef9d9e455cf6f73e516b04e53870ee89a84c9",
+      "count": 4559,
+      "size": 41972670
     }
   ]
 }
