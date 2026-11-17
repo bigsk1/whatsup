@@ -277,7 +277,7 @@ describe('event-driven contact state', () => {
     expect(get(controller.state).sending[first]).toBe(true);
     expect(get(controller.state).sending[second]).toBeUndefined();
     held.resolve(snapshot(contact(first, 2), [message()]));
-    await sending;
+    expect(await sending).toBe(true);
     expect(get(controller.state).selectedID).toBe(second);
     expect(get(controller.state).drafts).toEqual({
       [first]: '',
@@ -298,7 +298,7 @@ describe('event-driven contact state', () => {
     vi.mocked(bridge.contacts).mockResolvedValue([contact(third)]);
     await controller.start();
     held.resolve(snapshot(contact(first, 99), [message()]));
-    await sending;
+    expect(await sending).toBe(false);
     expect(
       get(controller.state).contacts.map((item) => item.contactID),
     ).toEqual([third]);
@@ -409,7 +409,7 @@ describe('event-driven contact state', () => {
       new Error('SYNTHETIC-PRIVATE-ENDPOINT'),
     );
     controller.setDraft(first, 'Keep draft');
-    await controller.send();
+    expect(await controller.send()).toBe(false);
     expect(get(controller.state).drafts[first]).toBe('Keep draft');
     expect(get(controller.state).notices[first]).toContain(
       'could not be saved',
@@ -417,6 +417,23 @@ describe('event-driven contact state', () => {
     expect(JSON.stringify(get(controller.state))).not.toContain(
       'SYNTHETIC-PRIVATE-ENDPOINT',
     );
+    controller.stop();
+  });
+
+  it('reports an accepted send even when a newer event already superseded its response', async () => {
+    const { bridge, controller } = fixture();
+    expect(await controller.send()).toBe(false);
+    await controller.start();
+    controller.setDraft(first, 'Synthetic queued text');
+    const held = deferred<ConversationSnapshot>();
+    vi.mocked(bridge.send).mockReturnValueOnce(held.promise);
+    const sending = controller.send();
+    expect(await controller.send()).toBe(false);
+    controller.apply(snapshot(contact(first, 8), [message()]));
+    held.resolve(snapshot(contact(first, 2), [message()]));
+    expect(await sending).toBe(true);
+    expect(get(controller.state).contacts[0].revision).toBe(8);
+    expect(get(controller.state).drafts[first]).toBe('');
     controller.stop();
   });
 });

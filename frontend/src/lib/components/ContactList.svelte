@@ -138,7 +138,7 @@
     font-weight: var(--strong-weight);
     text-align: center;
   }
-  @media (max-width: 720px) {
+  @media (max-width: 820px) {
     .approved-contact {
       justify-content: center;
       padding: 0.4rem 0;

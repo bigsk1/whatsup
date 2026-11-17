@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import { hasDesktopBridge } from '../backend';
+import { copyText } from '../clipboard';
 import {
   validConnectionService,
   validInvitationLink,
@@ -217,7 +218,7 @@ export function createInvitationForm(options: {
       return;
     const epoch = operation;
     try {
-      await (options.copy ?? ((value) => navigator.clipboard.writeText(value)))(
+      await (options.copy ?? copyText)(
         relay ? publicRelayMap : current.privateLink,
       );
       if (live(epoch))

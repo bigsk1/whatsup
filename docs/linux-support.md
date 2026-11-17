@@ -23,7 +23,7 @@ server or a separate browser.
 
 Install the downloaded unsigned preview package with the system package manager:
 
-    sudo apt install ./whatsup_0.1.0_amd64.deb
+    sudo apt install ./whatsup_0.1.1_amd64.deb
 
 The package installs runtime dependencies, one application-menu entry and the
 scoped AppArmor compatibility profile. Quit WhatsUp from its tray before an

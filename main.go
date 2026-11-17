@@ -157,8 +157,10 @@ func main() {
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title: "WhatsUp", Width: 1180, Height: 780, MinWidth: 760, MinHeight: 560,
 		BackgroundColour: application.NewRGB(21, 18, 31), URL: "/",
-		Hidden:          options.Autostart,
-		DevToolsEnabled: false, DefaultContextMenuDisabled: true,
+		Hidden: options.Autostart,
+		// Wails limits the default menu to editable fields and selected text.
+		// Allow native copy/paste without enabling developer tools.
+		DevToolsEnabled: false, DefaultContextMenuDisabled: false,
 		NativeFileDropHandler: host.nativeFileDrop,
 		NativeFileDragHandler: host.nativeFileDrag,
 		Linux:                 linuxWindow,

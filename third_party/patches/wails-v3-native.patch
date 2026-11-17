@@ -2299,3 +2299,98 @@
 +		}
 +	}
 +}
+--- a/pkg/application/messageprocessor_clipboard.go
++++ b/pkg/application/messageprocessor_clipboard.go
+@@ -26,7 +26,9 @@
+ 			return nil, errs.NewInvalidClipboardCallErrorf("missing argument 'text'")
+ 		}
+ 		text = *textp
+-		globalApplication.Clipboard.SetText(text)
++		if !globalApplication.Clipboard.SetText(text) {
++			return nil, errs.NewInvalidClipboardCallErrorf("clipboard write failed")
++		}
+ 		return unit, nil
+ 	case ClipboardText:
+ 		text, _ = globalApplication.Clipboard.Text()
+--- /dev/null
++++ b/pkg/application/whatsup_clipboard_test.go
+@@ -0,0 +1,79 @@
++package application
++
++import (
++	"encoding/json"
++	"strings"
++	"testing"
++)
++
++type whatsUpClipboardProbe struct {
++	accepted bool
++	writes   []string
++	reads    int
++}
++
++func (p *whatsUpClipboardProbe) setText(text string) bool {
++	p.writes = append(p.writes, text)
++	return p.accepted
++}
++
++func (p *whatsUpClipboardProbe) text() (string, bool) {
++	p.reads++
++	return "SYNTHETIC-UNRELATED-CLIPBOARD", true
++}
++
++// Exercise the ordinary ClipboardManager/Clipboard/InvokeSync path without
++// starting a desktop session or reading or changing the real OS clipboard.
++type whatsUpClipboardPlatform struct{ platformApp }
++
++func (whatsUpClipboardPlatform) isOnMainThread() bool { return true }
++
++func TestWhatsUpClipboardWriteReportsNativeResultWithoutReading(t *testing.T) {
++	previous := globalApplication
++	t.Cleanup(func() { globalApplication = previous })
++	probe := &whatsUpClipboardProbe{accepted: true}
++	globalApplication = &App{
++		impl: whatsUpClipboardPlatform{},
++		Clipboard: &ClipboardManager{
++			clipboard: &Clipboard{impl: probe},
++		},
++	}
++	processor := NewMessageProcessor(nil)
++	text := "https://example.invalid/synthetic?one=1&two=2\nUnicode: café 🐈"
++	payload, err := json.Marshal(map[string]string{"text": text})
++	if err != nil {
++		t.Fatal("synthetic request could not be encoded")
++	}
++	request := &RuntimeRequest{Method: ClipboardSetText, Args: &Args{rawData: payload}}
++
++	t.Run("accepted write preserves exact text", func(t *testing.T) {
++		result, err := processor.processClipboardMethod(request)
++		if err != nil || result != unit {
++			t.Fatal("accepted native write did not return success")
++		}
++		if len(probe.writes) != 1 || probe.writes[0] != text || probe.reads != 0 {
++			t.Fatal("native write changed text, repeated a write or read the clipboard")
++		}
++	})
++
++	t.Run("rejected write returns a fixed error", func(t *testing.T) {
++		probe.accepted = false
++		result, err := processor.processClipboardMethod(request)
++		if err == nil || result != nil {
++			t.Fatal("rejected native write was reported as successful")
++		}
++		if !strings.Contains(err.Error(), "clipboard write failed") || strings.Contains(err.Error(), text) {
++			t.Fatal("native failure was not a fixed error without copied text")
++		}
++		if len(probe.writes) != 2 || probe.writes[1] != text || probe.reads != 0 {
++			t.Fatal("failed write changed text, repeated a write or read the clipboard")
++		}
++	})
++
++	t.Run("missing text does not touch the clipboard", func(t *testing.T) {
++		_, err := processor.processClipboardMethod(&RuntimeRequest{Method: ClipboardSetText, Args: &Args{}})
++		if err == nil || len(probe.writes) != 2 || probe.reads != 0 {
++			t.Fatal("missing text touched the clipboard or was accepted")
++		}
++	})
++}

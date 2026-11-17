@@ -1,4 +1,5 @@
 import { writable } from 'svelte/store';
+import { copyText } from '../clipboard';
 import { Events } from '@wailsio/runtime';
 import { hasDesktopBridge } from '../backend';
 import { validID, validateHint } from './bridge';
@@ -440,9 +441,7 @@ export function createRelayChange(api: RelayChangeBridge = bridge) {
       // signed peer decision. Go must not fetch the service before local consent.
       return run(() => api.import(id, text), true);
     },
-    async copyCarry(
-      copy = (text: string) => navigator.clipboard.writeText(text),
-    ) {
+    async copyCarry(copy = copyText) {
       const text = current.exportText,
         id = current.contactID,
         epoch = generation;

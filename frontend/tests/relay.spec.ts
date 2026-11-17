@@ -59,7 +59,9 @@ async function desktop(
 ) {
   const calls: { name: string; args: unknown[] }[] = [],
     fetches: string[] = [];
+  const clipboard: string[] = [];
   const state = {
+    clipboardFailure: false,
     revision: 1,
     peer: options.offline ? 'offline' : 'connected',
     protocol: options.offline ? 0 : 4,
@@ -95,8 +97,25 @@ async function desktop(
     host._wails ??= {};
     host._wails.flags = {};
     host._wails.environment = { OS: 'windows', Arch: 'amd64', Debug: false };
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: undefined,
+    });
   });
   await page.route('**/wails/runtime', async (route) => {
+    const request = route.request().postDataJSON();
+    if (request.object === 1 && request.method === 0) {
+      if (state.clipboardFailure) {
+        await route.fulfill({
+          status: 503,
+          json: { kind: 'RuntimeError', message: 'SYNTHETIC-CLIPBOARD-DETAIL' },
+        });
+      } else {
+        clipboard.push(request.args.text);
+        await route.fulfill({ json: null });
+      }
+      return;
+    }
     if (await serveDefaultAvatars(route)) return;
     if (await serveDefaultNotificationActivation(route)) return;
     const body = route.request().postDataJSON(),
@@ -207,7 +226,7 @@ async function desktop(
     }
     await route.fulfill({ json: result });
   });
-  return { state, calls, fetches };
+  return { state, calls, fetches, clipboard };
 }
 async function settings(page: Page) {
   await page
@@ -303,7 +322,9 @@ test('peer proposal opens an unchecked approval dialog before any service fetch'
 test('offline signed proposal inspection is local until separate approval and can export the signed reply', async ({
   page,
 }) => {
-  const { calls, fetches } = await desktop(page, { offline: true });
+  const { state, calls, fetches, clipboard } = await desktop(page, {
+    offline: true,
+  });
   await page.goto('/');
   await settings(page);
   await expect(page.getByLabel('New HTTPS relay-map URL')).toBeDisabled();
@@ -339,6 +360,30 @@ test('offline signed proposal inspection is local until separate approval and ca
   await expect(
     page.getByLabel('Signed service-change text', { exact: true }),
   ).toHaveValue(carry);
+  expect(clipboard).toEqual([]);
+  await page
+    .getByRole('button', { name: 'Copy signed text', exact: true })
+    .click();
+  await expect(
+    page
+      .getByRole('region', { name: 'Settings', exact: true })
+      .getByText('Signed service-change text copied.', { exact: true }),
+  ).toBeVisible();
+  expect(clipboard).toEqual([carry]);
+  state.clipboardFailure = true;
+  await page
+    .getByRole('button', { name: 'Copy signed text', exact: true })
+    .click();
+  await expect(
+    page
+      .getByRole('region', { name: 'Settings', exact: true })
+      .getByText(
+        'Clipboard access is unavailable. Select and copy the signed text below.',
+        { exact: true },
+      ),
+  ).toBeVisible();
+  expect(clipboard).toEqual([carry]);
+  await expect(page.getByText('SYNTHETIC-CLIPBOARD-DETAIL')).toHaveCount(0);
   expect(calls.find((x) => x.name === 'ImportRelayChange')?.args).toEqual([
     contactID,
     carry,

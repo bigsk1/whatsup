@@ -1,5 +1,7 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
+  import { Browser } from '@wailsio/runtime';
+  import { copyText } from './lib/clipboard';
   import Icon from './lib/icons/Icon.svelte';
   import Logo from './lib/brand/Logo.svelte';
   import Avatar from './lib/components/Avatar.svelte';
@@ -310,7 +312,15 @@
   }
 
   async function queueMessage() {
-    if (conversationEnabled()) await contacts.send();
+    if (!conversationEnabled()) return;
+    const contactID = conversation.contactID;
+    const epoch = conversationEpoch;
+    if (
+      (await contacts.send()) &&
+      epoch === conversationEpoch &&
+      contactID === conversation.contactID
+    )
+      await revealLatestMessages();
   }
 
   function selectConversation(contactID: string) {
@@ -578,6 +588,142 @@
         : 'No network session',
   );
   let composerInput = $state<HTMLTextAreaElement>();
+  let messageHistory = $state<HTMLDivElement>();
+  let copiedMessageID = $state('');
+  let copyStatus = $state('');
+  let copyFeedbackTimer: ReturnType<typeof setTimeout> | undefined;
+  let copyOperation = 0;
+  let newMessagesBelow = $state(false);
+  let followingLatest = true;
+  let historyContactID = '';
+  let historyView: HTMLDivElement | undefined;
+  let previousMessageIDs = new Set<string>();
+  let historyUpdate = 0;
+
+  function resetCopyFeedback() {
+    copyOperation += 1;
+    clearTimeout(copyFeedbackTimer);
+    copyFeedbackTimer = undefined;
+    copiedMessageID = '';
+    copyStatus = '';
+  }
+  onDestroy(resetCopyFeedback);
+
+  async function revealLatestMessages() {
+    followingLatest = true;
+    newMessagesBelow = false;
+    const view = messageHistory;
+    await tick();
+    if (view && view === messageHistory) view.scrollTop = view.scrollHeight;
+  }
+
+  function trackHistoryScroll() {
+    if (!messageHistory) return;
+    followingLatest =
+      messageHistory.scrollHeight -
+        messageHistory.clientHeight -
+        messageHistory.scrollTop <=
+      32;
+    if (followingLatest) newMessagesBelow = false;
+  }
+
+  // Capture the reader's position before Svelte changes the message DOM.
+  // A visible existing entry also anchors pagination when older text is prepended.
+  $effect.pre(() => {
+    const view = messageHistory;
+    const contactID = conversation.contactID;
+    timeline;
+    if (!view) return;
+    const changedContact =
+      contactID !== historyContactID || view !== historyView;
+    if (changedContact) {
+      historyContactID = contactID;
+      historyView = view;
+      followingLatest = true;
+      newMessagesBelow = false;
+      resetCopyFeedback();
+    } else {
+      const latestMessage = conversation.messages.at(-1);
+      if (
+        !followingLatest &&
+        latestMessage?.direction === 'incoming' &&
+        !previousMessageIDs.has(latestMessage.id)
+      )
+        newMessagesBelow = true;
+    }
+    previousMessageIDs = new Set(conversation.messages.map(({ id }) => id));
+    const follow = followingLatest;
+    const top = view.getBoundingClientRect().top;
+    const anchor = Array.from(
+      view.querySelectorAll(':scope > .message-bubble'),
+    ).find((child) => child.getBoundingClientRect().bottom > top);
+    const offset = anchor?.getBoundingClientRect().top;
+    const update = ++historyUpdate;
+    void tick().then(() => {
+      if (messageHistory !== view || update !== historyUpdate) return;
+      if (follow && followingLatest) view.scrollTop = view.scrollHeight;
+      else if (anchor?.isConnected && offset !== undefined)
+        view.scrollTop += anchor.getBoundingClientRect().top - offset;
+    });
+  });
+
+  // Media, fonts, the attachment panel and window resizing can change the
+  // visible height without a new message. Keep following only for bottom readers.
+  $effect(() => {
+    const view = messageHistory;
+    if (!view) return;
+    const sizes = new ResizeObserver(() => {
+      if (followingLatest) view.scrollTop = view.scrollHeight;
+    });
+    const observeEntries = () => {
+      sizes.disconnect();
+      sizes.observe(view);
+      for (const child of view.children) sizes.observe(child);
+    };
+    const entries = new MutationObserver(observeEntries);
+    entries.observe(view, { childList: true });
+    observeEntries();
+    return () => {
+      sizes.disconnect();
+      entries.disconnect();
+    };
+  });
+
+  async function copyMessage(id: string, text: string) {
+    const contactID = conversation.contactID;
+    resetCopyFeedback();
+    const operation = copyOperation;
+    try {
+      await copyText(text);
+      if (conversation.contactID !== contactID || operation !== copyOperation)
+        return;
+      copiedMessageID = id;
+      copyStatus = 'Message copied.';
+      copyFeedbackTimer = setTimeout(() => {
+        copiedMessageID = '';
+        copyStatus = '';
+        copyFeedbackTimer = undefined;
+      }, 2000);
+    } catch {
+      if (conversation.contactID === contactID && operation === copyOperation)
+        notice =
+          'Copy is unavailable. Select the message text and press Ctrl+C to copy it.';
+    }
+  }
+
+  async function openRepository() {
+    const url = 'https://github.com/bigsk1/whatsup';
+    if (!native) {
+      window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    try {
+      await Browser.OpenURL(url);
+    } catch {
+      notice =
+        'The browser could not be opened. Visit github.com/bigsk1/whatsup.';
+    }
+  }
 
   function insertEmoji(emoji: string) {
     if (!conversation.canSend || busy) return;
@@ -601,6 +747,9 @@
   image={attachmentsSelected ? $attachmentsState.image : null}
   onclose={() => attachments.closeImage()}
 />
+<span class="sr-only" role="status" aria-live="polite" aria-atomic="true"
+  >{copyStatus}</span
+>
 
 <a href="#conversation" class="skip-link" hidden={settingsOpen}
   >Skip to conversation</a
@@ -901,7 +1050,9 @@
           </p>
         {/if}
         <div
+          bind:this={messageHistory}
           class="message-history"
+          onscroll={trackHistoryScroll}
           role="log"
           aria-label="Messages"
           aria-busy={Boolean(
@@ -943,6 +1094,16 @@
               >
                 <p class="message-text" dir="auto">{message.text}</p>
                 <footer>
+                  <button
+                    class="text-button"
+                    aria-label="Copy message"
+                    title="Copy message text"
+                    onclick={() => void copyMessage(message.id, message.text)}
+                    ><Icon name="copy" size="1em" />{copiedMessageID ===
+                    message.id
+                      ? 'Copied'
+                      : 'Copy'}</button
+                  >
                   <button
                     class="text-button"
                     aria-label="Delete local message"
@@ -991,6 +1152,14 @@
             </div>
           {/each}
         </div>
+        {#if newMessagesBelow}
+          <button
+            type="button"
+            class="text-button new-message-cue"
+            aria-label="Show new messages"
+            onclick={() => void revealLatestMessages()}>New message ↓</button
+          >
+        {/if}
         {#if status.attachmentsAvailable}
           {#key conversation.contactID}
             <AttachmentPanel
@@ -1154,10 +1323,15 @@
       ><span
         ><Icon name={online ? 'unlock' : 'lock'} size="1.1em" />
         {storageLabel}</span
-      ><span class="build-label"
+      ><button
+        type="button"
+        class="build-label"
+        title="Open WhatsUp on GitHub"
+        aria-label="Open WhatsUp on GitHub"
+        onclick={() => void openRepository()}
         >{native
           ? `v${status.version} preview`
-          : 'Browser preview · desktop actions unavailable'}</span
+          : 'Browser preview · desktop actions unavailable'}</button
       >
     </footer>
   </main>

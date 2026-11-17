@@ -1,6 +1,6 @@
 # Security information
 
-WhatsUp 0.1.0 is unsigned preview software, not a stable release.
+WhatsUp 0.1.1 is unsigned preview software, not a stable release.
 It has not undergone an independent security audit or certification. Do not
 rely on the preview for sensitive communication.
 

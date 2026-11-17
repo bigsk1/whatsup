@@ -23,7 +23,8 @@ WhatsUp artwork and no longer derive from the Wails placeholder icon.
 
 The application applies a private, reviewed native integration patch to Wails
 3.1.0 for Go-only file drops and bounded drag-state hints, bounded
-completed-reader media responses and minimal Windows notification activation metadata. The
+completed-reader media responses, minimal Windows notification activation metadata
+and errors when native clipboard writes fail. The
 patch and immutable upstream basis are recorded in `config/wails-patch.json`.
 The exact upstream module and its MIT notice are preserved during the build.
 

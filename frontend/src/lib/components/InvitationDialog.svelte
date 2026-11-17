@@ -50,6 +50,19 @@
     inspection,
     inspecting,
   } = $derived($formState);
+  let now = $state(Date.now());
+  const expiryTime = $derived(Date.parse(expiresAt));
+  const secondsRemaining = $derived(
+    Number.isFinite(expiryTime)
+      ? Math.max(0, Math.ceil((expiryTime - now) / 1000))
+      : 0,
+  );
+  $effect(() => {
+    if (stage !== 'share' || !expiresAt) return;
+    now = Date.now();
+    const timer = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(timer);
+  });
   export function show() {
     if (!enabled || !dialog) return;
     flow.reset();
@@ -133,6 +146,13 @@
           /> Paste invitation</label
         >
       </fieldset>
+
+      {#if mode === 'create'}
+        <p class="service-help">
+          Invitations last 10 minutes and can be used once. Have the other
+          person ready before you create one.
+        </p>
+      {/if}
 
       {#if mode === 'join'}
         <label class="field-label" for="pasted-invitation"
@@ -253,6 +273,15 @@
         <Icon name="copy" size="1.1em" /> Copy invitation
       </button>
       {#if copyNotice}<p class="muted small" role="status">{copyNotice}</p>{/if}
+      <p
+        class="service-help"
+        role="timer"
+        aria-label="Invitation time remaining"
+      >
+        {Math.floor(secondsRemaining / 60)}:{String(
+          secondsRemaining % 60,
+        ).padStart(2, '0')} remaining
+      </p>
       <p class="muted small service-help">
         Expires at {new Date(expiresAt).toLocaleTimeString([], {
           hour: '2-digit',

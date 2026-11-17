@@ -1,6 +1,6 @@
 # Versions and compatibility
 
-WhatsUp's current friend-testing preview is **0.1.0**. A version
+WhatsUp's current preview is **0.1.1**. A version
 identifies an application revision; it does not certify security, completeness
 or release approval.
 

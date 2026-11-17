@@ -78,11 +78,7 @@ function injectRuntime() {
   (window as Window & { testClipboard?: string[] }).testClipboard = clipboard;
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
-    value: {
-      writeText: async (value: string) => {
-        clipboard.push(value);
-      },
-    },
+    value: undefined,
   });
 }
 
@@ -93,6 +89,7 @@ async function syntheticInvitations(page: Page, storage = 'unlocked') {
     create: undefined as undefined | (() => Promise<InvitationShare>),
     join: undefined as undefined | (() => Promise<PairingStatus>),
     cancelFailure: false,
+    clipboardFailure: false,
     inspect: undefined as
       undefined | (() => Promise<{ serviceURL: string; host: string }>),
     expiry: () => new Date(Date.now() + 600_000).toISOString(),
@@ -106,8 +103,27 @@ async function syntheticInvitations(page: Page, storage = 'unlocked') {
       external.push(request.url());
   });
   await page.route('**/wails/runtime', async (route) => {
-    if (await serveDefaultAppPreferences(route)) return;
     const body = route.request().postDataJSON();
+    if (body.object === 1 && body.method === 0) {
+      if (state.clipboardFailure) {
+        await route.fulfill({
+          status: 503,
+          json: {
+            kind: 'RuntimeError',
+            message: 'SYNTHETIC-PRIVATE-CLIPBOARD-DETAIL',
+          },
+        });
+      } else {
+        await page.evaluate((text: string) => {
+          (window as Window & { testClipboard?: string[] }).testClipboard?.push(
+            text,
+          );
+        }, body.args.text);
+        await route.fulfill({ json: null });
+      }
+      return;
+    }
+    if (await serveDefaultAppPreferences(route)) return;
     const operation = operations[body.args?.methodID];
     if (
       route.request().method() !== 'POST' ||
@@ -212,6 +228,12 @@ test('opening invitations makes no public request and requires URL plus explicit
   const create = dialog.getByRole('button', {
     name: 'Create private invitation',
   });
+  await expect(dialog).toContainText(
+    'Invitations last 10 minutes and can be used once.',
+  );
+  await expect(dialog).toContainText(
+    'Have the other person ready before you create one.',
+  );
   await expect(dialog.getByLabel('Connection service HTTPS URL')).toHaveValue(
     '',
   );
@@ -321,17 +343,13 @@ test('the public Tailcat relay URL is copied only explicitly without selecting i
   expect(errors).toEqual([]);
 });
 
-test('a failed public relay URL copy shows a fixed local notice and keeps consent unchanged', async ({
+test('a failed native public relay URL copy shows a fixed local notice and keeps consent unchanged', async ({
   page,
 }) => {
-  const { calls, errors, external } = await syntheticInvitations(page);
+  const { state, calls, errors, external } = await syntheticInvitations(page);
   await page.goto('/');
   const dialog = await openDialog(page);
-  await page.evaluate(() => {
-    navigator.clipboard.writeText = async () => {
-      throw new Error('SYNTHETIC-PRIVATE-CLIPBOARD-DETAIL');
-    };
-  });
+  state.clipboardFailure = true;
   await dialog
     .getByRole('button', { name: 'Copy relay URL', exact: true })
     .click();
@@ -489,6 +507,32 @@ test('Cancel clears a creation response that arrives late', async ({
   await expect(
     page.getByRole('dialog', { name: 'Share your invitation' }),
   ).toHaveCount(0);
+  await expect(page.getByLabel('Private invitation link')).toHaveCount(0);
+  expect(
+    calls.filter((call) => call.operation === 'CancelInvitation'),
+  ).toHaveLength(1);
+  expect(errors).toEqual([]);
+});
+
+test('the invitation countdown follows its actual expiry and cancels at zero', async ({
+  page,
+}) => {
+  const { state, calls, errors } = await syntheticInvitations(page);
+  const start = new Date('2026-11-17T12:00:00Z');
+  state.expiry = () => new Date(start.getTime() + 65_000).toISOString();
+  await page.clock.install({ time: new Date(start.getTime() - 60_000) });
+  // Keep page setup and concurrent test load from consuming countdown time.
+  await page.clock.pauseAt(start);
+  await page.goto('/');
+  await allowService(await openDialog(page));
+  await page.getByRole('button', { name: 'Create private invitation' }).click();
+  const timer = page.getByRole('timer', { name: 'Invitation time remaining' });
+  await expect(timer).toHaveText('1:05 remaining');
+  await page.clock.fastForward(5_000);
+  await expect(timer).toHaveText('1:00 remaining');
+  await page.clock.fastForward(59_000);
+  await expect(timer).toHaveText('0:01 remaining');
+  await page.clock.fastForward(1_000);
   await expect(page.getByLabel('Private invitation link')).toHaveCount(0);
   expect(
     calls.filter((call) => call.operation === 'CancelInvitation'),

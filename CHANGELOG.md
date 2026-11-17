@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.1 (unsigned preview)
+
+- Copy text from either side of a conversation, including URLs and line breaks,
+  with a brief confirmation that screen readers can announce. Desktop copy
+  actions use the native clipboard for messages, invitations and signed
+  connection-service text. Right-click editing supports copying selected text
+  and pasting into the message box. URLs stay as text, without automatic previews
+  or remote requests.
+- Chat follows incoming messages while you are at the bottom. Reading earlier
+  messages keeps your place, with a New message button to return to the latest.
+  Sending reveals your own message, and loading older history keeps your place.
+- The compact sidebar appears when you narrow the desktop window. The new
+  conversation button is smaller, and attachment deletion fits narrow windows
+  and long filenames.
+- Invitation setup explains the one-use, ten-minute lifetime before creation.
+  A countdown shows how long a created invitation has left.
+- The version in the bottom corner opens the WhatsUp GitHub repository.
+- Added installation instructions for Arch Linux and Omarchy.
+
 ## 0.1.0 (unsigned preview)
 
 - Profile pictures. Pick a photo for yourself and choose whether contacts can see

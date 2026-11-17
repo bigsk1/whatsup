@@ -22,6 +22,9 @@ const peerFingerprint = 'b'.repeat(64);
 const localFingerprint = 'a'.repeat(64);
 const createdAt = '2026-11-14T12:00:00Z';
 const incomingText = 'Synthetic saved conversation text';
+const appVersion: string = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+).version;
 
 type Operation =
   | 'GetStatus'
@@ -119,22 +122,44 @@ async function syntheticMessaging(
     send: undefined as
       undefined | ((text: string) => Promise<ConversationSnapshot>),
     sendFailure: false,
+    clipboardFailure: false,
     lock: undefined as undefined | (() => Promise<void>),
     forget: undefined as undefined | (() => Promise<void>),
     forgetFailure: false,
     forgetUnchangedFailure: false,
     holdPoll: undefined as undefined | (() => Promise<void>),
     pollHeld: false,
+    olderMessages: undefined as ConversationMessage[] | undefined,
   });
   const calls: { operation: Operation; args: unknown[] }[] = [];
   const errors: string[] = [];
   const external: string[] = [];
+  const openedURLs: string[] = [];
+  const clipboardWrites: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('request', (request) => {
     if (!request.url().startsWith('http://127.0.0.1:9245/'))
       external.push(request.url());
   });
   await page.route('**/wails/runtime', async (route) => {
+    const request = route.request().postDataJSON();
+    if (request.object === 1 && request.method === 0) {
+      if (state.clipboardFailure)
+        await route.fulfill({
+          status: 503,
+          body: 'Synthetic clipboard unavailable',
+        });
+      else {
+        clipboardWrites.push(request.args.text);
+        await route.fulfill({ json: null });
+      }
+      return;
+    }
+    if (request.object === 9 && request.method === 0) {
+      openedURLs.push(request.args.url);
+      await route.fulfill({ json: null });
+      return;
+    }
     if (await serveDefaultAppPreferences(route)) return;
     const body = route.request().postDataJSON();
     const operation = operations[body.args?.methodID];
@@ -166,6 +191,7 @@ async function syntheticMessaging(
       await route.fulfill({
         json: {
           ...unavailableStatus,
+          version: appVersion,
           storageState: state.storage,
           identityFingerprint:
             state.storage === 'unlocked' ? localFingerprint : '',
@@ -194,8 +220,20 @@ async function syntheticMessaging(
         json: snapshot.contactID ? [contactSummary(snapshot)] : [],
       });
     } else if (operation === 'GetMessages') {
+      const older = Boolean(args[1]);
       await route.fulfill({
-        json: messagePage(state.conversation as ConversationSnapshot),
+        json: {
+          ...messagePage(state.conversation as ConversationSnapshot),
+          ...(state.olderMessages
+            ? {
+                messages: older
+                  ? state.olderMessages
+                  : (state.conversation as ConversationSnapshot).messages,
+                nextCursor: older ? '' : '100',
+                hasMore: !older,
+              }
+            : {}),
+        },
       });
     } else if (operation === 'MarkRead') {
       await route.fulfill({
@@ -272,8 +310,298 @@ async function syntheticMessaging(
     }
   });
   await page.addInitScript(injectRuntime);
-  return { state, calls, errors, external };
+  return { state, calls, errors, external, openedURLs, clipboardWrites };
 }
+
+test('copy controls preserve URL and multiline text on both sides without loading links', async ({
+  page,
+}) => {
+  await page.clock.install();
+  const texts = [
+    'https://example.invalid/private?value=synthetic&second=two',
+    'An outgoing synthetic message\nwith a second line and https://example.invalid/outgoing',
+  ];
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      value: undefined,
+    });
+  });
+  const { errors, external, clipboardWrites } = await syntheticMessaging(
+    page,
+    approved({
+      messages: [
+        message(firstID, texts[0]),
+        message(nextID, texts[1], 'outgoing'),
+      ],
+    }),
+  );
+  await page.goto('/');
+  for (const [index, label] of ['Contact message', 'Your message'].entries()) {
+    const bubble = page.getByRole('article', { name: label, exact: true });
+    await bubble
+      .getByRole('button', { name: 'Copy message', exact: true })
+      .click();
+    await expect(
+      bubble.getByRole('button', { name: 'Copy message' }),
+    ).toHaveText('Copied');
+    expect(clipboardWrites).toEqual(texts.slice(0, index + 1));
+    const status = page
+      .getByRole('status')
+      .filter({ hasText: 'Message copied.' });
+    await expect(status).toHaveText('Message copied.');
+    await page.clock.fastForward(2100);
+    await expect(
+      bubble.getByRole('button', { name: 'Copy message', exact: true }),
+    ).toHaveText('Copy');
+    await expect(status).toHaveCount(0);
+  }
+  expect(external).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('native clipboard failures keep message text and show a fixed copy fallback', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', { value: undefined });
+  });
+  const { state, errors, external, clipboardWrites } = await syntheticMessaging(
+    page,
+    approved({ messages: [message()] }),
+  );
+  state.clipboardFailure = true;
+  await page.goto('/');
+  const bubble = page.getByRole('article', {
+    name: 'Contact message',
+    exact: true,
+  });
+  await bubble
+    .getByRole('button', { name: 'Copy message', exact: true })
+    .click();
+  await expect(page.getByRole('alert')).toContainText(
+    'Copy is unavailable. Select the message text and press Ctrl+C to copy it.',
+  );
+  await expect(bubble.locator('.message-text')).toHaveText(incomingText);
+  await expect(
+    bubble.getByRole('button', { name: 'Copy message', exact: true }),
+  ).toHaveText('Copy');
+  expect(clipboardWrites).toEqual([]);
+  expect(external).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('version opens the fixed repository through the native browser only when clicked', async ({
+  page,
+}) => {
+  const { openedURLs, external, errors } = await syntheticMessaging(page);
+  await page.goto('/');
+  const version = page.getByRole('button', {
+    name: 'Open WhatsUp on GitHub',
+    exact: true,
+  });
+  await expect(version).toContainText(`v${appVersion} preview`);
+  expect(openedURLs).toEqual([]);
+  await version.click();
+  await expect
+    .poll(() => openedURLs)
+    .toEqual(['https://github.com/bigsk1/whatsup']);
+  expect(external).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+test('messages follow the bottom for incoming and outgoing text while preserving a reader above it', async ({
+  page,
+}) => {
+  const history = Array.from({ length: 35 }, (_, index) =>
+    message(
+      Buffer.alloc(16, index + 10).toString('base64url'),
+      `Synthetic scroll message ${index + 1}\nSecond line of synthetic text.`,
+    ),
+  );
+  const { state, errors } = await syntheticMessaging(
+    page,
+    approved({ state: 'connected', canConnect: false, messages: history }),
+  );
+  await page.goto('/');
+  const log = page.getByRole('log', { name: 'Messages' });
+  const distance = () =>
+    log.evaluate(
+      (view) => view.scrollHeight - view.clientHeight - view.scrollTop,
+    );
+  await expect(log.locator('.message-bubble')).toHaveCount(35);
+  await expect.poll(distance).toBeLessThanOrEqual(1);
+  state.conversation = approved({
+    state: 'connected',
+    canConnect: false,
+    revision: 2,
+    messages: [
+      ...history,
+      message(firstID, 'Synthetic incoming at the bottom'),
+    ],
+  });
+  await expect(log.locator('.message-bubble')).toHaveCount(36);
+  await expect.poll(distance).toBeLessThanOrEqual(1);
+  await page
+    .getByRole('textbox', { name: 'Message', exact: true })
+    .fill('Synthetic outgoing at the bottom');
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(log.locator('.message-bubble')).toHaveCount(37);
+  await expect.poll(distance).toBeLessThanOrEqual(1);
+
+  await log.evaluate((view) => {
+    view.scrollTop = 180;
+  });
+  await expect.poll(distance).toBeGreaterThan(100);
+  // A real scroll event updates the reader's intent before a backend hint.
+  await log.evaluate((view) => view.dispatchEvent(new Event('scroll')));
+  const anchorIndex = await log.evaluate((view) => {
+    const top = view.getBoundingClientRect().top;
+    return Array.from(view.querySelectorAll('.message-bubble')).findIndex(
+      (bubble) => bubble.getBoundingClientRect().bottom > top,
+    );
+  });
+  const anchor = log.locator('.message-bubble').nth(anchorIndex);
+  const anchorTop = (await anchor.boundingBox())!.y;
+  const current = state.conversation as ConversationSnapshot;
+  state.conversation = {
+    ...current,
+    revision: current.revision + 1,
+    messages: [
+      ...current.messages,
+      message(
+        Buffer.alloc(16, 99).toString('base64url'),
+        'Synthetic incoming while reading earlier text',
+      ),
+    ],
+  };
+  await expect(log.locator('.message-bubble')).toHaveCount(38);
+  await expect
+    .poll(async () => (await anchor.boundingBox())!.y)
+    .toBeCloseTo(anchorTop, 0);
+  await expect.poll(distance).toBeGreaterThan(100);
+  const cue = page.getByRole('button', {
+    name: 'Show new messages',
+    exact: true,
+  });
+  await expect(cue).toHaveText('New message ↓');
+  await cue.click();
+  await expect(cue).toHaveCount(0);
+  await expect.poll(distance).toBeLessThanOrEqual(1);
+  const resumed = state.conversation as ConversationSnapshot;
+  state.conversation = {
+    ...resumed,
+    revision: resumed.revision + 1,
+    messages: [
+      ...resumed.messages,
+      message(
+        Buffer.alloc(16, 100).toString('base64url'),
+        'Synthetic incoming after returning to the bottom',
+      ),
+    ],
+  };
+  await expect(log.locator('.message-bubble')).toHaveCount(39);
+  await expect.poll(distance).toBeLessThanOrEqual(1);
+  await page.setViewportSize({ width: 1024, height: 650 });
+  await expect.poll(distance).toBeLessThanOrEqual(1);
+  expect(errors).toEqual([]);
+});
+
+test('sending while reading older text reveals a successful send while a failed send keeps the draft and position', async ({
+  page,
+}) => {
+  const history = Array.from({ length: 30 }, (_, index) =>
+    message(
+      Buffer.alloc(16, index + 10).toString('base64url'),
+      `Synthetic earlier message ${index + 1}\nSecond line of synthetic text.`,
+    ),
+  );
+  const { state, errors } = await syntheticMessaging(
+    page,
+    approved({ state: 'connected', canConnect: false, messages: history }),
+  );
+  await page.goto('/');
+  const log = page.getByRole('log', { name: 'Messages' });
+  const distance = () =>
+    log.evaluate(
+      (view) => view.scrollHeight - view.clientHeight - view.scrollTop,
+    );
+  await expect(log.locator('.message-bubble')).toHaveCount(30);
+  await log.evaluate((view) => {
+    view.scrollTop = 180;
+    view.dispatchEvent(new Event('scroll'));
+  });
+  await expect.poll(distance).toBeGreaterThan(100);
+  const anchorIndex = await log.evaluate((view) => {
+    const top = view.getBoundingClientRect().top;
+    return Array.from(view.querySelectorAll('.message-bubble')).findIndex(
+      (bubble) => bubble.getBoundingClientRect().bottom > top,
+    );
+  });
+  const anchor = log.locator('.message-bubble').nth(anchorIndex);
+  const anchorTop = (await anchor.boundingBox())!.y;
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await composer.fill('Synthetic send from earlier history');
+  state.sendFailure = true;
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText(
+    'The message could not be saved',
+  );
+  await expect(composer).toHaveValue('Synthetic send from earlier history');
+  // The error notice changes the pane's height; preserve the visible text's
+  // position rather than its raw scroll offset inside the resized pane.
+  await expect
+    .poll(async () => (await anchor.boundingBox())!.y)
+    .toBeCloseTo(anchorTop, 0);
+  await expect.poll(distance).toBeGreaterThan(100);
+  state.sendFailure = false;
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  await expect(log.locator('.message-bubble')).toHaveCount(31);
+  await expect(composer).toHaveValue('');
+  await expect.poll(distance).toBeLessThanOrEqual(1);
+  await expect(
+    log.getByText('Synthetic send from earlier history', { exact: true }),
+  ).toBeInViewport();
+  expect(errors).toEqual([]);
+});
+
+test('loading older history keeps the existing first message at the same reading position', async ({
+  page,
+}) => {
+  const recent = Array.from({ length: 25 }, (_, index) =>
+    message(
+      Buffer.alloc(16, index + 10).toString('base64url'),
+      `Synthetic recent message ${index + 1}\nSecond line of synthetic text.`,
+    ),
+  );
+  const { state, errors } = await syntheticMessaging(
+    page,
+    approved({ state: 'connected', canConnect: false, messages: recent }),
+  );
+  state.olderMessages = Array.from({ length: 12 }, (_, index) => ({
+    ...message(
+      Buffer.alloc(16, index + 60).toString('base64url'),
+      `Synthetic older message ${index + 1}\nSecond line of synthetic text.`,
+    ),
+    createdAt: '2026-11-13T12:00:00Z',
+  }));
+  await page.goto('/');
+  const log = page.getByRole('log', { name: 'Messages' });
+  await expect(log.locator('.message-bubble')).toHaveCount(25);
+  await log.evaluate((view) => {
+    view.scrollTop = 0;
+    view.dispatchEvent(new Event('scroll'));
+  });
+  const first = page.getByText(recent[0].text, { exact: true });
+  const before = (await first.boundingBox())!.y;
+  await log
+    .getByRole('button', { name: 'Load older messages', exact: true })
+    .click();
+  await expect(log.locator('.message-bubble')).toHaveCount(37);
+  await expect
+    .poll(async () => (await first.boundingBox())!.y)
+    .toBeCloseTo(before, 0);
+  expect(errors).toEqual([]);
+});
 
 test('clear history is confirmed, keeps the contact and recovers from storage full', async ({
   page,

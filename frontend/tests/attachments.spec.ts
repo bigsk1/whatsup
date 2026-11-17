@@ -279,7 +279,18 @@ async function desktop(
     host._wails.flags = {};
     host._wails.environment = { OS: 'linux', Arch: 'amd64', Debug: false };
   });
+  // Cold Vite binding/model imports can precede the first desktop status call,
+  // especially while other host work competes for disk access. Bound that setup
+  // separately; attachment behavior keeps Playwright's normal assertion timeout.
+  const statusReady = page.waitForRequest(
+    (request) =>
+      request.url().endsWith('/wails/runtime') &&
+      request.method() === 'POST' &&
+      operations.get(request.postDataJSON().args?.methodID) === 'GetStatus',
+    { timeout: 20_000 },
+  );
   await page.goto('/');
+  await statusReady;
   await expect(
     page.getByRole('region', { name: 'Attachments', exact: true }),
   ).toBeVisible();

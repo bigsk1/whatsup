@@ -4,6 +4,7 @@ import { unavailableStatus } from '../src/lib/backend';
 import { unavailableConversation } from '../src/lib/messaging';
 import { unavailablePairing } from '../src/lib/pairing';
 import type { AttachmentItem } from '../src/lib/state/attachments';
+import { skins } from '../src/lib/themes/catalog';
 import {
   contactSummary,
   messagePage,
@@ -21,7 +22,11 @@ for (const match of generated.matchAll(
 ))
   operations.set(Number(match[2]), match[1]);
 
-async function crowdedConversation(page: Page, os: string) {
+async function crowdedConversation(
+  page: Page,
+  os: string,
+  attachmentName = 'Synthetic layout attachment 1.pdf',
+) {
   const conversation = {
     ...unavailableConversation,
     state: 'connected' as const,
@@ -44,7 +49,10 @@ async function crowdedConversation(page: Page, os: string) {
   };
   const items: AttachmentItem[] = Array.from({ length: 13 }, (_, index) => ({
     id: Buffer.alloc(16, index + 40).toString('base64url'),
-    name: `Synthetic layout attachment ${index + 1}.pdf`,
+    name:
+      index === 0
+        ? attachmentName
+        : `Synthetic layout attachment ${index + 1}.pdf`,
     mediaType: 'application/pdf',
     size: 647,
     direction: 'incoming',
@@ -178,6 +186,7 @@ async function reachAttachmentControl(
 for (const { label, width, height, os } of [
   { label: 'Windows desktop', width: 1168, height: 773, os: 'windows' },
   { label: 'Ubuntu desktop', width: 1024, height: 720, os: 'linux' },
+  { label: 'minimum native window', width: 760, height: 560, os: 'windows' },
   { label: 'compact window', width: 520, height: 500, os: 'linux' },
 ]) {
   test(`keeps the composer visible with independently scrollable history and files in a ${label}`, async ({
@@ -290,6 +299,135 @@ for (const { label, width, height, os } of [
       .click();
     await expect(attachmentBody).toBeHidden();
     await expectAnchorsUnmoved(page, original);
+    expect(errors).toEqual([]);
+  });
+}
+
+for (const skin of skins) {
+  test(`collapses the sidebar at a reachable desktop width with a smaller new-conversation button in ${skin}`, async ({
+    page,
+  }) => {
+    await page.addInitScript(
+      ({ key, value }) => {
+        localStorage.setItem(key, JSON.stringify(value));
+      },
+      { key: 'whatsup.appearance.v2', value: { skin } },
+    );
+    await page.setViewportSize({ width: 1024, height: 720 });
+    const errors = await crowdedConversation(page, 'windows');
+    const sidebar = page.locator('.contacts-panel');
+    const newConversation = page.getByRole('button', {
+      name: 'New conversation',
+      exact: true,
+    });
+    await expect(page.locator('.wordmark')).toBeVisible();
+    expect((await box(sidebar)).width).toBeGreaterThan(200);
+    const button = await box(newConversation);
+    const rootFont = await page.evaluate(() =>
+      parseFloat(getComputedStyle(document.documentElement).fontSize),
+    );
+    expect(button.width).toBeCloseTo(rootFont * 1.8, 1);
+    expect(button.height).toBeCloseTo(rootFont * 1.8, 1);
+    expect(button.width).toBeGreaterThanOrEqual(24);
+    await expect(newConversation).toBeInViewport({ ratio: 1 });
+
+    const attachments = page.getByRole('region', {
+      name: 'Attachments',
+      exact: true,
+    });
+    await attachments
+      .getByRole('button', { name: 'Expand attachments', exact: true })
+      .click();
+    await expect(attachments.locator('.drop-hint')).toBeVisible();
+    const panelMargins = () =>
+      attachments.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return [parseFloat(style.marginLeft), parseFloat(style.marginRight)];
+      });
+    for (const margin of await panelMargins())
+      expect(margin).toBeCloseTo(rootFont * 1.25, 1);
+
+    // A tall window ensures the compact-width rule, rather than the separate
+    // short-height rule, is what hides the large file-drop hint.
+    await page.setViewportSize({ width: 760, height: 720 });
+    await expect(attachments.locator('.drop-hint')).toBeHidden();
+    for (const margin of await panelMargins())
+      expect(margin).toBeCloseTo(rootFont * 0.75, 1);
+
+    await page.setViewportSize({ width: 760, height: 560 });
+    await expect(page.locator('.wordmark')).toBeHidden();
+    await expect(page.locator('.search-box')).toBeHidden();
+    await expect(page.locator('.contact-details')).toBeHidden();
+    expect((await box(sidebar)).width).toBeLessThan(100);
+    await expect(newConversation).toBeInViewport({ ratio: 1 });
+    await expect(
+      page.getByRole('button', {
+        name: 'Conversation with Approved contact',
+        exact: true,
+      }),
+    ).toBeInViewport({ ratio: 1 });
+    await expect(
+      page.getByRole('button', { name: 'Open settings', exact: true }),
+    ).toBeInViewport({ ratio: 1 });
+    await expect(
+      page.getByRole('textbox', { name: 'Message', exact: true }),
+    ).toBeInViewport({ ratio: 1 });
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBe(760);
+    expect(errors).toEqual([]);
+  });
+
+  test(`keeps the attachment-deletion explanation padded and readable in a short ${skin} window`, async ({
+    page,
+  }) => {
+    await page.addInitScript(
+      ({ key, value }) => {
+        localStorage.setItem(key, JSON.stringify(value));
+      },
+      { key: 'whatsup.appearance.v2', value: { skin } },
+    );
+    await page.setViewportSize({ width: 520, height: 500 });
+    const filename = `${'LongSyntheticAttachmentName'.repeat(7)}.pdf`;
+    const errors = await crowdedConversation(page, 'linux', filename);
+    await page
+      .getByRole('button', { name: 'Expand attachments', exact: true })
+      .click();
+    await page
+      .getByRole('region', { name: 'Attachments', exact: true })
+      .getByRole('button', { name: 'Delete attachment…', exact: true })
+      .first()
+      .click();
+    const dialog = page.getByRole('dialog', {
+      name: 'Delete this attachment from WhatsUp?',
+      exact: true,
+    });
+    await expect(dialog).toBeVisible();
+    const bounds = await box(dialog);
+    const explanation = await box(
+      dialog.locator('#delete-attachment-description'),
+    );
+    const name = await box(dialog.locator('.attachment-name'));
+    const leftInset = explanation.x - bounds.x;
+    const rightInset =
+      bounds.x + bounds.width - explanation.x - explanation.width;
+    expect(leftInset).toBeGreaterThan(16);
+    expect(rightInset).toBeCloseTo(leftInset, 1);
+    expect(name.x).toBeCloseTo(explanation.x, 1);
+    expect(name.width).toBeCloseTo(explanation.width, 1);
+    expect(
+      await dialog.evaluate(
+        (element) => element.scrollWidth - element.clientWidth,
+      ),
+    ).toBeLessThanOrEqual(1);
+    await expect(
+      dialog.getByRole('button', { name: 'Cancel', exact: true }),
+    ).toBeInViewport({ ratio: 0.99 });
+    await expect(
+      dialog.getByRole('button', { name: 'Delete from WhatsUp', exact: true }),
+    ).toBeInViewport({ ratio: 0.99 });
+    await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(dialog).toBeHidden();
     expect(errors).toEqual([]);
   });
 }

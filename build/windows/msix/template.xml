@@ -17,7 +17,7 @@
         PackageDisplayName="WhatsUp"
         PublisherName="CN="
         PublisherDisplayName=""
-        Version="0.1.0.0"
+        Version="0.1.1.0"
         PackageDescription="Private one-to-one desktop messenger">
         <Capabilities>
             <Capability Name="runFullTrust" />

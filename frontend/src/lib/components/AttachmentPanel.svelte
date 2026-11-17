@@ -622,7 +622,7 @@
     font-size: 0.8rem;
     color: var(--faint);
   }
-  @media (max-width: 720px) {
+  @media (max-width: 820px) {
     .attachments {
       margin: 0 0.75rem;
     }

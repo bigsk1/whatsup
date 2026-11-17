@@ -61,9 +61,9 @@ function sourceDefinition(root, checkSums) {
     root = path.resolve(root); directory(root); directory(path.join(root, 'config')); directory(path.join(root, 'third_party')); directory(path.join(root, 'third_party/patches'));
     const manifestBytes = file(path.join(root, 'config/wails-patch.json'), 128 << 10);
     const m = JSON.parse(manifestBytes.toString('utf8'));
-    if (m.schemaVersion !== 1 || m.module !== moduleName || m.version !== moduleVersion || m.patchVersion !== 4 || m.replacement !== replacementPath
+    if (m.schemaVersion !== 1 || m.module !== moduleName || m.version !== moduleVersion || m.patchVersion !== 5 || m.replacement !== replacementPath
       || m.upstreamSum !== upstreamSum || m.upstreamGoModSum !== upstreamGoModSum
-      || JSON.stringify(m.purpose) !== JSON.stringify(['native_only_file_drop', 'completed_reader_response', 'minimal_notification_activation', 'native_only_drag_state'])
+      || JSON.stringify(m.purpose) !== JSON.stringify(['native_only_file_drop', 'completed_reader_response', 'minimal_notification_activation', 'native_only_drag_state', 'clipboard_write_failure'])
       || !sha256.test(m.upstreamTree?.sha256) || !sha256.test(m.patchedTree?.sha256)
       || !Number.isSafeInteger(m.upstreamTree?.count) || !Number.isSafeInteger(m.patchedTree?.count)
       || m.upstreamTree.count < 1 || m.patchedTree.count < 1 || m.patchedTree.count > 10000

@@ -413,7 +413,10 @@ export function createContacts(bridge: ContactsBridge = contactsBridge) {
     return true;
   }
 
-  async function mutate(id: string, kind: 'sending' | 'connecting') {
+  async function mutate(
+    id: string,
+    kind: 'sending' | 'connecting',
+  ): Promise<boolean> {
     const contact = current.contacts.find((item) => item.contactID === id);
     const text = current.drafts[id] ?? '';
     if (
@@ -424,7 +427,7 @@ export function createContacts(bridge: ContactsBridge = contactsBridge) {
         ? !contact.canSend || !validMessageText(text)
         : !contact.canConnect)
     )
-      return;
+      return false;
     const epoch = generation;
     const operation = operations.get(id) ?? 0;
     publish({ [kind]: { ...current[kind], [id]: true } });
@@ -434,10 +437,13 @@ export function createContacts(bridge: ContactsBridge = contactsBridge) {
         kind === 'sending'
           ? await bridge.send(id, text)
           : await bridge.connect(id);
-      if (!live(epoch, id, operation)) return;
+      if (!live(epoch, id, operation)) return false;
       apply(value);
       if (kind === 'sending' && current.drafts[id] === text)
         publish({ drafts: { ...current.drafts, [id]: '' } });
+      // The backend accepted the operation even when a newer authoritative
+      // event has already superseded its response snapshot.
+      return true;
     } catch {
       if (live(epoch, id, operation))
         setNotice(
@@ -446,6 +452,7 @@ export function createContacts(bridge: ContactsBridge = contactsBridge) {
             ? 'The message could not be saved to the local queue. Your draft is still here; try again.'
             : 'The connection could not be started. Your saved messages remain on this device. Try Connect again.',
         );
+      return false;
     } finally {
       if (live(epoch, id, operation))
         publish({ [kind]: { ...current[kind], [id]: false } });
