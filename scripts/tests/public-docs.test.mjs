@@ -10,7 +10,7 @@ import { within } from '../lib/workflow.mjs';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const publicDocuments = [
   'README.md', 'SECURITY.md', 'THIRD_PARTY_NOTICES.md', 'CHANGELOG.md',
-  'docs/privacy.md', 'docs/linux-support.md', 'docs/versioning.md',
+  'docs/privacy.md', 'docs/linux-support.md', 'docs/arch-installation.md', 'docs/versioning.md',
 ];
 const privateDocuments = [
   'AGENTS.md', 'design-qa.md', 'session-notes.md',

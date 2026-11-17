@@ -24,26 +24,38 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
+      - name: Determine whether native component checks are needed
+        id: scope
+        run: node scripts/whatsup.mjs ci-scope
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: steps.scope.outputs.run_components != 'false'
         with:
           go-version-file: go.mod
       - name: Disable Go local collection and telemetry upload
+        if: steps.scope.outputs.run_components != 'false'
         run: go telemetry off
       - name: Linux native build dependencies
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && steps.scope.outputs.run_components != 'false'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgtk-4-dev libwebkitgtk-6.0-dev build-essential pkg-config
       - name: Install frozen graph and pinned tools
+        if: steps.scope.outputs.run_components != 'false'
         run: npm run setup
       - name: Install the committed browser test runtime
+        if: steps.scope.outputs.run_components != 'false'
         run: node frontend/node_modules/@playwright/test/cli.js install --with-deps chromium
       - name: Validate implemented scope and current advisories
+        if: steps.scope.outputs.run_components != 'false'
         run: npm run test:app
       - name: Build native development candidate
+        if: steps.scope.outputs.run_components != 'false'
         run: npm run build
 
 # Component CI does not authorize a release or establish native transport QA.
+# Keep the matrix jobs/check names present for documentation-only changes. Only
+# their expensive steps are skipped; workflow tests and release runs stay intact.
 # Dependency advisories are enforced with only the exact, expiring development
 # exception in config/advisory-exception.json; new or changed findings fail.

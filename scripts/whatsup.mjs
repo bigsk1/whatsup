@@ -15,6 +15,7 @@ import { evaluateNpmAudit } from './lib/npm-advisories.mjs';
 import { arWriterAdvisories } from './lib/ar-writer-advisories.mjs';
 import { createPreviewSBOM, nativeInstaller, previewArtifactName } from './lib/preview-package.mjs';
 import { releasePreflight, releaseCollect, releasePublish } from './lib/release-ci.mjs';
+import { runComponentScope } from './lib/ci-scope.mjs';
 import {
   assertNodeRuntime, assertReviewedGoGraph, assertToolBuildInfo, atLeast, checksums, collectArtifacts, collectSourceFiles,
   latestLtsNode, parseVersion, privateToolEnvironment, readJson, requireApp, requireFrontendScripts, requireFullReadiness,
@@ -41,7 +42,7 @@ const commands = new Set([
   'doctor', 'tooling-test', 'setup', 'dev', 'test-app', 'test-credentials', 'native-check', 'wsl', 'build', 'build-review', 'check', 'update', 'package', 'verify-release',
   // Reviewed Wails Taskfiles delegate to these same cross-platform implementations.
   'native-build', 'native-package', 'frontend-dev', 'frontend-build', 'generate-bindings', 'run-native',
-  'release-preflight', 'release-collect', 'release-publish',
+  'release-preflight', 'release-collect', 'release-publish', 'ci-scope',
 ]);
 
 function run(executable, args, { cwd = root, capture = false, timeout = 120000, env = {}, mutableGo = false, acceptedStatuses = [0] } = {}) {
@@ -719,6 +720,7 @@ try {
   verifyWailsDefinition(root);
   if (command === 'doctor') await doctor();
   if (command === 'tooling-test') await toolingTest();
+  if (command === 'ci-scope') await runComponentScope(root);
   if (command === 'setup') await setup();
   if (command === 'dev') {
     await requireApp(root);

@@ -1,7 +1,7 @@
 # Linux support
 
-The Linux preview currently targets Ubuntu 24.04 on x86-64. Other distributions,
-architectures, desktop sessions and graphics stacks are not yet validated.
+The Linux release provides an Ubuntu 24.04 package for x86-64. For Arch Linux
+and Omarchy, follow the [manual installation guide](arch-installation.md).
 
 ## Requirements
 

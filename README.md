@@ -46,6 +46,11 @@ policy WebKit needs. Launch **WhatsUp** from the application menu. Upgrading kee
 your local profile; uninstalling the application keeps personal data too. See
 [Linux support](docs/linux-support.md) for desktop and Secret Service requirements.
 
+### Arch Linux / Omarchy
+
+For installation on Arch Linux or Omarchy, follow the
+[Arch installation guide](docs/arch-installation.md).
+
 ### Verify a download
 
 Each preview includes `SHA256SUMS` and a dependency SBOM. On Windows:
