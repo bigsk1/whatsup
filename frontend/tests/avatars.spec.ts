@@ -239,79 +239,43 @@ test('profile pictures use the Go picker, independent sharing and local-only dis
   expect(external).toEqual([]);
 });
 
-test('malformed, metadata-bearing and oversized picture sources never render or reach the network', async ({
-  page,
-}) => {
-  const { state, calls, errors, external } = await fixture(page);
-  await page.goto('/');
-  const workspace = await settings(page);
-  await expect(
-    workspace.getByRole('button', { name: 'Choose profile picture…' }),
-  ).toBeEnabled();
-  for (const ownURL of [
-    'https://peer.example/photo.png',
-    own + '?metadata=GPS',
-    'data:image/png;base64,' + 'A'.repeat(300000),
-    '/local-media/not-a-handle',
-  ]) {
-    state.chosen = { ...initial(), ownURL };
-    const choices = calls.filter(
-      (call) => call.method === 'ChooseProfileAvatar',
-    ).length;
-    await workspace
-      .getByRole('button', { name: 'Choose profile picture…', exact: true })
-      .click();
-    await expect
-      .poll(
-        () =>
-          calls.filter((call) => call.method === 'ChooseProfileAvatar').length,
-      )
-      .toBe(choices + 1);
-    await expect(
-      workspace.getByRole('button', {
-        name: 'Choose profile picture…',
-        exact: true,
-      }),
-    ).toBeEnabled();
+for (const [label, ownURL] of [
+  ['remote', 'https://peer.example/photo.png'],
+  ['metadata-bearing', own + '?metadata=GPS'],
+  ['oversized', 'data:image/png;base64,' + 'A'.repeat(300000)],
+  ['malformed', '/local-media/not-a-handle'],
+  ['failed picker response', null],
+] as const) {
+  test(`profile picture rejection stays local: ${label}`, async ({ page }) => {
+    const { state, calls, errors, external } = await fixture(page);
+    if (ownURL === null) state.choiceFailure = true;
+    else state.chosen = { ...initial(), ownURL };
+    await page.goto('/');
+    const workspace = await settings(page);
+    const choose = workspace.getByRole('button', {
+      name: 'Choose profile picture…',
+      exact: true,
+    });
+    await choose.click();
     await expect(
       workspace.getByText('The profile picture could not be changed.', {
         exact: false,
       }),
     ).toBeVisible();
+    expect(
+      calls.filter((call) => call.method === 'ChooseProfileAvatar'),
+    ).toHaveLength(1);
+    await expect(choose).toBeEnabled();
     await expect(page.locator('.device-footer img.avatar-photo')).toHaveCount(
       0,
     );
-  }
-  state.choiceFailure = true;
-  const choices = calls.filter(
-    (call) => call.method === 'ChooseProfileAvatar',
-  ).length;
-  await workspace
-    .getByRole('button', { name: 'Choose profile picture…', exact: true })
-    .click();
-  await expect
-    .poll(
-      () =>
-        calls.filter((call) => call.method === 'ChooseProfileAvatar').length,
-    )
-    .toBe(choices + 1);
-  await expect(
-    workspace.getByRole('button', {
-      name: 'Choose profile picture…',
-      exact: true,
-    }),
-  ).toBeEnabled();
-  await expect(
-    workspace.getByText('The profile picture could not be changed.', {
-      exact: false,
-    }),
-  ).toBeVisible();
-  await expect(page.getByText('SYNTHETIC-PRIVATE-IMAGE-METADATA')).toHaveCount(
-    0,
-  );
-  expect(errors).toEqual([]);
-  expect(external).toEqual([]);
-});
+    await expect(
+      page.getByText('SYNTHETIC-PRIVATE-IMAGE-METADATA'),
+    ).toHaveCount(0);
+    expect(errors).toEqual([]);
+    expect(external).toEqual([]);
+  });
+}
 
 test('replayed snapshots cannot restore an old photo and authoritative contact clear returns to a letter', async ({
   page,
