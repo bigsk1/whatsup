@@ -341,7 +341,7 @@ test('private contact names override shared names, clear back to the shared name
   await expect(page.locator('.conversation-header')).toContainText(nickname);
   await expect(page.locator('b')).toHaveCount(0);
   await page
-    .getByRole('searchbox', { name: 'Search contacts' })
+    .getByRole('searchbox', { name: 'Filter contacts' })
     .fill('private laptop');
   await expect(page.locator('.approved-contact')).toBeVisible();
   await openSettings(page, 'Contact');
@@ -669,7 +669,7 @@ test('locking clears a private contact-name search with the decrypted conversati
   const { state, errors } = await fixture(page);
   state.conversation = snapshot({ localName: 'Synthetic private nickname' });
   await page.goto('/');
-  const search = page.getByRole('searchbox', { name: 'Search contacts' });
+  const search = page.getByRole('searchbox', { name: 'Filter contacts' });
   await search.fill('Synthetic private nickname');
   await page
     .locator('.conversation-header')

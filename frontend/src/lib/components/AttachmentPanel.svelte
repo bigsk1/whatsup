@@ -156,22 +156,22 @@
           /> Send as file (keep original bytes)</label
         >
       </div>
-      <div
-        class="drop-hint"
-        class:drag-active={dragActive}
-        role={dragActive ? 'status' : undefined}
-      >
-        <Icon name="dragDrop" size="1.6em" />
-        <p>
-          <strong
-            >{dragActive
-              ? 'Drop a file to prepare an attachment.'
-              : 'Drop a file anywhere in this window.'}</strong
-          >
-          Images are re-encoded to remove metadata by default. Files stay local until
-          you choose Send. One file per drop, up to 2 GiB.
-        </p>
-      </div>
+      {#if stageAllowed}<div
+          class="drop-hint"
+          class:drag-active={dragActive}
+          role={dragActive ? 'status' : undefined}
+        >
+          <Icon name="dragDrop" size="1.6em" />
+          <p>
+            <strong
+              >{dragActive
+                ? 'Drop a file to prepare an attachment.'
+                : 'Drop a file anywhere in this window.'}</strong
+            >
+            Images are re-encoded to remove metadata by default. Files stay local
+            until you choose Send. One file per drop, up to 2 GiB.
+          </p>
+        </div>{/if}
       <label class="image-permission check-row"
         ><input
           type="checkbox"

@@ -260,7 +260,7 @@ async function npmAdvisoryScan(frontend) {
   await writeJson(path.join(root, '.local', `npm-audit-${frontend ? 'frontend' : 'root'}-${process.platform}-${process.arch}.json`), report);
   const result = evaluateNpmAudit(report, { frontend, exception: await readJson(path.join(root, 'config/advisory-exception.json')),
     lock: await readJson(path.join(cwd, 'package-lock.json')) });
-  if (result.exceptions.length) console.log(`Reviewed development-only advisory exception: ${result.exceptions[0].advisory}; expires ${result.exceptions[0].expiresOn}. Raw audit retained locally.`);
+  if (result.exceptions.length) console.log(`Reviewed frontend tooling advisory exception: ${result.exceptions[0].advisory}; expires ${result.exceptions[0].expiresOn}. Raw audit retained locally.`);
   return result;
 }
 

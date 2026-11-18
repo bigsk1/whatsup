@@ -55,6 +55,7 @@ type ContactSummary struct {
 	PeerFingerprint          string `json:"peerFingerprint"`
 	PeerDisplayName          string `json:"peerDisplayName"`
 	LocalName                string `json:"localName"`
+	Paused                   bool   `json:"paused"`
 	CanConnect               bool   `json:"canConnect"`
 	CanSend                  bool   `json:"canSend"`
 	PeerProtocol             uint8  `json:"peerProtocol"`
@@ -83,14 +84,17 @@ func (m *Manager) Summary() ContactSummary {
 
 func (m *Manager) summaryLocked() ContactSummary {
 	s := m.snapshotLocked(false)
-	summary := ContactSummary{State: s.State, Path: s.Path, Revision: s.Revision, ContactID: s.ContactID, PeerFingerprint: s.PeerFingerprint, PeerDisplayName: s.PeerDisplayName, LocalName: s.LocalName, CanConnect: s.CanConnect, CanSend: s.CanSend, PeerProtocol: s.PeerProtocol, AttachmentsSupported: s.AttachmentsSupported, ContactControlsSupported: s.ContactControlsSupported}
+	summary := ContactSummary{State: s.State, Path: s.Path, Revision: s.Revision, ContactID: s.ContactID, PeerFingerprint: s.PeerFingerprint, PeerDisplayName: s.PeerDisplayName, LocalName: s.LocalName, Paused: s.State == "paused", CanConnect: s.CanConnect, CanSend: s.CanSend, PeerProtocol: s.PeerProtocol, AttachmentsSupported: s.AttachmentsSupported, ContactControlsSupported: s.ContactControlsSupported}
 	if !m.closed && m.conversation != nil && m.state != "failed" {
 		unread, err := m.conversation.UnreadCount()
 		if err != nil {
 			m.state = "failed"
 			m.cancel()
 			m.bumpLocked()
-			summary.State, summary.Revision, summary.CanConnect, summary.CanSend = "failed", m.revision, false, false
+			if !summary.Paused {
+				summary.State = "failed"
+			}
+			summary.Revision, summary.CanConnect, summary.CanSend = m.revision, false, false
 		} else {
 			summary.Unread = unread
 		}
@@ -169,6 +173,7 @@ type registryState struct {
 	application *storage.ApplicationState
 	managers    map[string]*Manager
 	retired     map[string]bool
+	transition  map[string]bool
 	closed      bool
 	options     RegistryOptions
 	notifyMu    sync.Mutex
@@ -195,7 +200,7 @@ func NewRegistry(local *identity.Identity, app *storage.ApplicationState, option
 		selected.Revisions = &Revisions{}
 	}
 	selected.Diagnostics = diagnostics.RateLimited(selected.Diagnostics)
-	r := &Registry{&registryState{local: local, application: app, options: selected, managers: map[string]*Manager{}, retired: map[string]bool{}, dirty: map[string]Hint{}, notify: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}}
+	r := &Registry{&registryState{local: local, application: app, options: selected, managers: map[string]*Manager{}, retired: map[string]bool{}, transition: map[string]bool{}, dirty: map[string]Hint{}, notify: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}}
 	go r.dispatch()
 	if _, err := r.Contacts(); err != nil {
 		r.Close()
@@ -242,7 +247,7 @@ func (r *Registry) dispatch() {
 }
 
 func (r *Registry) ensureLocked(id string) (*Manager, error) {
-	if r.closed || id == "" || r.retired[id] {
+	if r.closed || id == "" || r.retired[id] || r.transition[id] {
 		return nil, ErrUnavailable
 	}
 	if m := r.managers[id]; m != nil {
@@ -283,7 +288,7 @@ func (r *Registry) Contacts() ([]ContactSummary, error) {
 	}
 	result := make([]ContactSummary, 0, len(records))
 	for _, record := range records {
-		if record.Version != 2 || r.retired[record.ID] {
+		if record.Version != 2 || r.retired[record.ID] || r.transition[record.ID] {
 			continue
 		}
 		m, err := r.ensureLocked(record.ID)

@@ -455,7 +455,7 @@ export function createAttachments(api: AttachmentBridge = bridge) {
     select,
     reload: refreshInput,
     setConnection(state: string, peerProtocol: number) {
-      stageAllowed = state !== 'peer-removed';
+      stageAllowed = !['peer-removed', 'paused'].includes(state);
       wireAllowed =
         stageAllowed && !(state === 'connected' && peerProtocol === 3);
     },

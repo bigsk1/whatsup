@@ -139,13 +139,13 @@ test('renders untrusted search text as text without remote assets or HTML', asyn
   await page.goto('/');
   const payload =
     '<img src="https://example.invalid/peer.png" onerror="alert(1)">';
-  await page.getByRole('searchbox', { name: 'Search contacts' }).fill(payload);
+  await page.getByRole('searchbox', { name: 'Filter contacts' }).fill(payload);
   await expect(
-    page.getByText(`No conversations match “${payload}”.`, { exact: true }),
+    page.getByText(`No contacts match “${payload}”.`, { exact: true }),
   ).toBeVisible();
   await expect(page.locator('img')).toHaveCount(0);
   await page
-    .getByRole('button', { name: 'Clear search', exact: true })
+    .getByRole('button', { name: 'Clear filter', exact: true })
     .first()
     .click();
   await expect(

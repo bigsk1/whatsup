@@ -69,6 +69,7 @@ async function desktop(
     autoAcceptImages: false,
     hasMore: false,
     peer,
+    paused: false,
     protocol,
     nativeTarget: '',
     dragHint: { active: false, revision: 0 },
@@ -78,7 +79,7 @@ async function desktop(
     String.fromCharCode(83 + draftSequence++).repeat(32);
   const conversation = (selected = contactID) => ({
     ...unavailableConversation,
-    state: state.peer,
+    state: state.paused ? ('paused' as const) : state.peer,
     path: 'Relayed' as const,
     revision: state.revision,
     contactID: selected,
@@ -89,11 +90,12 @@ async function desktop(
         : 'Synthetic second'
       : '',
     peerProtocol: state.protocol,
-    attachmentsSupported: state.peer === 'connected' && state.protocol === 4,
+    attachmentsSupported:
+      !state.paused && state.peer === 'connected' && state.protocol === 4,
     contactControlsSupported:
-      state.peer === 'connected' && state.protocol === 4,
-    canSend: state.peer !== 'peer-removed',
-    canConnect: state.peer === 'offline',
+      !state.paused && state.peer === 'connected' && state.protocol === 4,
+    canSend: !state.paused && state.peer !== 'peer-removed',
+    canConnect: !state.paused && state.peer === 'offline',
   });
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('request', (request) => {
@@ -150,6 +152,11 @@ async function desktop(
                   : []),
               ]
             : [];
+        break;
+      case 'SetContactPaused':
+        state.paused = args[1] as boolean;
+        state.revision++;
+        result = contactSummary(conversation(args[0] as string));
         break;
       case 'GetMessages':
         result = messagePage(conversation(args[0] as string));
@@ -305,6 +312,53 @@ async function expandAttachments(page: Page) {
     page.getByRole('button', { name: 'Collapse attachments', exact: true }),
   ).toHaveAttribute('aria-expanded', 'true');
 }
+
+test('pausing a contact blocks new attachment input while saved files remain available', async ({
+  page,
+}) => {
+  const { calls, errors } = await desktop(
+    page,
+    [{ ...item, state: 'complete', transferredBytes: item.size }],
+    'connected',
+    4,
+  );
+  await page
+    .getByRole('button', { name: 'Pause connection', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'Resume connection', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Choose attachment', exact: true }),
+  ).toBeDisabled();
+  await expandAttachments(page);
+  await expect(
+    page.getByRole('button', { name: 'Choose file…', exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole('button', { name: 'Paste image', exact: true }),
+  ).toBeDisabled();
+  const save = page.getByRole('button', { name: 'Save…', exact: true });
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect
+    .poll(() =>
+      calls
+        .filter(({ name }) => name === 'SaveAttachment')
+        .map(({ args }) => args),
+    )
+    .toEqual([[contactID, fileID]]);
+  await page
+    .getByRole('button', { name: 'Resume connection', exact: true })
+    .click();
+  await expect(
+    page.getByRole('button', { name: 'Choose attachment', exact: true }),
+  ).toBeEnabled();
+  await expect(
+    page.getByRole('button', { name: 'Choose file…', exact: true }),
+  ).toBeEnabled();
+  expect(errors).toEqual([]);
+});
 
 test('pause is resumable while cancel permanently withdraws the exact transfer', async ({
   page,

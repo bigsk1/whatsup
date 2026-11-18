@@ -262,6 +262,21 @@ func (s *Service) attachmentLease(id string) (attachmentLease, error) {
 	defer s.mu.Unlock()
 	return s.attachmentLocked(id)
 }
+func (s *Service) attachmentInputLocked(id string) (attachmentLease, error) {
+	l, err := s.attachmentLocked(id)
+	if err != nil {
+		return attachmentLease{}, err
+	}
+	if paused, err := l.session.application.ContactPaused(id); err != nil || paused {
+		return attachmentLease{}, errAttachment
+	}
+	return l, nil
+}
+func (s *Service) attachmentInputLease(id string) (attachmentLease, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attachmentInputLocked(id)
+}
 func (s *Service) attachmentCurrentLocked(l attachmentLease) bool {
 	return s.attachments != nil && s.attachments.session == l.session && s.state == "unlocked" && s.application == l.session.application && l.contact.life.Err() == nil && l.session.contacts[l.id] == l.contact
 }
@@ -320,7 +335,7 @@ func safeAttachmentName(name string) string {
 }
 
 func (s *Service) ChooseAttachment(id string, sendAsFile bool) (AttachmentDraft, error) {
-	l, err := s.attachmentLease(id)
+	l, err := s.attachmentInputLease(id)
 	if err != nil {
 		return AttachmentDraft{}, err
 	}
@@ -339,7 +354,7 @@ func (s *Service) ChooseAttachment(id string, sendAsFile bool) (AttachmentDraft,
 }
 
 func (s *Service) PasteAttachment(id string) (AttachmentDraft, error) {
-	l, err := s.attachmentLease(id)
+	l, err := s.attachmentInputLease(id)
 	if err != nil {
 		return AttachmentDraft{}, err
 	}
@@ -366,7 +381,7 @@ func StageNativeDrop(s *Service, paths []string) error {
 	if s.attachments != nil && s.attachments.session != nil {
 		id = s.attachments.session.selected
 	}
-	l, err := s.attachmentLocked(id)
+	l, err := s.attachmentInputLocked(id)
 	s.mu.Unlock()
 	if err != nil {
 		return err

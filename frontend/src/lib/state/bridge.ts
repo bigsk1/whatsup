@@ -11,6 +11,7 @@ import {
 
 export interface ContactSummary extends Omit<ConversationSnapshot, 'messages'> {
   unread: number;
+  paused: boolean;
 }
 
 export interface MessagePage {
@@ -45,17 +46,19 @@ function revision(value: unknown): value is number {
 export function validateSummary(value: unknown): ContactSummary {
   const record = object(value);
   if (
-    Object.keys(record).length !== 13 ||
+    Object.keys(record).length !== 14 ||
+    typeof record.paused !== 'boolean' ||
+    record.paused !== (record.state === 'paused') ||
     !revision(record.unread) ||
     !validID(record.contactID)
   )
     throw new Error('The desktop returned invalid contact data.');
-  const { unread, ...fields } = record;
+  const { unread, paused, ...fields } = record;
   const { messages: _messages, ...summary } = validateConversation({
     ...fields,
     messages: [],
   });
-  return { ...summary, unread: unread as number };
+  return { ...summary, unread: unread as number, paused: paused as boolean };
 }
 
 export function validateContacts(value: unknown): ContactSummary[] {
@@ -133,6 +136,7 @@ export interface ContactsBridge {
   contacts(): Promise<ContactSummary[]>;
   page(contactID: string, cursor: string, limit: number): Promise<MessagePage>;
   markRead(contactID: string, messageID: string): Promise<ContactSummary>;
+  setPaused(contactID: string, paused: boolean): Promise<ContactSummary>;
   connect(contactID: string): Promise<ConversationSnapshot>;
   send(contactID: string, text: string): Promise<ConversationSnapshot>;
   forget(contactID: string): Promise<ConversationSnapshot>;
@@ -161,6 +165,16 @@ export const contactsBridge: ContactsBridge = {
       throw new Error('This conversation is no longer available.');
     const summary = validateSummary(
       await (await service()).MarkRead(contactID, messageID),
+    );
+    if (summary.contactID !== contactID)
+      throw new Error('The contact changed.');
+    return summary;
+  },
+  async setPaused(contactID, paused) {
+    if (!validID(contactID) || typeof paused !== 'boolean')
+      throw new Error('This conversation is no longer available.');
+    const summary = validateSummary(
+      await (await service()).SetContactPaused(contactID, paused),
     );
     if (summary.contactID !== contactID)
       throw new Error('The contact changed.');

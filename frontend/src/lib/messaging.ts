@@ -5,6 +5,7 @@ export const conversationStates = [
   'unavailable',
   'none',
   'offline',
+  'paused',
   'connecting',
   'connected',
   'failed',
@@ -164,7 +165,7 @@ export function validateConversation(value: unknown): ConversationSnapshot {
     ((record.attachmentsSupported || record.contactControlsSupported) &&
       record.peerProtocol !== 4) ||
     (record.contactControlsSupported && !record.attachmentsSupported) ||
-    (record.state === 'peer-removed' &&
+    (['peer-removed', 'paused'].includes(record.state as string) &&
       (record.canConnect ||
         record.canSend ||
         record.attachmentsSupported ||

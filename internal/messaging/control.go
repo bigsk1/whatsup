@@ -128,7 +128,7 @@ func (m *Manager) notifyRemoved(ctx context.Context, id string) (bool, error) {
 	defer cancel()
 	m.mu.Lock()
 	c := m.controls
-	if m.closed || m.refreshLocked() != nil || m.record.ID != id || m.removing || m.peerRemoved || !m.sessionActive || c == nil || !c.session.Capabilities().Control {
+	if m.closed || m.paused || m.refreshLocked() != nil || m.record.ID != id || m.removing || m.peerRemoved || !m.sessionActive || c == nil || !c.session.Capabilities().Control {
 		m.mu.Unlock()
 		return false, nil
 	}

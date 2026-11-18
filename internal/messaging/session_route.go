@@ -41,7 +41,7 @@ func (m *Manager) sessionRouteCandidates(parent context.Context, raw net.Conn, r
 	defer cancel()
 	owned := &routeAttempt{raw: raw}
 	m.mu.Lock()
-	if m.closed || m.peerRemoved || m.removing || m.refreshLocked() != nil || len(m.attempts) >= 2 {
+	if m.closed || m.paused || m.peerRemoved || m.removing || m.refreshLocked() != nil || len(m.attempts) >= 2 {
 		m.mu.Unlock()
 		_ = raw.Close()
 		return ErrUnavailable
@@ -102,7 +102,7 @@ func (m *Manager) sessionRouteCandidates(parent context.Context, raw net.Conn, r
 	}
 	claim := &routeClaim{attempt: owned, route: route}
 	m.mu.Lock()
-	if m.closed || m.peerRemoved || m.removing || m.claim != nil {
+	if m.closed || m.paused || m.peerRemoved || m.removing || m.claim != nil {
 		m.mu.Unlock()
 		return errRouteBusy
 	}
@@ -131,7 +131,7 @@ func (m *Manager) sessionRouteCandidates(parent context.Context, raw net.Conn, r
 			return err
 		}
 		m.mu.Lock()
-		if m.closed || m.peerRemoved || m.removing || m.claim != claim {
+		if m.closed || m.paused || m.peerRemoved || m.removing || m.claim != claim {
 			m.mu.Unlock()
 			contact.Revoke()
 			return ErrUnavailable
@@ -171,7 +171,7 @@ func (m *Manager) sessionRouteCandidates(parent context.Context, raw net.Conn, r
 		return err
 	}
 	m.mu.Lock()
-	if m.closed || m.peerRemoved || m.removing || m.claim != claim {
+	if m.closed || m.paused || m.peerRemoved || m.removing || m.claim != claim {
 		m.mu.Unlock()
 		return ErrUnavailable
 	}

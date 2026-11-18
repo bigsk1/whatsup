@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"whatsup/internal/messaging"
+	"whatsup/internal/storage"
 )
 
 func (s *Service) GetContacts() ([]messaging.ContactSummary, error) {
@@ -17,6 +18,33 @@ func (s *Service) GetContacts() ([]messaging.ContactSummary, error) {
 		return nil, errors.New("Saved contacts could not be verified")
 	}
 	return contacts, nil
+}
+
+// SetContactPaused changes only the selected approved contact's connection.
+func (s *Service) SetContactPaused(contactID string, paused bool) (messaging.ContactSummary, error) {
+	s.mu.Lock()
+	defer s.finishStorageCall(s.state == "unlocked")
+	if s.state != "unlocked" || s.messages == nil {
+		return messaging.ContactSummary{}, errors.New("Unlock local storage before changing this connection")
+	}
+	contact, err := s.messages.SetPaused(contactID, paused)
+	if errors.Is(err, storage.ErrStateFailed) {
+		s.failStorageWriteLocked()
+		return messaging.ContactSummary{}, errors.New("The connection setting could not be saved. Unlock local storage before retrying")
+	}
+	if err != nil {
+		return contact, errors.New("This contact's connection could not be changed. Check that the contact is still available")
+	}
+	if paused && s.attachments != nil && s.attachments.session != nil {
+		// Cancel any picker or staging operation for this contact. Keep draft
+		// handles, saved files, previews, and the other contacts' leases.
+		g := s.attachments.session
+		if current := g.contacts[contactID]; current != nil {
+			current.cancel()
+			delete(g.contacts, contactID)
+		}
+	}
+	return contact, nil
 }
 
 func (s *Service) GetMessages(contactID, cursor string, limit int) (messaging.MessagePage, error) {

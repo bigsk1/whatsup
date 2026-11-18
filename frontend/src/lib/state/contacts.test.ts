@@ -39,6 +39,7 @@ const contact = (
   contactID,
   revision,
   unread,
+  paused: false,
   peerFingerprint: 'b'.repeat(64),
   peerDisplayName: '',
   localName: '',
@@ -67,7 +68,7 @@ const snapshot = (
   value: ContactSummary,
   messages: ConversationMessage[] = [],
 ): ConversationSnapshot => {
-  const { unread: _unread, ...fields } = value;
+  const { unread: _unread, paused: _paused, ...fields } = value;
   return { ...fields, messages };
 };
 function deferred<T>() {
@@ -84,6 +85,15 @@ function fixture() {
     contacts: vi.fn(async () => [contact(), contact(second)]),
     page: vi.fn(async (id) => page(id)),
     markRead: vi.fn(async (id) => contact(id)),
+    setPaused: vi.fn(
+      async (id: string, paused: boolean): Promise<ContactSummary> => ({
+        ...contact(id, 2),
+        paused,
+        state: paused ? 'paused' : 'connecting',
+        canSend: !paused,
+        canConnect: false,
+      }),
+    ),
     connect: vi.fn(async (id) => snapshot(contact(id, 2))),
     send: vi.fn(async (id) => snapshot(contact(id, 2), [message()])),
     forget: vi.fn(async () => ({
@@ -133,8 +143,23 @@ describe('contact and paging DTO boundaries', () => {
       Array.from({ length: 33 }, () => contact()),
       [{ ...contact(), messages: [] }],
       [{ ...contact(), unread: -1 }],
+      [{ ...contact(), paused: undefined }],
+      [{ ...contact(), paused: true }],
+      [{ ...contact(), state: 'paused' }],
+      [{ ...contact(), state: 'paused', paused: true }],
     ])
       expect(() => validateContacts(value)).toThrow();
+    expect(
+      validateContacts([
+        {
+          ...contact(),
+          state: 'paused',
+          paused: true,
+          canSend: false,
+          canConnect: false,
+        },
+      ])[0].paused,
+    ).toBe(true);
     expect(
       validatePage(page(first, 1, [message()]), first).messages,
     ).toHaveLength(1);
@@ -435,5 +460,64 @@ describe('event-driven contact state', () => {
     expect(get(controller.state).contacts[0].revision).toBe(8);
     expect(get(controller.state).drafts[first]).toBe('');
     controller.stop();
+  });
+
+  it('pauses only its contact while retaining history and drafts, and resumes through the explicit bridge action', async () => {
+    const { bridge, controller } = fixture();
+    vi.mocked(bridge.page).mockResolvedValueOnce(page(first, 1, [message()]));
+    await controller.start();
+    controller.setDraft(first, 'Keep this draft');
+    expect(await controller.setPaused(first, true)).toBe(true);
+    expect(selectedConversation(get(controller.state))).toMatchObject({
+      paused: true,
+      state: 'paused',
+      messages: [message()],
+    });
+    expect(get(controller.state).drafts[first]).toBe('Keep this draft');
+    expect(
+      get(controller.state).contacts.find(
+        ({ contactID }) => contactID === second,
+      )?.paused,
+    ).toBe(false);
+    expect(await controller.send(first)).toBe(false);
+    expect(await controller.connect(first)).toBe(false);
+    expect(bridge.send).not.toHaveBeenCalled();
+    expect(bridge.connect).not.toHaveBeenCalled();
+    controller.select(second);
+    expect(await controller.setPaused(first, false)).toBe(true);
+    expect(get(controller.state).selectedID).toBe(second);
+    expect(get(controller.state).drafts[first]).toBe('Keep this draft');
+    expect(bridge.setPaused).toHaveBeenNthCalledWith(1, first, true);
+    expect(bridge.setPaused).toHaveBeenNthCalledWith(2, first, false);
+    controller.stop();
+  });
+
+  it('does not invent pause state after a failure or a completion arriving after lock', async () => {
+    const { bridge, controller } = fixture();
+    await controller.start();
+    vi.mocked(bridge.setPaused).mockRejectedValueOnce(
+      new Error('SYNTHETIC-PRIVATE-PAUSE-ERROR'),
+    );
+    expect(await controller.setPaused(first, true)).toBe(false);
+    expect(selectedConversation(get(controller.state)).paused).toBe(false);
+    expect(get(controller.state).notices[first]).toContain(
+      'could not be paused',
+    );
+    expect(JSON.stringify(get(controller.state))).not.toContain(
+      'SYNTHETIC-PRIVATE-PAUSE-ERROR',
+    );
+    const held = deferred<ContactSummary>();
+    vi.mocked(bridge.setPaused).mockReturnValueOnce(held.promise);
+    const pending = controller.setPaused(first, true);
+    controller.stop();
+    held.resolve({
+      ...contact(first, 2),
+      paused: true,
+      state: 'paused',
+      canSend: false,
+      canConnect: false,
+    });
+    expect(await pending).toBe(false);
+    expect(get(controller.state).contacts).toEqual([]);
   });
 });

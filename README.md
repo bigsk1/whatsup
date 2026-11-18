@@ -10,7 +10,7 @@ two devices; there are no group chats.
 
 Screenshots use fictional contacts, conversations and profile illustrations.
 
-> WhatsUp **0.1.1** is unsigned preview software. Windows installers are not
+> WhatsUp **0.1.2** is unsigned preview software. Windows installers are not
 > Authenticode-signed, automatic updates are disabled, and the app has not
 > had an independent security audit. Read the [security information](SECURITY.md)
 > before relying on it for sensitive conversations.
@@ -23,7 +23,7 @@ this repository's Releases page when a preview is provided.
 
 ### Windows
 
-Run `WhatsUp-0.1.1-windows-x64-setup.exe`. It installs for your Windows account
+Run `WhatsUp-0.1.2-windows-x64-setup.exe`. It installs for your Windows account
 without changing your existing identity, contacts or history. Quit WhatsUp from
 its tray before upgrading. Windows 10 or later on x64 is required, along with
 Microsoft's [WebView2 Evergreen Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/).
@@ -38,7 +38,7 @@ Do not disable SmartScreen globally. A managed computer may block unsigned apps.
 On Ubuntu 24.04 x64, install the downloaded package in a terminal:
 
 ```bash
-sudo apt install ./whatsup_0.1.1_amd64.deb
+sudo apt install ./whatsup_0.1.2_amd64.deb
 ```
 
 The package installs the launcher, runtime dependencies and the scoped AppArmor
@@ -56,7 +56,7 @@ For installation on Arch Linux or Omarchy, follow the
 Each preview includes `SHA256SUMS` and a dependency SBOM. On Windows:
 
 ```powershell
-Get-FileHash .\WhatsUp-0.1.1-windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\WhatsUp-0.1.2-windows-x64-setup.exe -Algorithm SHA256
 ```
 
 Compare the entire hash with that file's line in `SHA256SUMS`. On Ubuntu, with
@@ -71,8 +71,8 @@ a preview has been built by GitHub release CI, verify its build attestation with
 GitHub CLI:
 
 ```text
-gh attestation verify WhatsUp-0.1.1-windows-x64-setup.exe --repo bigsk1/whatsup --signer-workflow bigsk1/whatsup/.github/workflows/release.yml
-gh attestation verify whatsup_0.1.1_amd64.deb --repo bigsk1/whatsup --signer-workflow bigsk1/whatsup/.github/workflows/release.yml
+gh attestation verify WhatsUp-0.1.2-windows-x64-setup.exe --repo bigsk1/whatsup --signer-workflow bigsk1/whatsup/.github/workflows/release.yml
+gh attestation verify whatsup_0.1.2_amd64.deb --repo bigsk1/whatsup --signer-workflow bigsk1/whatsup/.github/workflows/release.yml
 ```
 
 An attestation links a package to its source and workflow. It is not Windows
@@ -136,6 +136,12 @@ saved contacts. If you turned on an app passphrase, enter it to go online.
 
 **Go offline** disconnects every contact and closes local storage. Your encrypted
 data stays on the device.
+
+To go offline for just one person, open their conversation and choose **Pause
+connection**. You can still read the local history, and queued messages stay on
+your device. Other conversations stay online. The contact sees an ordinary
+disconnect, and the pause survives app restarts. Choose **Resume connection** to
+reconnect without a new invitation and continue sending queued messages.
 
 Closing the window keeps WhatsUp running in the tray, as long as your desktop has
 one; without a tray, closing the window quits. You can turn this off with **Keep

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2 (unsigned preview)
+
+- Pause and resume one contact’s connection while other conversations stay
+  online. The pause survives restarts, and saved history and queued messages
+  stay on your device. Resume all paused contacts before reopening the same
+  profile in WhatsUp 0.1.1 or earlier.
+- Renamed the sidebar field to **Filter contacts** to clarify that it matches
+  contacts by name or fingerprint.
+- Conversation controls use compact icons to leave more room for contact names.
+
 ## 0.1.1 (unsigned preview)
 
 - Copy text from either side of a conversation, including URLs and line breaks,

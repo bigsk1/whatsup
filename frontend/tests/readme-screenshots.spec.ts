@@ -41,6 +41,7 @@ function contact(
     contactID,
     localName,
     unread,
+    paused: false,
     state,
     path,
     revision: 1,

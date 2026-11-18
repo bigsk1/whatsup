@@ -280,6 +280,34 @@ describe('attachment state boundary', () => {
     expect(api.save).toHaveBeenCalledWith(id, file);
     store.stop();
   });
+  it('blocks staging and transfer actions while the contact is paused but keeps saved files available', async () => {
+    const api = mock();
+    const store = createAttachments(api);
+    await store.select(id);
+    store.setConnection('paused', 0);
+    await store.pick();
+    await store.paste();
+    await store.send(
+      {
+        handle: token,
+        name: 'synthetic.pdf',
+        mediaType: 'application/pdf',
+        size: 17,
+        previewURL: '',
+        requiresRelayWarning: false,
+      },
+      false,
+    );
+    for (const action of ['accept', 'resume', 'allow-relay'])
+      await store.decision(item, action);
+    expect(api.pick).not.toHaveBeenCalled();
+    expect(api.paste).not.toHaveBeenCalled();
+    expect(api.send).not.toHaveBeenCalled();
+    expect(api.decision).not.toHaveBeenCalled();
+    await store.save(item);
+    expect(api.save).toHaveBeenCalledWith(id, file);
+    store.stop();
+  });
   it('serializes and coalesces native drop targets through contact changes and offline', async () => {
     const api = mock(),
       pending = deferred<void>(),

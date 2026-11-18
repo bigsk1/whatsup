@@ -307,7 +307,7 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 	sent := make(map[string]bool)
 	sendDue := func() (bool, error) {
 		m.mu.Lock()
-		blocked := m.removing || m.peerRemoved
+		blocked := m.closed || m.paused || m.removing || m.peerRemoved
 		m.mu.Unlock()
 		if blocked {
 			return false, nil

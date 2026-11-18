@@ -12,6 +12,7 @@ export function presenceTone(
       return 'ok';
     case 'none':
     case 'unavailable':
+    case 'paused':
       return 'idle';
     case 'offline':
     case 'failed':

@@ -24,7 +24,7 @@ func (r *Registry) Notification(incoming Incoming) (Notification, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.refreshLocked() != nil || m.record.ID != incoming.ContactID || m.conversation == nil || m.state == "failed" {
+	if m.paused || m.refreshLocked() != nil || m.record.ID != incoming.ContactID || m.conversation == nil || m.state == "failed" {
 		return Notification{}, ErrUnavailable
 	}
 	item, err := m.conversation.GetVisibleIncoming(incoming.MessageID)

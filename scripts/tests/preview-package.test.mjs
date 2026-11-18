@@ -11,40 +11,85 @@ import { npmLockComponents, previewArtifactName } from '../lib/preview-package.m
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (name) => readFile(path.join(root, name), 'utf8');
 const json = async (name) => JSON.parse(await read(name));
-const advisory = 'https://github.com/advisories/GHSA-gcqx-w48m-w2h4';
+const advisory = 'https://github.com/advisories/GHSA-fc5q-39xc-vjpf';
 
 function audit() {
+  const finding = (name, isDirect, via, effects, range, fixName = 'vite', fixVersion = '6.2.7') => ({
+    name, severity: 'high', isDirect, via, effects, range, nodes: [`node_modules/${name}`],
+    fixAvailable: { name: fixName, version: fixVersion, isSemVerMajor: true },
+  });
   return { auditReportVersion: 2, vulnerabilities: {
-    '@sveltejs/vite-plugin-svelte': { name: '@sveltejs/vite-plugin-svelte', severity: 'low', nodes: ['node_modules/@sveltejs/vite-plugin-svelte'], effects: [], via: ['deepmerge'], fixAvailable: false },
-    deepmerge: { name: 'deepmerge', severity: 'low', nodes: ['node_modules/deepmerge'], effects: ['@sveltejs/vite-plugin-svelte'], fixAvailable: false,
-      via: [{ url: advisory, name: 'deepmerge', severity: 'low' }] },
-  }, metadata: { vulnerabilities: { total: 2 } } };
+    '@sveltejs/vite-plugin-svelte': finding('@sveltejs/vite-plugin-svelte', true, ['vite'], [], '>=6.0.0-next.0', '@sveltejs/vite-plugin-svelte', '5.1.1'),
+    fdir: finding('fdir', false, ['picomatch'], ['svelte-check', 'tinyglobby'], '>=5.2.1'),
+    picomatch: finding('picomatch', false, [{ url: advisory, name: 'picomatch', dependency: 'picomatch', severity: 'high',
+      range: '<=4.0.7', cwe: ['CWE-1333'], cvss: { score: 7.5, vectorString: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H' },
+    }], ['fdir', 'tinyglobby', 'vite', 'vitest'], '*'),
+    'svelte-check': finding('svelte-check', true, ['fdir'], [], '>=4.0.0', 'svelte-check', '3.8.6'),
+    tinyglobby: finding('tinyglobby', false, ['fdir', 'picomatch'], ['vite', 'vitest'], '*'),
+    vite: finding('vite', true, ['picomatch', 'tinyglobby'], ['@sveltejs/vite-plugin-svelte', 'vitest'], '>=6.3.0-beta.0'),
+    vitest: finding('vitest', true, ['picomatch', 'tinyglobby', 'vite'], [], '>=3.1.2', 'vitest', '3.1.4'),
+  }, metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 7, critical: 0, total: 7 } } };
 }
 
-test('the advisory exception covers only the exact dev chain and expires closed', async () => {
+test('the advisory exception covers only the reviewed frontend tooling graph and expires closed', async () => {
   const exception = await json('config/advisory-exception.json');
   const lock = await json('frontend/package-lock.json');
-  const options = { exception, lock, frontend: true, now: new Date('2026-11-15T12:00:00Z') };
-  assert.equal(evaluateNpmAudit(audit(), options).exceptions[0].expiresOn, '2026-12-15');
+  const options = { exception, lock, frontend: true, now: new Date('2026-11-17T12:00:00Z') };
+  assert.deepEqual(evaluateNpmAudit(audit(), options), { passed: true, exceptions: [{
+    advisory, package: 'picomatch', version: '4.0.7', scope: 'frontend build and test tooling only', expiresOn: '2026-12-17',
+  }] });
+  const reordered = audit();
+  reordered.vulnerabilities.vite.via.reverse();
+  reordered.vulnerabilities.picomatch.effects.reverse();
+  assert.equal(evaluateNpmAudit(reordered, options).passed, true);
+  const alternative = audit();
+  for (const name of ['fdir', 'picomatch', 'tinyglobby']) {
+    alternative.vulnerabilities[name].fixAvailable = { name: 'vitest', version: '3.1.4', isSemVerMajor: true };
+  }
+  assert.equal(evaluateNpmAudit(alternative, options).passed, true);
   for (const change of [
-    (value) => { value.vulnerabilities.deepmerge.severity = 'moderate'; },
-    (value) => { value.vulnerabilities.deepmerge.via[0].url = 'https://github.com/advisories/GHSA-new'; },
-    (value) => { value.vulnerabilities.deepmerge.fixAvailable = true; },
-    (value) => { value.vulnerabilities.deepmerge.nodes.push('node_modules/other/node_modules/deepmerge'); },
-    (value) => { value.vulnerabilities.other = value.vulnerabilities.deepmerge; },
-    (value) => { value.metadata.vulnerabilities.total = 3; },
+    (value) => { value.vulnerabilities.picomatch.severity = 'critical'; },
+    (value) => { value.vulnerabilities.picomatch.via[0].url = 'https://github.com/advisories/GHSA-gcqx-w48m-w2h4'; },
+    (value) => { value.vulnerabilities.picomatch.via.push({ ...value.vulnerabilities.picomatch.via[0], url: 'https://github.com/advisories/GHSA-new' }); },
+    (value) => { value.vulnerabilities.picomatch.via[0].cvss.score = 8; },
+    (value) => { value.vulnerabilities.picomatch.fixAvailable.isSemVerMajor = false; },
+    (value) => { value.vulnerabilities.picomatch.fixAvailable.version = '8.3.9'; },
+    (value) => { value.vulnerabilities.vite.fixAvailable = { name: 'vitest', version: '3.1.4', isSemVerMajor: true }; },
+    (value) => { value.vulnerabilities.picomatch.nodes.push('node_modules/other/node_modules/picomatch'); },
+    (value) => { value.vulnerabilities.picomatch.effects.push('another-package'); },
+    (value) => { value.vulnerabilities.vite.isDirect = false; },
+    (value) => { value.vulnerabilities.vite.via = ['another-package', 'picomatch']; },
+    (value) => { value.vulnerabilities.other = value.vulnerabilities.picomatch; },
+    (value) => { value.metadata.vulnerabilities.total = 8; },
+    (value) => { value.metadata.vulnerabilities.critical = 1; },
     (value) => { value.error = { code: 'EAI_AGAIN' }; },
   ]) {
     const value = audit(); change(value);
     assert.throws(() => evaluateNpmAudit(value, options));
   }
   assert.throws(() => evaluateNpmAudit(audit(), { ...options, frontend: false }));
-  assert.throws(() => evaluateNpmAudit(audit(), { ...options, now: new Date('2026-12-15T00:00:00Z') }));
-  const wrongLock = structuredClone(lock); wrongLock.packages['node_modules/deepmerge'].dev = false;
-  assert.throws(() => evaluateNpmAudit(audit(), { ...options, lock: wrongLock }));
-  wrongLock.packages['node_modules/deepmerge'].dev = true; wrongLock.packages['node_modules/deepmerge'].version = '4.3.2';
-  assert.throws(() => evaluateNpmAudit(audit(), { ...options, lock: wrongLock }));
-  assert.throws(() => evaluateNpmAudit({ auditReportVersion: 2, vulnerabilities: {}, metadata: { vulnerabilities: { total: 1 } } }, options));
+  for (const now of ['2026-11-16T23:59:59Z', '2026-12-17T00:00:00Z'])
+    assert.throws(() => evaluateNpmAudit(audit(), { ...options, now: new Date(now) }));
+  for (const expiresOn of ['2026-11-31', '2026-12-19'])
+    assert.throws(() => evaluateNpmAudit(audit(), { ...options, exception: { ...exception, expiresOn } }));
+  for (const change of [
+    (value) => { value.packages['node_modules/picomatch'].version = '4.0.8'; },
+    (value) => { value.packages['node_modules/vite'].version = '8.3.9'; },
+    (value) => { delete value.packages['node_modules/picomatch'].devOptional; },
+    (value) => { value.packages['node_modules/svelte'].dependencies.picomatch = '4.0.7'; },
+    (value) => { value.packages['node_modules/other/node_modules/picomatch'] = value.packages['node_modules/picomatch']; },
+  ]) {
+    const wrongLock = structuredClone(lock); change(wrongLock);
+    assert.throws(() => evaluateNpmAudit(audit(), { ...options, lock: wrongLock }));
+  }
+  const versionBump = structuredClone(lock);
+  versionBump.version = versionBump.packages[''].version = '0.1.2';
+  assert.equal(evaluateNpmAudit(audit(), { ...options, lock: versionBump }).passed, true);
+  const clean = audit();
+  clean.vulnerabilities = {};
+  assert.throws(() => evaluateNpmAudit(clean, options));
+  clean.metadata.vulnerabilities = { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 };
+  assert.deepEqual(evaluateNpmAudit(clean, { ...options, frontend: false }), { passed: true, exceptions: [] });
 });
 
 test('packaging tool pins require an official fixed HTTPS asset and SHA256', async () => {

@@ -209,7 +209,7 @@ func (m *Manager) rememberRelayProfileLocked(url string, profile *transport.Rela
 func (m *Manager) requestRouteRefresh() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.closed || !m.running {
+	if m.closed || m.paused || !m.running {
 		return
 	}
 	select {
@@ -244,7 +244,7 @@ func (m *Manager) refreshRoutes() error {
 		m.mu.Unlock()
 		return ErrUnavailable
 	}
-	if !m.running {
+	if m.paused || !m.running {
 		m.bumpLocked()
 		m.mu.Unlock()
 		return nil

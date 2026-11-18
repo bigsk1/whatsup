@@ -58,6 +58,7 @@ async function fixture(page: Page) {
       canConnect: false,
       canSend: true,
       unread: 0,
+      paused: false,
       path: 'Direct',
       peerProtocol: 0,
       attachmentsSupported: false,

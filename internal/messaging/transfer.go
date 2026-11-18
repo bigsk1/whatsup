@@ -20,7 +20,7 @@ func (m *Manager) attachmentEngine(id string) (*transfer.Engine, error) {
 	if m.refreshLocked() != nil || m.record.ID != id || m.contact == nil || m.conversation == nil || m.state == "failed" {
 		return nil, ErrUnavailable
 	}
-	if m.peerRemoved || m.removing || m.sessionActive && !m.capabilities.Attachments {
+	if m.paused || m.peerRemoved || m.removing || m.sessionActive && !m.capabilities.Attachments {
 		return nil, ErrUnavailable
 	}
 	if m.transfers != nil {
@@ -112,7 +112,7 @@ func (m *Manager) localAttachments(id string) (*attachmentstore.Scope, *transfer
 	if err != nil {
 		return nil, nil, false, err
 	}
-	blocked := m.peerRemoved || m.removing || m.sessionActive && !m.capabilities.Attachments
+	blocked := m.paused || m.peerRemoved || m.removing || m.sessionActive && !m.capabilities.Attachments
 	return scope, m.transfers, blocked, nil
 }
 func (r *Registry) QueueTransfer(contactID, id string, allowRelayedLarge bool) error {

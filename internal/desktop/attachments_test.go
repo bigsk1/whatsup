@@ -82,6 +82,58 @@ func TestNativeFilePickerRetiresOldGenerationWithoutHoldingServiceLock(t *testin
 	}
 }
 
+func TestContactPauseCancelsPendingPickerAndKeepsSavedDraft(t *testing.T) {
+	selected := filepath.Join(t.TempDir(), "synthetic.pdf")
+	if err := os.WriteFile(selected, []byte("%PDF-1.4 synthetic"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	first := true
+	s, contact := attachmentService(t, func(o *AttachmentRuntimeOptions) {
+		o.Pick = func(ctx context.Context) (string, error) {
+			if first {
+				first = false
+				return selected, nil
+			}
+			close(entered)
+			<-ctx.Done()
+			return selected, nil
+		}
+	})
+	draft, err := s.ChooseAttachment(contact.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAttachmentInputContact(contact.ID); err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan error, 1)
+	go func() { _, err := s.ChooseAttachment(contact.ID, true); finished <- err }()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("picker did not start")
+	}
+	if _, err := s.SetContactPaused(contact.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-finished:
+		if err == nil {
+			t.Fatal("a cancelled picker created a draft")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pause did not cancel the picker")
+	}
+	if StageNativeDrop(s, []string{selected}) == nil || s.SendAttachment(contact.ID, draft.Handle, false) == nil {
+		t.Fatal("paused contact accepted a drop or queued a draft for sending")
+	}
+	list, err := s.GetAttachments(contact.ID)
+	if err != nil || len(list.Drafts) != 1 || list.Drafts[0].Handle != draft.Handle {
+		t.Fatal("pause discarded an existing draft", err)
+	}
+}
+
 func TestAttachmentDraftsAreEncryptedLocalAndAssetAuthorityDiesOnLock(t *testing.T) {
 	var picture bytes.Buffer
 	if png.Encode(&picture, image.NewNRGBA(image.Rect(0, 0, 2, 2))) != nil {

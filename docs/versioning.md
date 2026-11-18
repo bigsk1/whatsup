@@ -1,6 +1,6 @@
 # Versions and compatibility
 
-WhatsUp's current preview is **0.1.1**. A version
+WhatsUp's current preview is **0.1.2**. A version
 identifies an application revision; it does not certify security, completeness
 or release approval.
 
@@ -33,6 +33,9 @@ An application version is separate from the format of local encrypted data and
 the network protocol. A newer version may upgrade local data. An older executable
 may then be unable to open it, and replacing the executable alone does not
 downgrade the stored data.
+
+Before returning to WhatsUp 0.1.1 or earlier, resume any paused contacts. Those
+versions do not understand the saved connection-pause setting.
 
 Reconnecting or changing a display name does not change a device's identity.
 Forgetting a contact preserves that device identity but removes its saved

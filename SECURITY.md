@@ -1,6 +1,6 @@
 # Security information
 
-WhatsUp 0.1.1 is unsigned preview software, not a stable release.
+WhatsUp 0.1.2 is unsigned preview software, not a stable release.
 It has not undergone an independent security audit or certification. Do not
 rely on the preview for sensitive communication.
 
@@ -143,17 +143,17 @@ Older executables cannot necessarily read upgraded storage.
 
 ## Build dependency exception
 
-The LOW [deepmerge advisory GHSA-gcqx-w48m-w2h4](https://github.com/advisories/GHSA-gcqx-w48m-w2h4)
-has no patched upstream release at the time of review. An explicit exception
-covers only deepmerge 4.3.1 through @sveltejs/vite-plugin-svelte 7.3.1 in the
-frontend development/build graph. It expires on **2026-12-15** and must be removed
-when a compatible patch is available. The plugin processes trusted local build
-configuration; deepmerge is absent from the shipped frontend bundle and receives
-no peer input. Do not build untrusted configuration under this exception.
+The high-severity [picomatch advisory GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf)
+has no patched upstream release at the time of review. A temporary exception
+covers only picomatch 4.0.7 and its exact locked frontend build and test chain.
+It expires on **2026-12-17 at 00:00 UTC**, or should be removed sooner when a
+compatible patch is available. The affected tools use project-controlled file
+patterns. They are absent from the shipped app and do not receive peer input.
+This review does not cover building untrusted configuration or file patterns.
 
-Audit results remain visible. Expiration, a changed dependency chain, production
-use, another advisory or a higher severity fails the gate. The exact policy is
-in config/advisory-exception.json. This exception does not suppress other scans.
+The full audit remains recorded. A changed dependency chain, a different finding,
+or an expired exception fails the gate. See [the exact exception policy](config/advisory-exception.json).
+All other scans remain required.
 
 ## Reporting a security issue
 

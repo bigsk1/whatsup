@@ -51,6 +51,7 @@ type contactSection struct {
 	PeerName           string             `json:"peerDisplayName,omitempty"`
 	PeerAvatar         string             `json:"peerAvatar,omitempty"`
 	PeerAvatarRevision uint64             `json:"peerAvatarRevision,omitempty"`
+	Paused             bool               `json:"paused,omitempty"`
 	StoreID            string             `json:"storeID"`
 	generation         uint64
 }
@@ -627,7 +628,7 @@ func validateEnvelope(state applicationEnvelope) error {
 			return ErrState
 		}
 		seen[contact.Peer] = true
-		if profile.ValidateName(contact.LocalName) != nil || profile.ValidateName(contact.PeerName) != nil || validateAvatarEncoded(contact.PeerAvatar) != nil || contact.PeerAvatarRevision > maxAvatarRevision || (contact.PeerAvatar != "" && contact.PeerAvatarRevision == 0) || (contact.Version != 2 && (contact.LocalName != "" || contact.PeerName != "" || contact.PeerAvatar != "" || contact.PeerAvatarRevision != 0)) {
+		if profile.ValidateName(contact.LocalName) != nil || profile.ValidateName(contact.PeerName) != nil || validateAvatarEncoded(contact.PeerAvatar) != nil || contact.PeerAvatarRevision > maxAvatarRevision || (contact.PeerAvatar != "" && contact.PeerAvatarRevision == 0) || (contact.Version != 2 && (contact.LocalName != "" || contact.PeerName != "" || contact.PeerAvatar != "" || contact.PeerAvatarRevision != 0 || contact.Paused)) {
 			return ErrState
 		}
 		if len(contact.Chat) != 0 && (state.MessageStoreState != "pending" || validateChat(contact.Chat, contact.Local, contact.Peer) != nil) {

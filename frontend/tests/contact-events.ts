@@ -117,7 +117,7 @@ export async function serveDefaultAppPreferences(
 
 export function contactSummary(value: ConversationSnapshot) {
   const { messages: _messages, ...fields } = value;
-  return { ...fields, unread: 0 };
+  return { ...fields, unread: 0, paused: value.state === 'paused' };
 }
 
 export function messagePage(value: ConversationSnapshot) {

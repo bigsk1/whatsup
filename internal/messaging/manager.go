@@ -80,6 +80,7 @@ type managerState struct {
 	pathTimer     *time.Timer
 	pathEpoch     uint64
 	closed        bool
+	paused        bool
 	running       bool
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -245,6 +246,10 @@ func (m *Manager) refreshLocked() error {
 	// no local chat authority until that succeeds.
 	receipt, err := m.application.LocalConversation(record)
 	if err == nil {
+		m.paused, err = m.application.ContactPaused(record.ID)
+		if err != nil {
+			return ErrUnavailable
+		}
 		contact, err := pairing.RestoreLocalContact(receipt)
 		if err != nil || m.openConversationLocked(contact) != nil {
 			return ErrUnavailable
@@ -283,19 +288,21 @@ func (m *Manager) snapshotLocked(history ...bool) Snapshot {
 		result.State = "unavailable"
 		return result
 	}
-	if m.record.ID == "" && m.state == "failed" {
+	if m.paused {
+		result.State = "paused"
+	} else if m.record.ID == "" && m.state == "failed" {
 		result.State = "unavailable"
 	}
 	if m.record.ID != "" {
 		result.PeerProtocol = m.capabilities.WireVersion
-		result.AttachmentsSupported = m.sessionActive && m.capabilities.Attachments && !m.peerRemoved && !m.removing
-		result.ContactControlsSupported = m.sessionActive && m.capabilities.Control && !m.peerRemoved && !m.removing
+		result.AttachmentsSupported = !m.paused && m.sessionActive && m.capabilities.Attachments && !m.peerRemoved && !m.removing
+		result.ContactControlsSupported = !m.paused && m.sessionActive && m.capabilities.Control && !m.peerRemoved && !m.removing
 		result.ContactID, result.PeerFingerprint = m.record.ID, m.record.Peer.Fingerprint()
 		if names, err := m.application.ContactNames(m.record.ID); err == nil {
 			result.PeerDisplayName, result.LocalName = names.PeerDisplayName, names.LocalName
 		}
-		result.CanConnect = !m.running && m.ctx.Err() == nil && m.state != "failed" && m.state != "identity-changed" && !m.peerRemoved && !m.removing
-		result.CanSend = m.conversation != nil && m.state != "failed" && !capacityFailure(m.state) && !m.peerRemoved && !m.removing
+		result.CanConnect = m.canConnectLocked()
+		result.CanSend = !m.paused && m.conversation != nil && m.state != "failed" && !capacityFailure(m.state) && !m.peerRemoved && !m.removing
 		if m.conversation != nil && m.state != "failed" {
 			messages, pageErr := []chat.Message{}, error(nil)
 			if len(history) == 0 || history[0] {
@@ -306,7 +313,9 @@ func (m *Manager) snapshotLocked(history ...bool) Snapshot {
 				m.state = "failed"
 				m.bumpLocked()
 				m.cancel()
-				result.State = "failed"
+				if !m.paused {
+					result.State = "failed"
+				}
 				result.Revision = m.revision
 				result.CanSend = false
 				result.CanConnect = false
@@ -315,7 +324,7 @@ func (m *Manager) snapshotLocked(history ...bool) Snapshot {
 			result.Messages = append(result.Messages, messages...)
 			if usage.Full {
 				result.CanSend = false
-				if m.state != "identity-changed" && m.state != "peer-capacity-reached" && m.state != "update-required" && !m.peerRemoved {
+				if !m.paused && m.state != "identity-changed" && m.state != "peer-capacity-reached" && m.state != "update-required" && !m.peerRemoved {
 					result.State = "capacity-reached"
 				}
 			}
@@ -340,19 +349,31 @@ func (m *Manager) Connect(id string) (Snapshot, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.refreshLocked() != nil || id == "" || m.record.ID != id || m.ctx.Err() != nil || m.state == "failed" || m.state == "identity-changed" || m.peerRemoved || m.removing {
+	if m.refreshLocked() != nil || id == "" || m.record.ID != id || !m.connectionAllowedLocked() {
 		return m.snapshotLocked(), ErrUnavailable
 	}
 	if !m.running {
-		m.peerRouteBudget = routeReadyRetry{}
-		m.reconnect = reconnectBackoff{}
-		m.running, m.state = true, "connecting"
-		m.runDone = make(chan struct{})
-		m.bumpLocked()
-		m.workers.Add(1)
-		go m.run()
+		m.connectLocked()
 	}
 	return m.snapshotLocked(), nil
+}
+
+func (m *Manager) connectionAllowedLocked() bool {
+	return !m.closed && !m.paused && m.ctx.Err() == nil && m.state != "failed" && m.state != "identity-changed" && !m.peerRemoved && !m.removing
+}
+
+func (m *Manager) canConnectLocked() bool {
+	return !m.running && m.connectionAllowedLocked()
+}
+
+func (m *Manager) connectLocked() {
+	m.peerRouteBudget = routeReadyRetry{}
+	m.reconnect = reconnectBackoff{}
+	m.running, m.state = true, "connecting"
+	m.runDone = make(chan struct{})
+	m.bumpLocked()
+	m.workers.Add(1)
+	go m.run()
 }
 
 func (m *Manager) Send(id, text string) (Snapshot, error) {
@@ -362,7 +383,7 @@ func (m *Manager) Send(id, text string) (Snapshot, error) {
 	m.mu.Lock()
 	var report diagnostics.Event
 	defer func() { m.mu.Unlock(); m.report(report) }()
-	if m.refreshLocked() != nil || m.record.ID != id || m.conversation == nil || m.state == "failed" || capacityFailure(m.state) || m.peerRemoved || m.removing {
+	if m.refreshLocked() != nil || m.paused || m.record.ID != id || m.conversation == nil || m.state == "failed" || capacityFailure(m.state) || m.peerRemoved || m.removing {
 		return m.snapshotLocked(), ErrUnavailable
 	}
 	if _, err := m.conversation.Queue(text); err != nil {
@@ -579,9 +600,10 @@ func (m *Manager) Close() {
 		return
 	}
 	m.mu.Lock()
+	// Closed snapshots show unavailable. Keep the internal reason for stopping so
+	// a pause/resume replacement cannot inadvertently clear a terminal failure.
 	m.closed = true
 	m.capabilities = sessionauth.Capabilities{}
-	m.state = "unavailable"
 	m.clearPathLocked()
 	m.bumpLocked()
 	raw, listener, contact := m.raw, m.listener, m.contact

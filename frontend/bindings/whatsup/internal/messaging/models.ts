@@ -13,6 +13,7 @@ export interface ContactSummary {
     "peerFingerprint": string;
     "peerDisplayName": string;
     "localName": string;
+    "paused": boolean;
     "canConnect": boolean;
     "canSend": boolean;
     "peerProtocol": number;

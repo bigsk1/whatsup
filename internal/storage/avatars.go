@@ -18,7 +18,7 @@ func legacyAvatarEnvelope(state applicationEnvelope) bool {
 		return false
 	}
 	for _, c := range state.Contacts {
-		if c.PeerAvatar != "" || c.PeerAvatarRevision != 0 {
+		if c.PeerAvatar != "" || c.PeerAvatarRevision != 0 || c.Paused {
 			return false
 		}
 	}

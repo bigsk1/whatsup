@@ -51,7 +51,7 @@ func (m *Manager) finishRelayIntent() {
 
 func (m *Manager) startRelayIntent() {
 	m.mu.Lock()
-	if m.closed || m.peerRemoved || m.removing || m.ctx == nil || m.ctx.Err() != nil {
+	if m.closed || m.paused || m.peerRemoved || m.removing || m.ctx == nil || m.ctx.Err() != nil {
 		m.mu.Unlock()
 		return
 	}

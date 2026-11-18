@@ -23,6 +23,7 @@ export interface ContactsState {
   sending: Record<string, boolean>;
   connecting: Record<string, boolean>;
   forgetting: Record<string, boolean>;
+  pausing: Record<string, boolean>;
   notices: Record<string, string>;
   notice: string;
 }
@@ -38,18 +39,24 @@ const empty = (): ContactsState => ({
   sending: {},
   connecting: {},
   forgetting: {},
+  pausing: {},
   notices: {},
   notice: '',
 });
 
 export function selectedConversation(
   state: ContactsState,
-): ConversationSnapshot {
+): ConversationSnapshot & { paused: boolean } {
   const contact = state.contacts.find(
     (item) => item.contactID === state.selectedID,
   );
   if (!contact)
-    return { ...unavailableConversation, state: 'none', messages: [] };
+    return {
+      ...unavailableConversation,
+      state: 'none',
+      messages: [],
+      paused: false,
+    };
   const { unread: _unread, ...summary } = contact;
   return {
     ...summary,
@@ -79,6 +86,7 @@ export function connectionLabel(state: ConversationSnapshot['state']): string {
         'capacity-reached': 'Local message storage full',
         'peer-capacity-reached': 'Contact message storage full',
         'peer-removed': 'This contact removed you',
+        paused: 'Connection paused',
       } as Partial<Record<ConversationSnapshot['state'], string>>
     )[state] ?? 'Offline'
   );
@@ -394,7 +402,11 @@ export function createContacts(bridge: ContactsBridge = contactsBridge) {
       return false;
     const previous = current.contacts.find((item) => item.contactID === id)!;
     const { messages, ...fields } = value;
-    summary({ ...fields, unread: previous.unread });
+    summary({
+      ...fields,
+      unread: previous.unread,
+      paused: value.state === 'paused',
+    });
     // Mutation snapshots are bounded recent history. A fresh page supplies a
     // real cursor rather than making one up from timestamps or message IDs.
     publish({
@@ -422,6 +434,8 @@ export function createContacts(bridge: ContactsBridge = contactsBridge) {
     if (
       !enabled ||
       !contact ||
+      contact.paused ||
+      current.pausing[id] ||
       current[kind][id] ||
       (kind === 'sending'
         ? !contact.canSend || !validMessageText(text)
@@ -456,6 +470,40 @@ export function createContacts(bridge: ContactsBridge = contactsBridge) {
     } finally {
       if (live(epoch, id, operation))
         publish({ [kind]: { ...current[kind], [id]: false } });
+    }
+  }
+
+  async function setPaused(id: string, paused: boolean): Promise<boolean> {
+    const contact = current.contacts.find((item) => item.contactID === id);
+    if (
+      !enabled ||
+      !contact ||
+      contact.state === 'peer-removed' ||
+      current.pausing[id] ||
+      contact.paused === paused
+    )
+      return false;
+    const epoch = generation;
+    const operation = operations.get(id) ?? 0;
+    publish({ pausing: { ...current.pausing, [id]: true } });
+    setNotice(id, '');
+    try {
+      const value = await bridge.setPaused(id, paused);
+      if (!live(epoch, id, operation)) return false;
+      summary(value);
+      return true;
+    } catch {
+      if (live(epoch, id, operation))
+        setNotice(
+          id,
+          paused
+            ? 'The connection could not be paused. Check its status and try again.'
+            : 'The connection could not be resumed. Your saved history and drafts are kept. Try again.',
+        );
+      return false;
+    } finally {
+      if (live(epoch, id, operation))
+        publish({ pausing: { ...current.pausing, [id]: false } });
     }
   }
 
@@ -524,6 +572,7 @@ export function createContacts(bridge: ContactsBridge = contactsBridge) {
     select,
     apply,
     forget,
+    setPaused,
     send: (id = current.selectedID) => mutate(id, 'sending'),
     connect: (id = current.selectedID) => mutate(id, 'connecting'),
     loadOlder: () => loadPage(current.selectedID, true),

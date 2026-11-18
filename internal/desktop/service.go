@@ -16,7 +16,7 @@ import (
 	"whatsup/internal/storage"
 )
 
-const Version = "0.1.1"
+const Version = "0.1.2"
 
 type Status struct {
 	Version              string `json:"version"`
@@ -256,6 +256,26 @@ func (s *Service) LockStorage() Status {
 	defer s.mu.Unlock()
 	s.cancelSecurityLocked()
 	return s.lockStorageLocked()
+}
+
+func (s *Service) failStorageWriteLocked() {
+	// A root rename may have reached disk before a sync error. Retire every
+	// network generation until an authenticated reopen resolves that state.
+	s.cancelSecurityLocked()
+	_ = s.lockStorageLocked()
+	s.record(diagnostics.StorageUnavailable)
+}
+
+func (s *Service) finishStorageCall(wasUnlocked bool) {
+	state := s.state
+	var emit func(string)
+	if wasUnlocked && state != "unlocked" && s.security != nil {
+		emit = s.security.options.StorageChanged
+	}
+	s.mu.Unlock()
+	if emit != nil {
+		emit(state)
+	}
 }
 
 func (s *Service) lockStorageLocked() Status {

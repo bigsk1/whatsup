@@ -2,6 +2,9 @@ import { defineConfig } from 'vitest/config';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
 import wails from '@wailsio/runtime/plugins/vite';
+import advisoryException from '../config/advisory-exception.json' with { type: 'json' };
+
+const reviewedTooling = Object.keys(advisoryException.findings);
 
 export default defineConfig({
   server: {
@@ -13,6 +16,33 @@ export default defineConfig({
     svelte(),
     tailwindcss(),
     wails('./bindings'),
+    {
+      name: 'whatsup-keep-reviewed-tooling-out-of-bundles',
+      apply: 'build',
+      generateBundle(_, bundle) {
+        for (const output of Object.values(bundle)) {
+          if (output.type !== 'chunk') continue;
+          const ids = [
+            ...Object.keys(output.modules),
+            ...output.imports,
+            ...output.dynamicImports,
+          ];
+          for (const raw of ids) {
+            const id = raw.replaceAll('\\', '/');
+            const name = reviewedTooling.find(
+              (name) =>
+                id.includes(`/node_modules/${name}/`) ||
+                id === name ||
+                id.startsWith(`${name}/`),
+            );
+            if (name)
+              this.error(
+                `Reviewed build tooling must stay out of the app bundle: ${name}`,
+              );
+          }
+        }
+      },
+    },
     {
       name: 'whatsup-local-development-csp',
       transformIndexHtml: {

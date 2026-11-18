@@ -182,16 +182,24 @@
   const connecting = $derived(
     Boolean($contactsState.connecting[conversation.contactID]),
   );
+  const pausing = $derived(
+    Boolean($contactsState.pausing[conversation.contactID]),
+  );
+  const messageInputAllowed = $derived(
+    conversation.canSend && !conversation.paused && !pausing,
+  );
   const forgetting = $derived(
     Object.values($contactsState.forgetting).some(Boolean),
   );
   let conversationEpoch = 0;
   const attachmentWireAllowed = $derived(
-    conversation.state !== 'peer-removed' &&
+    !conversation.paused &&
+      !pausing &&
+      conversation.state !== 'peer-removed' &&
       !(conversation.state === 'connected' && conversation.peerProtocol === 3),
   );
   const attachmentStageAllowed = $derived(
-    conversation.state !== 'peer-removed',
+    conversation.state !== 'peer-removed' && !conversation.paused && !pausing,
   );
   let dragInputEligible = false;
   $effect(() => {
@@ -211,12 +219,17 @@
     dragInputEligible = allowed;
   });
   $effect(() => {
-    attachments.setConnection(conversation.state, conversation.peerProtocol);
+    attachments.setConnection(
+      pausing ? 'paused' : conversation.state,
+      conversation.peerProtocol,
+    );
     if (
       native &&
       status.storageState === 'unlocked' &&
       conversation.contactID &&
-      conversation.state !== 'peer-removed'
+      conversation.state !== 'peer-removed' &&
+      !conversation.paused &&
+      !pausing
     ) {
       relayChange.start();
       relayChange.select(conversation.contactID, {
@@ -726,7 +739,7 @@
   }
 
   function insertEmoji(emoji: string) {
-    if (!conversation.canSend || busy) return;
+    if (!messageInputAllowed || busy) return;
     const contactID = conversation.contactID;
     const start = composerInput?.selectionStart ?? draft.length;
     const end = composerInput?.selectionEnd ?? draft.length;
@@ -775,14 +788,14 @@
     </header>
     <label class="search-box"
       ><Icon name="search" size="1.1em" /><span class="sr-only"
-        >Search contacts</span
+        >Filter contacts</span
       ><input
         type="search"
-        placeholder="Search chats"
+        placeholder="Filter contacts"
         bind:value={search}
         maxlength="100"
       />{#if search}<button
-          aria-label="Clear search"
+          aria-label="Clear filter"
           class="clear-search"
           onclick={() => (search = '')}><Icon name="close" size="1em" /></button
         >{/if}</label
@@ -806,15 +819,15 @@
             <Icon name={search ? 'search' : 'users'} />
           </div>
           <h2>
-            {search ? 'No matching conversations' : 'Your people go here'}
+            {search ? 'No matching contacts' : 'Your people go here'}
           </h2>
           <p>
             {search
-              ? `No conversations match “${search}”.`
+              ? `No contacts match “${search}”.`
               : 'Invite someone you trust. Each chat is private between the two of you.'}
           </p>
           {#if search}<button class="text-button" onclick={() => (search = '')}
-              >Clear search</button
+              >Clear filter</button
             >{:else}<span class="subtle-pill"
               ><Icon name="lock" size="1em" /> Invite only</span
             >{/if}
@@ -871,14 +884,33 @@
         </div>
       </div>
       <div class="conversation-actions">
-        {#if hasContact && conversation.canConnect}
+        {#if hasContact && conversation.canConnect && !conversation.paused}
           <button
             class="primary-button compact"
-            disabled={connecting || busy}
+            disabled={connecting || pausing || busy}
             onclick={() => void connectConversation()}
             ><Icon name="plug" size="1.1em" /><span class="label-text"
               >{connecting ? 'Connecting…' : 'Connect'}</span
             ></button
+          >
+        {/if}
+        {#if hasContact && conversation.state !== 'peer-removed'}
+          <button
+            type="button"
+            class="icon-button"
+            aria-label={conversation.paused
+              ? 'Resume connection'
+              : 'Pause connection'}
+            title={conversation.paused
+              ? 'Resume this contact’s connection'
+              : 'Pause only this contact’s connection'}
+            aria-busy={pausing}
+            disabled={busy || pausing}
+            onclick={() =>
+              void contacts.setPaused(
+                conversation.contactID,
+                !conversation.paused,
+              )}><Icon name={conversation.paused ? 'play' : 'pause'} /></button
           >
         {/if}
         {#if hasContact}
@@ -980,7 +1012,14 @@
 
     {#if hasContact}
       <section class="message-space" aria-label="Conversation">
-        {#if conversation.state === 'peer-removed'}
+        {#if conversation.paused}
+          <p class="connection-notice tone-idle" role="status">
+            <Icon name="pause" /><span
+              >This connection is paused. Resume it to send and receive messages
+              and files. Your saved history and files stay available.</span
+            >
+          </p>
+        {:else if conversation.state === 'peer-removed'}
           <p class="connection-notice tone-danger" role="status">
             <Icon name="forget" /><span
               >This contact removed you. Messaging and automatic reconnect have
@@ -1145,9 +1184,11 @@
             <div class="conversation-empty">
               <Logo size="3.5rem" />
               <p>
-                {conversation.canSend
+                {messageInputAllowed
                   ? 'Your conversation is ready. Write the first message.'
-                  : 'Your contact is saved. Messages become available after authentication.'}
+                  : conversation.paused
+                    ? 'Your connection is paused. Resume it when you are ready.'
+                    : 'Your contact is saved. Messages become available after authentication.'}
               </p>
             </div>
           {/each}
@@ -1168,10 +1209,12 @@
               items={attachmentsSelected ? $attachmentsState.items : []}
               wireAllowed={attachmentWireAllowed}
               stageAllowed={attachmentStageAllowed}
-              wireNotice={conversation.state === 'connected' &&
-              conversation.peerProtocol === 3
-                ? 'Text messaging works with this device. It needs an update for attachments; local drafts and queued files are kept.'
-                : ''}
+              wireNotice={conversation.paused
+                ? 'This connection is paused. Resume it to transfer files. Saved files remain available.'
+                : conversation.state === 'connected' &&
+                    conversation.peerProtocol === 3
+                  ? 'Text messaging works with this device. It needs an update for attachments; local drafts and queued files are kept.'
+                  : ''}
               drafts={attachmentsSelected ? $attachmentsState.drafts : []}
               busy={$attachmentsState.busy}
               notice={attachmentsSelected ? $attachmentsState.notice : ''}
@@ -1257,12 +1300,14 @@
           aria-label={hasContact
             ? 'Message'
             : 'Message unavailable without an approved contact'}
-          placeholder={conversation.canSend
-            ? 'Write a message…'
-            : hasContact
-              ? 'Connect to open this conversation…'
-              : 'Your next conversation starts here…'}
-          disabled={!conversation.canSend || busy}
+          placeholder={conversation.paused
+            ? 'Resume this connection to write a message…'
+            : messageInputAllowed
+              ? 'Write a message…'
+              : hasContact
+                ? 'Connect to open this conversation…'
+                : 'Your next conversation starts here…'}
+          disabled={!messageInputAllowed || busy}
           value={draft}
           oninput={(event) =>
             contacts.setDraft(
@@ -1291,12 +1336,12 @@
             }
           }}
           rows="1"></textarea><EmojiPicker
-          disabled={!conversation.canSend || busy}
+          disabled={!messageInputAllowed || busy}
           onpick={insertEmoji}
         /><button
           class="send-button"
           aria-label={hasContact ? 'Send message' : 'Send message unavailable'}
-          disabled={!conversation.canSend ||
+          disabled={!messageInputAllowed ||
             sending ||
             busy ||
             !validMessageText(draft)}
@@ -1304,16 +1349,18 @@
         >
       </div>
       <p class="composer-caption">
-        {#if hasContact && conversation.canSend && status.attachmentsAvailable}<Icon
+        {#if hasContact && messageInputAllowed && status.attachmentsAvailable}<Icon
             name="dragDrop"
             size="1.1em"
           />{/if}
         {hasContact
-          ? conversation.canSend
-            ? status.attachmentsAvailable
-              ? 'Enter to send · Shift+Enter for a new line · Drop a file anywhere to attach it.'
-              : 'Enter to send · Shift+Enter for a new line. Queued messages stay here until your contact receives them.'
-            : 'Connect to authenticate your contact. Nothing is sent before verification.'
+          ? conversation.paused
+            ? 'Connection paused. Resume it when you are ready to chat.'
+            : messageInputAllowed
+              ? status.attachmentsAvailable
+                ? 'Enter to send · Shift+Enter for a new line · Drop a file anywhere to attach it.'
+                : 'Enter to send · Shift+Enter for a new line. Queued messages stay here until your contact receives them.'
+              : 'Connect to authenticate your contact. Nothing is sent before verification.'
           : 'No contact selected. Nothing is sent or queued.'}
       </p>
     </div>

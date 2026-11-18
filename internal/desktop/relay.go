@@ -3,7 +3,6 @@ package desktop
 import (
 	"errors"
 
-	"whatsup/internal/diagnostics"
 	"whatsup/internal/storage"
 )
 
@@ -17,25 +16,9 @@ var errRelayChange = errors.New("The connection service change could not be comp
 
 func (s *Service) relayFailureLocked(err error) error {
 	if errors.Is(err, storage.ErrStateFailed) {
-		// A root rename may have reached disk before a sync error. Retire every
-		// network generation until an authenticated reopen resolves that state.
-		s.cancelSecurityLocked()
-		_ = s.lockStorageLocked()
-		s.record(diagnostics.StorageUnavailable)
+		s.failStorageWriteLocked()
 	}
 	return errRelayChange
-}
-
-func (s *Service) finishRelayCall(wasUnlocked bool) {
-	state := s.state
-	var emit func(string)
-	if wasUnlocked && state != "unlocked" && s.security != nil {
-		emit = s.security.options.StorageChanged
-	}
-	s.mu.Unlock()
-	if emit != nil {
-		emit(state)
-	}
 }
 
 func (s *Service) relaySnapshotLocked(id string) (RelayChangeSnapshot, error) {
@@ -60,7 +43,7 @@ func (s *Service) relaySnapshotLocked(id string) (RelayChangeSnapshot, error) {
 // a map, dials, selects a provider, or approves a pending peer proposal.
 func (s *Service) GetRelayChange(id string) (RelayChangeSnapshot, error) {
 	s.mu.Lock()
-	defer s.finishRelayCall(s.state == "unlocked")
+	defer s.finishStorageCall(s.state == "unlocked")
 	return s.relaySnapshotLocked(id)
 }
 
@@ -73,7 +56,7 @@ func (s *Service) relayChangedLocked(id string) (RelayChangeSnapshot, error) {
 
 func (s *Service) ProposeRelayChange(id, serviceURL string, consent bool) (RelayChangeSnapshot, error) {
 	s.mu.Lock()
-	defer s.finishRelayCall(s.state == "unlocked")
+	defer s.finishStorageCall(s.state == "unlocked")
 	if !consent {
 		return RelayChangeSnapshot{}, errors.New("Allow this connection service before proposing the change")
 	}
@@ -88,7 +71,7 @@ func (s *Service) ProposeRelayChange(id, serviceURL string, consent bool) (Relay
 
 func (s *Service) ApproveRelayChange(id, requestID string, consent bool) (RelayChangeSnapshot, error) {
 	s.mu.Lock()
-	defer s.finishRelayCall(s.state == "unlocked")
+	defer s.finishStorageCall(s.state == "unlocked")
 	if !consent {
 		return RelayChangeSnapshot{}, errors.New("Allow the displayed connection service before approving the change")
 	}
@@ -103,7 +86,7 @@ func (s *Service) ApproveRelayChange(id, requestID string, consent bool) (RelayC
 
 func (s *Service) DeclineRelayChange(id, requestID string) (RelayChangeSnapshot, error) {
 	s.mu.Lock()
-	defer s.finishRelayCall(s.state == "unlocked")
+	defer s.finishStorageCall(s.state == "unlocked")
 	if _, err := s.relaySnapshotLocked(id); err != nil {
 		return RelayChangeSnapshot{}, err
 	}
@@ -115,7 +98,7 @@ func (s *Service) DeclineRelayChange(id, requestID string) (RelayChangeSnapshot,
 
 func (s *Service) CancelRelayChange(id, requestID string) (RelayChangeSnapshot, error) {
 	s.mu.Lock()
-	defer s.finishRelayCall(s.state == "unlocked")
+	defer s.finishStorageCall(s.state == "unlocked")
 	if _, err := s.relaySnapshotLocked(id); err != nil {
 		return RelayChangeSnapshot{}, err
 	}
@@ -129,7 +112,7 @@ func (s *Service) CancelRelayChange(id, requestID string) (RelayChangeSnapshot, 
 // endpoint, node private key, PSK or session capability; copying stays explicit.
 func (s *Service) ExportRelayChange(id string) (RelayCarry, error) {
 	s.mu.Lock()
-	defer s.finishRelayCall(s.state == "unlocked")
+	defer s.finishStorageCall(s.state == "unlocked")
 	if _, err := s.relaySnapshotLocked(id); err != nil {
 		return RelayCarry{}, err
 	}
@@ -144,7 +127,7 @@ func (s *Service) ExportRelayChange(id string) (RelayCarry, error) {
 // Importing a proposal never manufactures local approval or permits its fetch.
 func (s *Service) ImportRelayChange(id, text string) (RelayChangeSnapshot, error) {
 	s.mu.Lock()
-	defer s.finishRelayCall(s.state == "unlocked")
+	defer s.finishStorageCall(s.state == "unlocked")
 	if _, err := s.relaySnapshotLocked(id); err != nil {
 		return RelayChangeSnapshot{}, err
 	}

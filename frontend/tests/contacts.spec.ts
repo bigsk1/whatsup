@@ -28,6 +28,7 @@ const methods = [
   'GetMessages',
   'MarkRead',
   'ForgetContact',
+  'SetContactPaused',
 ] as const;
 type Method = (typeof methods)[number];
 const operations = new Map<number, Method>();
@@ -51,6 +52,7 @@ function contact(
     contactID,
     localName,
     unread,
+    paused: false,
     state: 'offline',
     path: 'Unknown',
     revision: 1,
@@ -81,6 +83,7 @@ async function fixture(
     ],
     older: false,
     activation,
+    pauseFailure: false,
   };
   const calls: { method: Method; args: unknown[] }[] = [];
   const errors: string[] = [];
@@ -150,6 +153,26 @@ async function fixture(
       )!;
       contact.unread = 0;
       await route.fulfill({ json: contact });
+    } else if (method === 'SetContactPaused') {
+      if (state.pauseFailure) {
+        await route.fulfill({
+          status: 503,
+          body: 'SYNTHETIC-PRIVATE-PAUSE-FAILURE',
+        });
+        return;
+      }
+      const contact = state.contacts.find(
+        ({ contactID }) => contactID === args[0],
+      )!;
+      const paused = args[1] as boolean;
+      Object.assign(contact, {
+        paused,
+        state: paused ? 'paused' : 'connecting',
+        canSend: !paused,
+        canConnect: false,
+        revision: contact.revision + 1,
+      });
+      await route.fulfill({ json: contact });
     } else if (method === 'ForgetContact') {
       state.contacts = state.contacts.filter(
         (item) => item.contactID !== args[0],
@@ -172,6 +195,125 @@ async function fixture(
   });
   return { state, calls, errors };
 }
+
+test('pause and resume affect only the selected contact and preserve its history and draft', async ({
+  page,
+}) => {
+  // At this width the sidebar and text labels on adjacent controls are visible.
+  await page.setViewportSize({ width: 915, height: 600 });
+  const { state, calls, errors } = await fixture(page);
+  await page.goto('/');
+  const pause = page.getByRole('button', {
+    name: 'Pause connection',
+    exact: true,
+  });
+  const resume = page.getByRole('button', {
+    name: 'Resume connection',
+    exact: true,
+  });
+  const composer = page.getByRole('textbox', { name: 'Message', exact: true });
+  await expect(
+    page.getByText('Synthetic first history', { exact: true }),
+  ).toBeVisible();
+  await expect(pause).toBeVisible();
+  const historyButton = page.getByRole('button', { name: 'Clear history…' });
+  const iconWidth = (await historyButton.boundingBox())?.width;
+  expect((await pause.boundingBox())?.width).toBe(iconWidth);
+  await composer.fill('Synthetic draft kept while paused');
+  state.pauseFailure = true;
+  await pause.click();
+  await expect(page.getByRole('alert')).toContainText(
+    'The connection could not be paused.',
+  );
+  await expect(composer).toBeEnabled();
+  await expect(composer).toHaveValue('Synthetic draft kept while paused');
+  state.pauseFailure = false;
+  await pause.click();
+  await expect(resume).toBeVisible();
+  expect((await resume.boundingBox())?.width).toBe(iconWidth);
+  await expect(composer).toBeDisabled();
+  await expect(composer).toHaveValue('Synthetic draft kept while paused');
+  await expect(
+    page.getByText('Synthetic first history', { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'Send message', exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole('button', { name: 'Go offline', exact: true }),
+  ).toBeEnabled();
+  await page
+    .getByRole('button', {
+      name: 'Conversation with Synthetic second',
+      exact: true,
+    })
+    .click();
+  await expect(composer).toBeEnabled();
+  await expect(
+    page.getByText('Synthetic second history', { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole('button', {
+      name: 'Conversation with Synthetic first',
+      exact: true,
+    })
+    .click();
+  await expect(composer).toBeDisabled();
+  await resume.click();
+  await expect(composer).toBeEnabled();
+  await expect(composer).toHaveValue('Synthetic draft kept while paused');
+  expect(
+    calls
+      .filter(({ method }) => method === 'SetContactPaused')
+      .map(({ args }) => args),
+  ).toEqual([
+    [first, true],
+    [first, true],
+    [first, false],
+  ]);
+  expect(state.contacts[1].paused).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test('an already paused saved contact stays paused on startup without a resume action', async ({
+  page,
+}) => {
+  const { state, calls, errors } = await fixture(page);
+  Object.assign(state.contacts[0], {
+    paused: true,
+    state: 'paused',
+    canSend: false,
+    canConnect: false,
+  });
+  await page.goto('/');
+  await expect(
+    page.getByRole('button', { name: 'Resume connection', exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('textbox', { name: 'Message', exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByText('Synthetic first history', { exact: true }),
+  ).toBeVisible();
+  expect(calls.some(({ method }) => method === 'SetContactPaused')).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test('Filter contacts keeps the existing contact-name filter behavior', async ({
+  page,
+}) => {
+  const { errors } = await fixture(page);
+  await page.goto('/');
+  const filter = page.getByRole('searchbox', { name: 'Filter contacts' });
+  await filter.fill('Synthetic second');
+  await expect(page.locator('.approved-contact')).toHaveCount(1);
+  await expect(page.locator('.approved-contact')).toHaveAccessibleName(
+    'Conversation with Synthetic second',
+  );
+  await page.getByRole('button', { name: 'Clear filter', exact: true }).click();
+  await expect(page.locator('.approved-contact')).toHaveCount(2);
+  expect(errors).toEqual([]);
+});
 
 test('early notification waits for saved contacts and selects only its approved conversation', async ({
   page,

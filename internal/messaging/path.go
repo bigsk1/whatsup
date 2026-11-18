@@ -32,7 +32,7 @@ func (m *Manager) report(event diagnostics.Event) {
 
 func (m *Manager) notifyIncoming(messageID string) {
 	m.mu.Lock()
-	callback, id, live := m.onIncoming, m.record.ID, !m.closed && m.sessionActive
+	callback, id, live := m.onIncoming, m.record.ID, !m.closed && !m.paused && m.sessionActive
 	m.mu.Unlock()
 	if live && callback != nil && id != "" {
 		callback(Incoming{ContactID: id, MessageID: messageID, origin: m.managerState})
@@ -40,7 +40,7 @@ func (m *Manager) notifyIncoming(messageID string) {
 }
 
 func (m *Manager) pathLocked(now time.Time) transport.Path {
-	if m.closed || !m.sessionActive || m.pathAt.IsZero() || now.Sub(m.pathAt) < 0 || now.Sub(m.pathAt) >= PathMaxAge {
+	if m.closed || m.paused || !m.sessionActive || m.pathAt.IsZero() || now.Sub(m.pathAt) < 0 || now.Sub(m.pathAt) >= PathMaxAge {
 		return transport.PathUnknown
 	}
 	if m.path == transport.PathDirect || m.path == transport.PathRelayed {

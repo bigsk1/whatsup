@@ -291,6 +291,13 @@ export function SetContactName(contactID: string, localName: string): $Cancellab
     return $Call.ByID(3486640966, contactID, localName);
 }
 
+/**
+ * SetContactPaused changes only the selected approved contact's connection.
+ */
+export function SetContactPaused(contactID: string, paused: boolean): $CancellablePromise<messaging$0.ContactSummary> {
+    return $Call.ByID(256003883, contactID, paused);
+}
+
 export function SetProfile(displayName: string, shareDisplayName: boolean): $CancellablePromise<$models.ProfileSnapshot> {
     return $Call.ByID(3658025180, displayName, shareDisplayName);
 }

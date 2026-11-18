@@ -83,6 +83,14 @@ describe('public conversation boundary', () => {
     expect(() =>
       validateConversation({ ...removed, canConnect: true }),
     ).toThrow();
+    const paused = validateConversation({ ...removed, state: 'paused' });
+    expect(paused.messages).toEqual(value.messages);
+    for (const fields of [
+      { canSend: true },
+      { canConnect: true },
+      { peerProtocol: 4, attachmentsSupported: true },
+    ])
+      expect(() => validateConversation({ ...paused, ...fields })).toThrow();
   });
   it('rejects invalid forget targets before native access and fails closed in a browser preview', async () => {
     for (const invalid of [
