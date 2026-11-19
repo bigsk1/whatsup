@@ -6,9 +6,7 @@ two computers talk over an encrypted connection. There is no account to create
 and no server that stores your messages. Every conversation is between exactly
 two devices; there are no group chats.
 
-![WhatsUp with the Bubbly look and Midnight colors](docs/images/bubbly-midnight.png)
-
-Screenshots use fictional contacts, conversations and profile illustrations.
+![Stick figure animation introducing WhatsUp, a private desktop messenger](docs/images/whatsup-stick.webp)
 
 > WhatsUp **0.1.2** is unsigned preview software. Windows installers are not
 > Authenticode-signed, automatic updates are disabled, and the app has not
@@ -106,6 +104,10 @@ and no offline mailbox holding messages for you.
 
 A look sets the fonts, shapes, icons and effects. You can combine any of the four
 looks with any color scheme.
+
+![WhatsUp with the Bubbly look and Midnight colors](docs/images/bubbly-midnight.png)
+
+Screenshots use fictional contacts, conversations and profile illustrations.
 
 | | |
 | --- | --- |
