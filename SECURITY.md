@@ -24,6 +24,11 @@ unlimited compatibility promise.
 Automatic mode prefers direct connectivity and permits explicitly accepted
 encrypted relay fallback. A relay sees IP addresses and availability and may
 carry encrypted traffic. Setup and rediscovery require the selected service.
+To try a direct path, each device sends the other its public IP address and
+port and its local network interface addresses. A saved contact receives them
+on every connection. During setup both devices exchange them before fingerprints
+are approved, so anyone redeeming a live invitation learns them. A malicious
+relay operator can also obtain the local addresses.
 The path display is sampled and is not packet-boundary enforcement. Large-file
 relay-bandwidth consent is a precaution, not strict direct-only protection.
 Strict direct-only is unavailable. WhatsUp does not promise anonymity.
@@ -92,13 +97,20 @@ a usable export. No backup forward-secrecy guarantee is made.
 
 ## Files and deletion
 
-Transfers require receiver approval, bounded offers/chunks, encrypted temporary
-storage and whole-file SHA-256 verification before completion. A peer cannot
+Transfers require receiver approval. The one exception is automatic image
+acceptance, which starts off and is enabled per contact: PNG, JPEG, WebP and GIF
+offers up to 25 MB from that contact are then accepted without a prompt. All
+transfers use bounded offers/chunks, encrypted temporary storage and whole-file
+SHA-256 verification before completion. A peer cannot
 choose a local save path. The Go save dialog chooses the export destination.
 Files are never auto-opened. Preview handlers serve opaque IDs with forced MIME,
 nosniff and restrictive CSP; HTML, SVG and active Markdown are not previewed.
 Images are decoded with dimension/pixel limits, oriented and re-encoded for
-full-size views and thumbnails. Normal image sends strip metadata; explicit
+full-size views and thumbnails. MP4 and WebM videos are content-checked and
+served as the sender's original bytes, so the WebView's media decoder parses
+them; they load only when you choose to play them. Contact photos are validated
+in Go (exactly 512×512 pixels, at most 64 KiB) and shown as the sender's bytes
+without re-encoding. Normal image sends strip metadata; explicit
 send-as-file preserves original bytes as save-only data, skipping image decoding,
 preview and image auto-accept eligibility. Session caches are bounded and retired
 with their contact/storage authority.
@@ -107,10 +119,16 @@ Clear history cancels unfinished attachments while keeping the contact; queued
 text retains its delivery obligation. Forget removes one contact's local state
 and sends an authenticated removal notice when connected. Neither action erases
 a peer's copies, earlier exports, notification history, physical media or memory.
-Single-attachment deletion revokes its local media and saved-file handles and
-retires queued file writes. Encrypted terminal IDs/hashes remain for replay
-rejection, cancellation retries and completion receipts. It never deletes a
-previously exported file. Per-contact storage meters read authenticated logical
+Single-attachment deletion removes the stored file data, revokes its local media
+and saved-file handles and retires queued file writes. Clear history does the
+same for every attachment. The encrypted offer record, including the file name,
+type, size and hash, remains until Forget for replay rejection, cancellation
+retries and completion receipts. Deletion never removes a previously exported
+file. Clear history, Forget and attachment deletion change only the live
+profile: earlier migration snapshots and recovery rollback trees can still hold
+encrypted copies of removed data. Retention can prune older migration snapshots;
+recovery rollback trees are never removed automatically. Per-contact storage
+meters read authenticated logical
 quota counters; they do not report physical allocation or OS free space.
 Attachment timeline times are generated locally and stored inside encrypted
 records, not supplied by a peer or added to readable SQLite columns. Native
@@ -120,9 +138,14 @@ remain on the Go side and an actual drop does not send a file automatically.
 ## Desktop and disclosure boundaries
 
 The Go application runs with the desktop account's privileges. A private WebView
-is not an OS sandbox for that process. No shell/SSH service, command execution,
-generic filesystem bridge, LAN proxy, port forwarding or public content server
-is exposed. A compromised OS/account or approved peer can access its own data.
+is not an OS sandbox for that process. WhatsUp runs no shell/SSH service, LAN
+proxy, port forwarding or public content server, and its own bridge methods
+offer no command execution or generic file access. The Wails runtime's built-in
+calls also remain available to the app page, including opening links with the
+OS default handler, clipboard access, native file dialogs and window control.
+The page loads only bundled scripts under a restrictive content policy and never
+renders peer text as HTML; script injected into the page could still use those
+calls. A compromised OS/account or approved peer can access its own data.
 
 No application analytics, automatic diagnostic upload or remote crash reporting
 is enabled. Local diagnostics are bounded and redact content and endpoints.

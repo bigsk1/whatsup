@@ -23,12 +23,16 @@ the peer's shared label when connected, but cannot erase independent copies.
 
 Profile pictures follow separate controls. **Share my profile photo** starts
 off; your own picture still shows locally. **Show contact photos** controls local
-display and starts on. Pictures are decoded, cropped, scaled and re-encoded in
-Go with bounded size and no source metadata, then stored encrypted with profile
-data. Only authenticated, approved peers with compatible photo support receive
-them. Disabling sharing sends an explicit clear on the next connection. Forget
+display and starts on. Your picture is decoded, cropped, scaled and re-encoded
+in Go with bounded size and no source metadata, then stored encrypted with
+profile data. Only authenticated, approved peers with compatible photo support
+receive it. A contact's photo is validated in Go (exactly 512×512 pixels, at
+most 64 KiB), stored encrypted and displayed as the bytes they sent, without
+re-encoding.
+Disabling sharing sends an explicit clear on the next connection. Forget
 removes the contact's stored picture; neither action erases independent copies.
-The WebView receives only opaque local-media URLs, never paths or remote URLs.
+Pictures reach the WebView only through opaque local-media URLs, never paths or
+remote URLs.
 
 Invitations are temporary bearer links held in memory. Copying one places it on
 the OS clipboard; it can remain there or in clipboard history until removed.
@@ -47,6 +51,11 @@ Launching in OS-only mode, going online or completing pairing reconnects contact
 Direct connectivity is preferred, with consented encrypted relay fallback. The
 service can observe IP addresses and availability. Setup/reconnection and network
 rediscovery depend on that service even if payload traffic later becomes direct.
+To try a direct path, each device sends the other its public IP address and
+port and its local network interface addresses. A saved contact receives them on
+every connection. During setup both devices exchange them before fingerprints
+are approved, so anyone redeeming a live invitation learns them. A malicious
+relay operator can also obtain the local addresses.
 No anonymity or offline mailbox is provided. Strict direct-only is unavailable.
 A sampled Direct/Relayed/Unknown display is not a packet-level policy guarantee.
 
@@ -56,8 +65,9 @@ list under the same service URL.
 
 ## Files, exports and deletion
 
-Received files require Accept/Decline. Per-contact automatic acceptance of images
-up to 25 MB is an explicit receiver opt-in. Incomplete data and completed objects
+Received files require Accept/Decline. The exception is per-contact automatic
+acceptance of PNG, JPEG, WebP and GIF images up to 25 MB, an explicit receiver
+opt-in that starts off. Incomplete data and completed objects
 remain encrypted inside WhatsUp. Save writes a plaintext copy to a destination
 you choose through the Go dialog; Show in folder reveals it without opening it.
 Those copies are outside WhatsUp's encryption and deletion controls.
@@ -66,6 +76,8 @@ Image sends apply EXIF orientation, re-encode and strip metadata by default. JPE
 photos remain JPEG. Full-size previews are sanitized on demand and use a bounded
 session cache cleared on retirement. Send as file retains original bytes and
 metadata as a save-only object, without image preview or automatic image acceptance. Copy/paste uses the OS clipboard and its retention policy.
+Received MP4 and WebM videos are content-checked and played from the sender's
+original bytes by the WebView's media decoder, only when you choose to play them.
 Recovery exports contain identity, profile, contacts, history and attachments,
 encrypted under a separate recovery passphrase. Import restores the saved
 profile's sharing choices as well as its pictures. Keep exports and secrets
@@ -76,6 +88,11 @@ continues until acknowledged. Forget deletes one contact's local state while
 preserving your identity and other contacts. An online removal notice stops the
 peer's retries; it does not delete their history. These are logical deletion,
 not physical erasure of media, memory, external exports or OS notification history.
+Deleting an attachment, or clearing history, removes its stored file data but
+keeps the encrypted offer record, including the file name, type, size and hash,
+until Forget. These actions change only the live profile: migration snapshots
+and recovery rollback data described below can still hold encrypted copies of
+removed contacts, messages and files.
 Managed migration backups are re-protected on passphrase changes/authenticated
 reopen. Retention keeps three authenticated top-level snapshots under the current
 master plus any live migration reference, in either protection mode. A separate
