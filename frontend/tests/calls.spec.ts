@@ -644,6 +644,111 @@ test('a camera whose picture never changes is switched off and named, and the ca
   expect(errors).toEqual([]);
 });
 
+test('a call whose audio cannot be set up closes what it had already opened', async ({
+  page,
+}) => {
+  const { push, microphone, state, errors } = await fixture(page, true);
+  // The decoder refuses its configuration, after the encoder and the playback
+  // node have been made. Every encoder made, and every disconnect of a
+  // worklet node, is recorded.
+  await page.addInitScript(() => {
+    const host = window as Window & {
+      __audioEncoders?: AudioEncoder[];
+      __workletDisconnects?: number;
+    };
+    const made: AudioEncoder[] = [];
+    host.__audioEncoders = made;
+    host.__workletDisconnects = 0;
+    const Real = window.AudioEncoder;
+    window.AudioEncoder = class extends Real {
+      constructor(init: AudioEncoderInit) {
+        super(init);
+        made.push(this);
+      }
+    };
+    AudioDecoder.prototype.configure = () => {
+      throw new DOMException('synthetic refusal', 'NotSupportedError');
+    };
+    const disconnect = AudioWorkletNode.prototype.disconnect;
+    AudioWorkletNode.prototype.disconnect = function (
+      this: AudioWorkletNode,
+      ...rest: unknown[]
+    ) {
+      host.__workletDisconnects = (host.__workletDisconnects ?? 0) + 1;
+      return (disconnect as (...args: unknown[]) => void).apply(this, rest);
+    } as typeof disconnect;
+  });
+  await page.goto('/');
+  await page
+    .getByRole('button', { name: 'Call Synthetic Friend', exact: true })
+    .click();
+  await page
+    .getByRole('dialog', { name: 'Call Synthetic Friend?' })
+    .getByRole('button', { name: 'Call', exact: true })
+    .click();
+  const bar = page.getByRole('region', { name: 'Voice call', exact: true });
+  await expect(bar).toContainText('Calling…');
+  await push({ ...state.call, state: 'active', activeSince: Date.now() });
+  await expect(
+    page.getByRole('status').filter({ hasText: /call audio/i }),
+  ).toBeVisible();
+  // Nothing made on the way is left open, and the microphone is released.
+  const left = await page.evaluate(() => {
+    const host = window as Window & {
+      __audioEncoders?: AudioEncoder[];
+      __workletDisconnects?: number;
+    };
+    return {
+      encoders: (host.__audioEncoders ?? []).map((encoder) => encoder.state),
+      workletDisconnects: host.__workletDisconnects ?? 0,
+    };
+  });
+  expect(left.encoders.length).toBeGreaterThan(0);
+  expect(left.encoders.every((value) => value === 'closed')).toBe(true);
+  expect(left.workletDisconnects).toBeGreaterThan(0);
+  await expect.poll(async () => (await microphone()).live).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+test('a camera whose encoder will not start leaves no element or camera behind', async ({
+  page,
+}) => {
+  const { push, microphone, camera, pictures, state, errors } = await fixture(
+    page,
+    true,
+    true,
+  );
+  await page.addInitScript(() => {
+    VideoEncoder.prototype.configure = () => {
+      throw new DOMException('synthetic refusal', 'NotSupportedError');
+    };
+  });
+  await page.goto('/');
+  await page
+    .getByRole('button', { name: 'Video call Synthetic Friend', exact: true })
+    .click();
+  await page
+    .getByRole('dialog', { name: 'Video call Synthetic Friend?' })
+    .getByRole('button', { name: 'Video call', exact: true })
+    .click();
+  const bar = page.getByRole('region', { name: 'Video call', exact: true });
+  await expect(bar).toContainText('Calling…');
+  await push({ ...state.call, state: 'connecting' });
+  await expect(
+    page.getByRole('status').filter({ hasText: 'cannot send video' }),
+  ).toBeVisible({ timeout: 15_000 });
+  // The element pictures were to be taken from is gone, the camera is
+  // released without ever being detached while running, and the call goes on.
+  await expect(page.locator('video[aria-hidden="true"]')).toHaveCount(0);
+  await expect.poll(async () => (await camera()).live).toBe(0);
+  expect((await pictures()).detachedLive).toBe(0);
+  expect((await microphone()).live).toBe(1);
+  await expect(
+    bar.getByRole('button', { name: 'Turn camera on' }),
+  ).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test('an incoming video call can be accepted with or without video, and without video the camera is never asked for', async ({
   page,
 }) => {

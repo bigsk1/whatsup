@@ -222,11 +222,52 @@ async function createBrowserPipeline(
   }
 }
 
+/**
+ * Builds the pipeline, and if any step fails part-way, closes whatever the
+ * earlier steps opened before the failure is reported. Without that a failed
+ * setup would leave an encoder, a decoder or a worklet node open with nothing
+ * holding them: the engine only gets something to close when setup succeeds.
+ */
 async function buildBrowserPipeline(
   stream: MediaStream,
   send: (timestamp: number, data: Uint8Array) => void,
   failed: (reason: AudioFailure) => void,
   entering: (stage: AudioStage) => void,
+): Promise<AudioPipeline> {
+  const opened: (() => void)[] = [];
+  try {
+    return await assembleBrowserPipeline(
+      stream,
+      send,
+      failed,
+      entering,
+      opened,
+    );
+  } catch (error) {
+    releaseAll(opened);
+    throw error;
+  }
+}
+
+/** Runs every recorded release, newest first, each one on its own. */
+function releaseAll(opened: (() => void)[]) {
+  for (const release of opened.splice(0).reverse()) {
+    try {
+      release();
+    } catch {
+      /* already released */
+    }
+  }
+}
+
+async function assembleBrowserPipeline(
+  stream: MediaStream,
+  send: (timestamp: number, data: Uint8Array) => void,
+  failed: (reason: AudioFailure) => void,
+  entering: (stage: AudioStage) => void,
+  // What has been opened so far, as functions that release it. Each step adds
+  // its own as soon as the thing exists.
+  opened: (() => void)[],
 ): Promise<AudioPipeline> {
   const context = sharedAudioContext();
   if (context.state !== 'running') await context.resume();
@@ -235,8 +276,15 @@ async function buildBrowserPipeline(
   await loadWorklets(context);
 
   let closed = false;
+  // Released last: nothing reports a failure once the pipeline is going away.
+  opened.push(() => {
+    closed = true;
+  });
   const fail = (reason: AudioFailure) => {
     if (!closed) failed(reason);
+  };
+  const closeCodec = (codec: AudioEncoder | AudioDecoder) => () => {
+    if (codec.state !== 'closed') codec.close();
   };
   const counts = { captured: 0, sent: 0, received: 0, decoded: 0 };
   let playedSamples = 0;
@@ -266,6 +314,7 @@ async function buildBrowserPipeline(
     },
     error: () => fail('failed'),
   });
+  opened.push(closeCodec(encoder));
   const constant = await AudioEncoder.isConfigSupported(opusConstant).catch(
     () => ({ supported: false }),
   );
@@ -276,6 +325,10 @@ async function buildBrowserPipeline(
     numberOfInputs: 0,
     numberOfOutputs: 1,
     outputChannelCount: [1],
+  });
+  opened.push(() => {
+    playback.port.onmessage = null;
+    playback.disconnect();
   });
   playback.connect(context.destination);
   playback.port.onmessage = (event) => {
@@ -299,18 +352,25 @@ async function buildBrowserPipeline(
     },
     error: () => fail('failed'),
   });
+  opened.push(closeCodec(decoder));
   decoder.configure(opusDecode);
 
   entering('graph');
   const source = context.createMediaStreamSource(stream);
+  opened.push(() => source.disconnect());
   const capture = new AudioWorkletNode(context, 'whatsup-call-capture', {
     numberOfInputs: 1,
     numberOfOutputs: 1,
     outputChannelCount: [1],
   });
+  opened.push(() => {
+    capture.port.onmessage = null;
+    capture.disconnect();
+  });
   // The capture node needs a path to the output to be processed; a silent
   // gain keeps the microphone from being heard locally.
   const silent = context.createGain();
+  opened.push(() => silent.disconnect());
   silent.gain.value = 0;
   capture.connect(silent).connect(context.destination);
   let frame = 0;
@@ -388,22 +448,8 @@ async function buildBrowserPipeline(
     close() {
       if (closed) return;
       closed = true;
-      capture.port.onmessage = null;
-      playback.port.onmessage = null;
-      for (const node of [source, capture, silent, playback]) {
-        try {
-          node.disconnect();
-        } catch {
-          /* already disconnected */
-        }
-      }
-      for (const codec of [encoder, decoder]) {
-        try {
-          if (codec.state !== 'closed') codec.close();
-        } catch {
-          /* already closed */
-        }
-      }
+      // The same releases a failed setup runs, so the two cannot drift.
+      releaseAll(opened);
     },
   };
 }

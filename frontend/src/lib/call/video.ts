@@ -470,23 +470,34 @@ async function createBrowserSender(
   let lastKey = 0;
   let viaCanvas = context !== null;
 
-  encoder = new VideoEncoder({
-    output: (chunk) => {
-      if (closed || chunk.byteLength === 0 || chunk.byteLength > maxVideoFrame)
-        return;
-      const data = new Uint8Array(chunk.byteLength);
-      chunk.copyTo(data);
-      const key = chunk.type === 'key';
-      counts.sent += 1;
-      if (key) counts.keyframesSent += 1;
-      // Microseconds to the 90 kHz video clock, wrapped to 32 bits.
-      send(Math.round((chunk.timestamp * 9) / 100) >>> 0, key, data);
-    },
-    error: () => {
-      if (!closed) failed('failed');
-    },
-  });
-  encoder.configure(encoderConfig);
+  try {
+    encoder = new VideoEncoder({
+      output: (chunk) => {
+        if (
+          closed ||
+          chunk.byteLength === 0 ||
+          chunk.byteLength > maxVideoFrame
+        )
+          return;
+        const data = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(data);
+        const key = chunk.type === 'key';
+        counts.sent += 1;
+        if (key) counts.keyframesSent += 1;
+        // Microseconds to the 90 kHz video clock, wrapped to 32 bits.
+        send(Math.round((chunk.timestamp * 9) / 100) >>> 0, key, data);
+      },
+      error: () => {
+        if (!closed) failed('failed');
+      },
+    });
+    encoder.configure(encoderConfig);
+  } catch {
+    // The camera is already playing into an element in the document. An
+    // encoder that will not start must not leave either behind.
+    dispose();
+    throw new VideoSetupError('unsupported');
+  }
 
   const take = (): VideoFrame | null => {
     const timestamp = Math.round(performance.now() * 1000);
