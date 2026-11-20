@@ -2,6 +2,7 @@ package call
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"math/rand"
 	"testing"
@@ -25,11 +26,14 @@ type side struct {
 
 func newSide(t *testing.T, role Role, env Env) *side {
 	t.Helper()
-	next := byte(0x10)
-	if role == Joiner {
-		next = 0x80
-	}
-	machine, err := New(Config{Role: role, NewID: func() (ID, error) { next++; return testID(next), nil }})
+	// Deterministic, never-repeating values: a per-role prefix and a counter.
+	var counter uint32
+	machine, err := New(Config{Role: role, NewID: func() (ID, error) {
+		counter++
+		id := ID{0: byte(role), 1: 0xC0}
+		binary.BigEndian.PutUint32(id[12:], counter)
+		return id, nil
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,15 +392,15 @@ func TestHostilePeerFrames(t *testing.T) {
 	t.Run("accept from the wrong direction ends that call only", func(t *testing.T) {
 		caller, callee := newSide(t, Inviter, allowAll), newSide(t, Joiner, allowAll)
 		id := ring(t, caller, callee, Audio, 0)
-		got := callee.note(callee.machine.Handle(epoch, Frame{Kind: KindAccept, Call: id, Media: Audio}, callee.env))
+		got := callee.note(callee.machine.Handle(epoch, Frame{Kind: KindAccept, Call: id, Media: Audio, Answer: testID(0x55)}, callee.env))
 		if len(got.Send) != 1 || got.Send[0].Reason != ReasonProtocol || callee.machine.Snapshot().Last.End != EndProtocol || got.OpenMedia != nil {
 			t.Fatalf("a caller answering its own call was tolerated: %+v", got)
 		}
 	})
 	t.Run("accept may not upgrade or pick an unoffered codec", func(t *testing.T) {
 		for name, forged := range map[string]Frame{
-			"video for a voice offer": {Kind: KindAccept, Media: Video, Codecs: VP8},
-			"codec never offered":     {Kind: KindAccept, Media: Video, Codecs: H264},
+			"video for a voice offer": {Kind: KindAccept, Media: Video, Codecs: VP8, Answer: testID(0x55)},
+			"codec never offered":     {Kind: KindAccept, Media: Video, Codecs: H264, Answer: testID(0x55)},
 		} {
 			caller := newSide(t, Inviter, allowAll)
 			media, codecs := Audio, Codec(0)
@@ -419,7 +423,7 @@ func TestHostilePeerFrames(t *testing.T) {
 		stranger := testID(0xEE)
 		for _, frame := range []Frame{
 			{Kind: KindHangup, Call: stranger, Reason: ReasonEnded}, {Kind: KindCancel, Call: stranger},
-			{Kind: KindAccept, Call: stranger, Media: Audio}, {Kind: KindDecline, Call: stranger, Reason: ReasonBusy},
+			{Kind: KindAccept, Call: stranger, Media: Audio, Answer: testID(0x55)}, {Kind: KindDecline, Call: stranger, Reason: ReasonBusy},
 			{Kind: KindRinging, Call: stranger}, {Kind: KindMediaState, Call: stranger, MicMuted: true},
 			{Kind: KindKeyframeRequest, Call: stranger}, {Kind: KindReceiverReport, Call: stranger, Loss: 50},
 		} {
@@ -615,5 +619,334 @@ func TestRandomSequencesKeepMediaAccountingConsistent(t *testing.T) {
 				t.Fatalf("round %d: session loss left a call or media channel behind", round)
 			}
 		}
+	}
+}
+
+// Media keys are bound to the call ID plus the answering side's answer value.
+// Whatever the peer does, each call a side takes part in must have a key
+// context that side has never had before, because packet counters restart.
+func TestEveryAnsweredCallHasAKeyContextNeverSeenBefore(t *testing.T) {
+	t.Run("ordinary calls", func(t *testing.T) {
+		inviter, joiner := newSide(t, Inviter, allowAll), newSide(t, Joiner, allowAll)
+		seen := map[[32]byte]bool{}
+		for i := 0; i < 200; i++ {
+			caller, callee := inviter, joiner
+			if i%2 == 1 {
+				caller, callee = joiner, inviter
+			}
+			now := epoch.Add(time.Duration(i+1) * DefaultMinOfferGap)
+			offer, err := caller.machine.Start(now, Audio, 0, caller.env)
+			if err != nil {
+				t.Fatalf("call %d was not placed: %v", i, err)
+			}
+			deliver(t, now, deliver(t, now, caller.note(offer), callee), caller)
+			id := caller.machine.Snapshot().Call
+			accepted, err := callee.machine.Accept(now, id, Audio, 0, callee.env)
+			if err != nil || accepted.OpenMedia == nil {
+				t.Fatalf("call %d was not answered: %v", i, err)
+			}
+			back := deliver(t, now, callee.note(accepted), caller)
+			if back.OpenMedia == nil {
+				t.Fatalf("call %d: the caller did not open media", i)
+			}
+			mine, theirs := *back.OpenMedia, *accepted.OpenMedia
+			if mine.KeyContext() != theirs.KeyContext() || mine.Answer.IsZero() || mine.Answer == mine.Call {
+				t.Fatalf("call %d: the two sides disagree on the key context or the answer value is unusable", i)
+			}
+			if seen[mine.KeyContext()] {
+				t.Fatalf("call %d reused an earlier call's key context", i)
+			}
+			seen[mine.KeyContext()] = true
+			hung, _ := caller.machine.Hangup(now, id, EndHungUp)
+			deliver(t, now, caller.note(hung), callee)
+		}
+	})
+
+	t.Run("peer offers an old call ID again", func(t *testing.T) {
+		callee := newSide(t, Joiner, allowAll)
+		now := epoch
+		offer := func(id ID) Effects {
+			now = now.Add(DefaultMinOfferGap)
+			return callee.note(callee.machine.Handle(now, Frame{Kind: KindOffer, Call: id, Media: Audio}, callee.env))
+		}
+		accept := func(id ID) Plan {
+			effects, err := callee.machine.Accept(now, id, Audio, 0, callee.env)
+			if err != nil || effects.OpenMedia == nil {
+				t.Fatalf("accept refused: %v", err)
+			}
+			callee.note(effects)
+			return *effects.OpenMedia
+		}
+		hangup := func(id ID) {
+			callee.note(callee.machine.Handle(now, Frame{Kind: KindHangup, Call: id, Reason: ReasonEnded}, callee.env))
+		}
+		old := testID(0xA1)
+		if got := offer(old); !got.Changed {
+			t.Fatal("first offer did not ring")
+		}
+		first := accept(old)
+		hangup(old)
+		// While it is remembered, the old ID does not even ring.
+		if got := offer(old); got.Changed || len(got.Send) != 0 || callee.machine.Snapshot().State != Idle {
+			t.Fatal("a recent call ID rang again")
+		}
+		// Push it out of the bounded memory with many other calls.
+		for i := 0; i < recentCalls+8; i++ {
+			other := ID{0: 0xB0, 14: byte(i >> 8), 15: byte(i)}
+			if got := offer(other); !got.Changed {
+				t.Fatalf("offer %d did not ring", i)
+			}
+			callee.note(callee.machine.Handle(now, Frame{Kind: KindCancel, Call: other}, callee.env))
+		}
+		// Now the peer can make the old ID ring again, but answering it cannot
+		// reproduce the old key context: the answer value is ours and new.
+		if got := offer(old); !got.Changed || callee.machine.Snapshot().State != Incoming {
+			t.Fatal("test did not get the old call ID past the recent-call memory")
+		}
+		second := accept(old)
+		if second.Call != first.Call {
+			t.Fatal("test did not reuse the call ID")
+		}
+		if second.Answer == first.Answer || second.KeyContext() == first.KeyContext() {
+			t.Fatal("answering a re-offered call ID reproduced the earlier key context")
+		}
+	})
+
+	t.Run("peer answers with the same value every time", func(t *testing.T) {
+		caller := newSide(t, Inviter, allowAll)
+		seen := map[[32]byte]bool{}
+		now := epoch
+		for i := 0; i < 50; i++ {
+			mustStart(t, caller, now, Audio, 0)
+			id := caller.machine.Snapshot().Call
+			got := caller.note(caller.machine.Handle(now, Frame{Kind: KindAccept, Call: id, Media: Audio, Answer: testID(0x77)}, caller.env))
+			if got.OpenMedia == nil {
+				t.Fatal("accept did not open media")
+			}
+			if seen[got.OpenMedia.KeyContext()] {
+				t.Fatal("a constant answer value made the caller repeat a key context")
+			}
+			seen[got.OpenMedia.KeyContext()] = true
+			hung, _ := caller.machine.Hangup(now, id, EndHungUp)
+			caller.note(hung)
+		}
+	})
+
+	t.Run("a random source that repeats or fails places and answers nothing", func(t *testing.T) {
+		values := []ID{testID(1), testID(1), {}, testID(2), testID(1), {}}
+		var failing bool
+		machine, err := New(Config{Role: Inviter, NewID: func() (ID, error) {
+			if failing {
+				return ID{}, errors.New("no entropy")
+			}
+			next := values[0]
+			values = values[1:]
+			return next, nil
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := machine.Start(epoch, Audio, 0, allowAll); err != nil {
+			t.Fatal("first call was refused")
+		}
+		_, _ = machine.Hangup(epoch, machine.Snapshot().Call, EndHungUp)
+		if _, err := machine.Start(epoch, Audio, 0, allowAll); !errors.Is(err, ErrUnavailable) {
+			t.Fatal("a repeated call ID was used for a new call")
+		}
+		if _, err := machine.Start(epoch, Audio, 0, allowAll); !errors.Is(err, ErrUnavailable) {
+			t.Fatal("a zero call ID was used for a new call")
+		}
+		// Ringing, with the next answer values being a used ID and then zero.
+		machine.Handle(epoch.Add(time.Minute), Frame{Kind: KindOffer, Call: testID(9), Media: Audio}, allowAll)
+		values = []ID{testID(1), {}}
+		for _, why := range []string{"an already used value", "a zero value"} {
+			if effects, err := machine.Accept(epoch.Add(time.Minute), testID(9), Audio, 0, allowAll); !errors.Is(err, ErrUnavailable) || effects.OpenMedia != nil {
+				t.Fatalf("a call was answered with %s", why)
+			}
+		}
+		failing = true
+		if effects, err := machine.Accept(epoch.Add(time.Minute), testID(9), Audio, 0, allowAll); !errors.Is(err, ErrUnavailable) || effects.OpenMedia != nil {
+			t.Fatal("a call was answered without a random source")
+		}
+		if machine.Snapshot().State != Incoming {
+			t.Fatal("a failed answer disturbed the ringing call")
+		}
+	})
+}
+
+// A setting switched off while a call rings must win over an answer that is
+// already on its way: the late answer starts no media.
+func TestALateAnswerRechecksLocalSettings(t *testing.T) {
+	for name, tc := range map[string]struct {
+		media   Media
+		codecs  Codec
+		after   Env
+		expects End
+	}{
+		"calls switched off":             {Audio, 0, callsOff, EndInterrupted},
+		"video switched off, video call": {Video, VP8, audioOnly, EndInterrupted},
+	} {
+		caller, callee := newSide(t, Inviter, allowAll), newSide(t, Joiner, allowAll)
+		id := ring(t, caller, callee, tc.media, tc.codecs)
+		accepted, err := callee.machine.Accept(epoch, id, tc.media, tc.codecs, callee.env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		callee.note(accepted)
+		caller.env = tc.after // switched off before the answer arrives
+		back := deliver(t, epoch, accepted, caller)
+		if back.OpenMedia != nil || caller.opened != 0 {
+			t.Fatalf("%s: a late answer opened media", name)
+		}
+		if caller.machine.Snapshot().State != Idle || caller.machine.Snapshot().Last.End != tc.expects {
+			t.Fatalf("%s: caller state %d, end %d", name, caller.machine.Snapshot().State, caller.machine.Snapshot().Last.End)
+		}
+		if len(back.Send) != 1 || back.Send[0].Kind != KindHangup {
+			t.Fatalf("%s: the answering side was not told to hang up", name)
+		}
+		if got := deliver(t, epoch, back, callee); !got.CloseMedia || callee.machine.Snapshot().State != Idle {
+			t.Fatalf("%s: the answering side kept its media open", name)
+		}
+	}
+	// Video switched off does not affect a voice answer to a video offer.
+	caller, callee := newSide(t, Inviter, allowAll), newSide(t, Joiner, allowAll)
+	id := ring(t, caller, callee, Video, VP8)
+	accepted, _ := callee.machine.Accept(epoch, id, Audio, 0, callee.env)
+	callee.note(accepted)
+	caller.env = audioOnly
+	if back := deliver(t, epoch, accepted, caller); back.OpenMedia == nil || back.OpenMedia.Video {
+		t.Fatal("a voice answer was refused because video was switched off")
+	}
+}
+
+// The caller cancels at the moment the callee answers. The callee must not sit
+// in "connecting" with a media flow open until the connect timeout.
+func TestACancelCrossingAnAnswerEndsTheAnsweredCallAtOnce(t *testing.T) {
+	caller, callee := newSide(t, Inviter, allowAll), newSide(t, Joiner, allowAll)
+	id := ring(t, caller, callee, Audio, 0)
+	cancelled, err := caller.machine.Hangup(epoch, id, EndHungUp)
+	if err != nil || cancelled.Send[0].Kind != KindCancel {
+		t.Fatal("cancel was not produced")
+	}
+	caller.note(cancelled)
+	accepted, err := callee.machine.Accept(epoch, id, Audio, 0, callee.env) // before the cancel arrives
+	if err != nil || accepted.OpenMedia == nil {
+		t.Fatal("answer was refused")
+	}
+	callee.note(accepted)
+	got := deliver(t, epoch, cancelled, callee)
+	if !got.CloseMedia || callee.machine.Snapshot().State != Idle || callee.machine.Snapshot().Last.End != EndMissed || !callee.machine.Deadline().IsZero() {
+		t.Fatalf("a crossed cancel left the answering side in state %d with media open=%v", callee.machine.Snapshot().State, !got.CloseMedia)
+	}
+	// The answer reaches a caller that has already gone idle: nothing happens.
+	if back := deliver(t, epoch, accepted, caller); back.OpenMedia != nil || len(back.Send) != 0 || caller.machine.Snapshot().State != Idle {
+		t.Fatal("an answer to a cancelled call started something on the caller")
+	}
+	if caller.opened != 0 || callee.opened != callee.closed {
+		t.Fatal("media accounting is wrong after a crossed cancel")
+	}
+	// A cancel can never end a call from the side that placed it.
+	caller, callee = newSide(t, Inviter, allowAll), newSide(t, Joiner, allowAll)
+	id = ring(t, caller, callee, Audio, 0)
+	answer(t, caller, callee, id, Audio, 0)
+	if got := caller.note(caller.machine.Handle(epoch, Frame{Kind: KindCancel, Call: id}, caller.env)); got.Changed || caller.machine.Snapshot().State != Connecting {
+		t.Fatal("the callee cancelled the caller's call")
+	}
+}
+
+func TestSwitchingSettingsOffEndsTheCallInEveryState(t *testing.T) {
+	type stage struct {
+		name  string
+		build func() (subject *side, peer *side, id ID)
+		frame Kind
+		end   End
+	}
+	stages := []stage{
+		{"outgoing", func() (*side, *side, ID) {
+			caller, callee := newSide(t, Inviter, allowAll), newSide(t, Joiner, allowAll)
+			return caller, callee, ring(t, caller, callee, Audio, 0)
+		}, KindCancel, EndInterrupted},
+		{"incoming", func() (*side, *side, ID) {
+			caller, callee := newSide(t, Inviter, allowAll), newSide(t, Joiner, allowAll)
+			return callee, caller, ring(t, caller, callee, Audio, 0)
+		}, KindDecline, EndInterrupted},
+		{"connecting", func() (*side, *side, ID) {
+			caller, callee := newSide(t, Inviter, allowAll), newSide(t, Joiner, allowAll)
+			id := ring(t, caller, callee, Audio, 0)
+			answer(t, caller, callee, id, Audio, 0)
+			return callee, caller, id
+		}, KindHangup, EndInterrupted},
+		{"active", func() (*side, *side, ID) {
+			caller, callee := newSide(t, Inviter, allowAll), newSide(t, Joiner, allowAll)
+			id := ring(t, caller, callee, Audio, 0)
+			answer(t, caller, callee, id, Audio, 0)
+			_, _ = caller.machine.MediaReady(epoch, id)
+			_, _ = callee.machine.MediaReady(epoch, id)
+			return caller, callee, id
+		}, KindHangup, EndInterrupted},
+	}
+	for _, s := range stages {
+		subject, peer, id := s.build()
+		if got := subject.machine.Enforce(epoch, allowAll); got.Changed || len(got.Send) != 0 {
+			t.Fatalf("%s: enforcing unchanged settings did something", s.name)
+		}
+		if got := subject.machine.Enforce(epoch, audioOnly); got.Changed || len(got.Send) != 0 {
+			t.Fatalf("%s: switching video off disturbed a voice call", s.name)
+		}
+		wasOpen := subject.opened-subject.closed == 1
+		effects := subject.note(subject.machine.Enforce(epoch, callsOff))
+		if len(effects.Send) != 1 || effects.Send[0].Kind != s.frame || effects.Send[0].Call != id {
+			t.Fatalf("%s: calls-off sent %+v", s.name, effects.Send)
+		}
+		if effects.CloseMedia != wasOpen || subject.machine.Snapshot().State != Idle || subject.machine.Snapshot().Last.End != s.end {
+			t.Fatalf("%s: calls-off left state %d, media closed=%v", s.name, subject.machine.Snapshot().State, effects.CloseMedia)
+		}
+		deliver(t, epoch, effects, peer)
+		if peer.machine.Snapshot().State != Idle || peer.opened != peer.closed {
+			t.Fatalf("%s: the peer was left in a call", s.name)
+		}
+	}
+	if got := newSide(t, Inviter, allowAll).machine.Enforce(epoch, callsOff); got.Changed || len(got.Send) != 0 {
+		t.Fatal("enforcing settings on an idle slot did something")
+	}
+
+	// Video switched off: a ringing video call is offered as voice; any other video call ends.
+	caller, callee := newSide(t, Inviter, allowAll), newSide(t, Joiner, allowAll)
+	id := ring(t, caller, callee, Video, VP8)
+	if got := callee.machine.Enforce(epoch, audioOnly); !got.Changed || len(got.Send) != 0 || callee.machine.Snapshot().Media != Audio || callee.machine.Snapshot().State != Incoming {
+		t.Fatal("a ringing video call was not downgraded to voice")
+	}
+	if _, err := callee.machine.Accept(epoch, id, Video, VP8, audioOnly); !errors.Is(err, ErrNotAllowed) {
+		t.Fatal("the downgraded call could be answered as video")
+	}
+	if got := caller.note(caller.machine.Enforce(epoch, audioOnly)); len(got.Send) != 1 || got.Send[0].Kind != KindCancel || caller.machine.Snapshot().State != Idle {
+		t.Fatal("an outgoing video call survived video being switched off")
+	}
+	caller, callee = newSide(t, Inviter, allowAll), newSide(t, Joiner, allowAll)
+	id = ring(t, caller, callee, Video, VP8)
+	answer(t, caller, callee, id, Video, VP8)
+	if got := callee.note(callee.machine.Enforce(epoch, audioOnly)); !got.CloseMedia || len(got.Send) != 1 || got.Send[0].Kind != KindHangup {
+		t.Fatal("an answered video call survived video being switched off")
+	}
+}
+
+// Both people call at once, but the joiner has since switched calls off.
+func TestSimultaneousCallWithCallsSwitchedOffAnswersNothing(t *testing.T) {
+	inviter, joiner := newSide(t, Inviter, allowAll), newSide(t, Joiner, allowAll)
+	fromInviter := mustStart(t, inviter, epoch, Audio, 0)
+	fromJoiner := mustStart(t, joiner, epoch, Audio, 0)
+	joinerID := joiner.machine.Snapshot().Call
+	joiner.env = callsOff
+	reply := deliver(t, epoch, fromInviter, joiner)
+	if reply.OpenMedia != nil || joiner.opened != 0 || joiner.machine.Snapshot().State != Idle || joiner.machine.Snapshot().Last.End != EndInterrupted {
+		t.Fatal("a device with calls switched off answered a simultaneous call")
+	}
+	if len(reply.Send) != 2 || reply.Send[0].Kind != KindCancel || reply.Send[0].Call != joinerID || reply.Send[1].Kind != KindDecline || reply.Send[1].Reason != ReasonUnavailable {
+		t.Fatalf("expected its own call cancelled and the other refused, got %+v", reply.Send)
+	}
+	deliver(t, epoch, fromJoiner, inviter)
+	deliver(t, epoch, reply, inviter)
+	if inviter.machine.Snapshot().State != Idle || inviter.machine.Snapshot().Last.End != EndPeerUnavailable || inviter.opened != 0 {
+		t.Fatal("the other side was not told the contact is unavailable")
 	}
 }

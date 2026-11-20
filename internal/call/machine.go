@@ -78,9 +78,22 @@ type Env struct {
 
 // Plan describes the media channel to open once a call is answered.
 type Plan struct {
-	Call  ID
-	Video bool
-	Codec Codec
+	Call ID
+	// Answer is the answering side's random value. Call and Answer together
+	// are the context media keys are derived under. Whichever side this
+	// device is, one of the two values is its own fresh randomness, so the
+	// peer cannot steer it into deriving keys it has used before.
+	Answer ID
+	Video  bool
+	Codec  Codec
+}
+
+// KeyContext is the exact byte string media keys are bound to.
+func (p Plan) KeyContext() [32]byte {
+	var context [32]byte
+	copy(context[:16], p.Call[:])
+	copy(context[16:], p.Answer[:])
+	return context
 }
 
 // Report is the far end's reception quality, for send-side adaptation.
@@ -134,7 +147,9 @@ type Config struct {
 	RingTimeout    time.Duration
 	ConnectTimeout time.Duration
 	MinOfferGap    time.Duration
-	NewID          func() (ID, error)
+	// NewID supplies call IDs and answer values. It must return fresh random
+	// nonzero values; nil selects the system random source.
+	NewID func() (ID, error)
 }
 
 // Machine is not safe for concurrent use; its owner serializes every call.
@@ -160,6 +175,40 @@ type Machine struct {
 	tokens    float64
 	refilled  time.Time
 	last      Result
+	// recent holds the IDs of the latest calls this machine took part in or
+	// refused, so a repeated offer does not ring again. It is a courtesy, not
+	// the key-freshness guarantee: that comes from the answer value and from
+	// the session refusing to export one key context twice.
+	recent     [recentCalls]ID
+	recentNext int
+}
+
+const recentCalls = 64
+
+func (m *Machine) remember(id ID) {
+	if id.IsZero() || m.seen(id) {
+		return
+	}
+	m.recent[m.recentNext] = id
+	m.recentNext = (m.recentNext + 1) % recentCalls
+}
+
+func (m *Machine) seen(id ID) bool {
+	if id.IsZero() {
+		return false
+	}
+	for _, known := range m.recent {
+		if known == id {
+			return true
+		}
+	}
+	return false
+}
+
+// fresh returns a new random value that this machine has not used as a call ID.
+func (m *Machine) fresh() (ID, bool) {
+	id, err := m.cfg.NewID()
+	return id, err == nil && !id.IsZero() && !m.seen(id)
 }
 
 func randomID() (ID, error) {
@@ -225,18 +274,19 @@ func (m *Machine) finish(now time.Time, end End, effects *Effects) {
 		effects.CloseMedia = true
 		effects.OpenMedia = nil
 	}
-	last, tokens, refilled := m.lastOffer, m.tokens, m.refilled
-	*m = Machine{cfg: m.cfg, last: result, lastOffer: last, tokens: tokens, refilled: refilled}
+	m.remember(m.id)
+	last, tokens, refilled, recent, next := m.lastOffer, m.tokens, m.refilled, m.recent, m.recentNext
+	*m = Machine{cfg: m.cfg, last: result, lastOffer: last, tokens: tokens, refilled: refilled, recent: recent, recentNext: next}
 	effects.Changed = true
 }
 
-func (m *Machine) answered(now time.Time, media Media, codec Codec, effects *Effects) {
+func (m *Machine) answered(now time.Time, media Media, codec Codec, answer ID, effects *Effects) {
 	m.state, m.media, m.codec = Connecting, media, codec
 	m.deadline = now.Add(m.cfg.ConnectTimeout)
 	m.mediaOpen = true
 	m.micMuted, m.peerMicMuted = false, false
 	m.cameraOn, m.peerCameraOn = media == Video, media == Video
-	effects.OpenMedia = &Plan{Call: m.id, Video: media == Video, Codec: codec}
+	effects.OpenMedia = &Plan{Call: m.id, Answer: answer, Video: media == Video, Codec: codec}
 	effects.Changed = true
 }
 
@@ -253,10 +303,11 @@ func (m *Machine) Start(now time.Time, media Media, codecs Codec, env Env) (Effe
 	if media == Audio {
 		codecs = 0
 	}
-	id, err := m.cfg.NewID()
-	if err != nil || id.IsZero() || id == m.last.Call {
+	id, ok := m.fresh()
+	if !ok {
 		return Effects{}, ErrUnavailable
 	}
+	m.remember(id)
 	m.state, m.id, m.outgoing, m.media, m.localCodecs = Outgoing, id, true, media, codecs
 	m.deadline = now.Add(m.cfg.RingTimeout)
 	return Effects{Send: []Frame{{Kind: KindOffer, Call: id, Media: media, Codecs: codecs}}, Changed: true}, nil
@@ -278,9 +329,13 @@ func (m *Machine) Accept(now time.Time, id ID, media Media, codecs Codec, env En
 			media = Audio
 		}
 	}
+	answer, ok := m.fresh()
+	if !ok {
+		return Effects{}, ErrUnavailable
+	}
 	var effects Effects
-	m.answered(now, media, codec, &effects)
-	effects.Send = []Frame{{Kind: KindAccept, Call: id, Media: media, Codecs: codec}}
+	m.answered(now, media, codec, answer, &effects)
+	effects.Send = []Frame{{Kind: KindAccept, Call: id, Media: media, Codecs: codec, Answer: answer}}
 	return effects, nil
 }
 
@@ -391,6 +446,23 @@ func (m *Machine) Tick(now time.Time) Effects {
 	return effects
 }
 
+// Enforce applies a change of local settings to a call already in progress.
+// With calls switched off, any call ends, in any state. With only video
+// switched off, a ringing video call is presented as a voice call, and a video
+// call that is being placed, connecting or active ends. The caller invokes it
+// whenever a call setting changes; it is a no-op otherwise.
+func (m *Machine) Enforce(now time.Time, env Env) Effects {
+	if m.state == Idle || (env.AudioAllowed && (m.media != Video || env.VideoAllowed)) {
+		return Effects{}
+	}
+	if env.AudioAllowed && m.state == Incoming {
+		m.media = Audio
+		return Effects{Changed: true}
+	}
+	effects, _ := m.Hangup(now, m.id, EndInterrupted)
+	return effects
+}
+
 // SessionLost ends any call when the authenticated session ends. Nothing can
 // be sent, and call keys die with the session.
 func (m *Machine) SessionLost(now time.Time) Effects {
@@ -451,7 +523,15 @@ func (m *Machine) Handle(now time.Time, frame Frame, env Env) Effects {
 			m.violation(now, &effects)
 			return effects
 		}
-		m.answered(now, frame.Media, frame.Codecs, &effects)
+		// Settings are read again now, not remembered from when the call was
+		// placed. If calls, or video for a video answer, were switched off
+		// while it rang, the answer starts no media: the call is hung up.
+		if !env.AudioAllowed || (frame.Media == Video && !env.VideoAllowed) {
+			effects.Send = append(effects.Send, Frame{Kind: KindHangup, Call: m.id, Reason: ReasonEnded})
+			m.finish(now, EndInterrupted, &effects)
+			return effects
+		}
+		m.answered(now, frame.Media, frame.Codecs, frame.Answer, &effects)
 	case KindDecline:
 		if m.state != Outgoing {
 			return effects
@@ -465,8 +545,16 @@ func (m *Machine) Handle(now time.Time, frame Frame, env Env) Effects {
 		}
 		m.finish(now, end, &effects)
 	case KindCancel:
-		if m.state == Incoming {
+		// Only the caller cancels. Its cancel can cross this side's answer on
+		// the wire: the caller is then already idle and will never send media,
+		// so the answered call ends here at once instead of waiting out the
+		// connect timeout with a media flow open.
+		switch {
+		case m.outgoing:
+		case m.state == Incoming, m.state == Connecting:
 			m.finish(now, EndMissed, &effects)
+		case m.state == Active:
+			m.finish(now, EndPeerHungUp, &effects)
 		}
 	case KindHangup:
 		end := EndPeerHungUp
@@ -501,8 +589,9 @@ func (m *Machine) Handle(now time.Time, frame Frame, env Env) Effects {
 }
 
 func (m *Machine) offered(now time.Time, frame Frame, env Env, effects *Effects) {
-	// A repeat of the current or the last call's offer is never a new call.
-	if (m.state != Idle && frame.Call == m.id) || frame.Call == m.last.Call {
+	// A repeat of the current call's offer, or of a recent call's, is never a
+	// new call. Key freshness does not depend on this memory; see Plan.Answer.
+	if (m.state != Idle && frame.Call == m.id) || m.seen(frame.Call) {
 		return
 	}
 	decline := func(reason Reason) {
@@ -534,15 +623,26 @@ func (m *Machine) offered(now time.Time, frame Frame, env Env, effects *Effects)
 		if m.cfg.Role == Inviter {
 			return
 		}
+		answer, ok := m.fresh()
+		if !env.AudioAllowed || !ok {
+			// Calls were switched off after this side started calling (or no
+			// fresh answer value is available): cancel our own call and
+			// refuse theirs. Nothing is answered and no media opens.
+			effects.Send = append(effects.Send, Frame{Kind: KindCancel, Call: m.id})
+			decline(ReasonUnavailable)
+			m.finish(now, EndInterrupted, effects)
+			return
+		}
 		media, codec := Audio, Codec(0)
 		if m.media == Video && frame.Media == Video && env.VideoAllowed {
 			if codec = choose(m.localCodecs, frame.Codecs); codec != 0 {
 				media = Video
 			}
 		}
+		m.remember(m.id) // our abandoned call ID is spent
 		m.id, m.outgoing, m.peerCodecs, m.peerRinging = frame.Call, false, frame.Codecs, false
-		m.answered(now, media, codec, effects)
-		effects.Send = append(effects.Send, Frame{Kind: KindAccept, Call: frame.Call, Media: media, Codecs: codec})
+		m.answered(now, media, codec, answer, effects)
+		effects.Send = append(effects.Send, Frame{Kind: KindAccept, Call: frame.Call, Media: media, Codecs: codec, Answer: answer})
 	default:
 		decline(ReasonBusy)
 	}

@@ -52,7 +52,7 @@ func authenticatedPair(t *testing.T) (inviter, joiner *sessionauth.Session) {
 // direction on the other end, and nowhere else.
 func TestMediaKeysFromARealAuthenticatedSession(t *testing.T) {
 	inviterSession, joinerSession := authenticatedPair(t)
-	call := [16]byte{9, 8, 7, 6, 5, 4, 3, 2, 1, 1, 2, 3, 4, 5, 6, 7}
+	call := [32]byte{9, 8, 7, 6, 5, 4, 3, 2, 1, 1, 2, 3, 4, 5, 6, 7, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46}
 	inviterKeys, err := callmedia.Derive(inviterSession, call, true)
 	if err != nil {
 		t.Fatal("inviter could not derive call keys from its live session")
@@ -101,9 +101,30 @@ func TestMediaKeysFromARealAuthenticatedSession(t *testing.T) {
 		t.Fatal("keys from a different session opened this call's media")
 	}
 
+	// A live session hands out one call's keys once. A second request for the
+	// same context, which would restart packet counters under the same keys,
+	// is refused; a new answer value for the same call ID is a new context.
+	if keys, err := callmedia.Derive(inviterSession, call, true); keys != nil || !errors.Is(err, callmedia.ErrKeys) {
+		t.Fatal("the same call's media keys were derived twice from one session")
+	}
+	reanswered := call
+	reanswered[20] ^= 0xFF
+	rekeyed, err := callmedia.Derive(inviterSession, reanswered, false)
+	if err != nil {
+		t.Fatal("a fresh answer value did not yield keys")
+	}
+	stale, _ := callmedia.NewSender(inviterKeys)
+	current, _ := callmedia.NewReceiver(rekeyed)
+	old, _ := stale.Audio([]byte{1, 2, 3}, 960)
+	if _, err := current.Open(old, now); !errors.Is(err, callmedia.ErrDatagram) {
+		t.Fatal("a re-answered call accepted media sealed for the earlier answer")
+	}
+
 	// Keys die with the session: nothing can be derived after it closes.
 	_ = inviterSession.Close()
-	if keys, err := callmedia.Derive(inviterSession, call, true); keys != nil || !errors.Is(err, callmedia.ErrKeys) {
+	unused := call
+	unused[1] ^= 0xFF
+	if keys, err := callmedia.Derive(inviterSession, unused, true); keys != nil || !errors.Is(err, callmedia.ErrKeys) {
 		t.Fatal("call keys were derived from a closed session")
 	}
 }

@@ -190,6 +190,35 @@ type sequenceTrack struct {
 	counted  uint64 // received count at the previous Stats call
 }
 
+// index extends a 16-bit RTP sequence number to the packet's full index: the
+// candidate nearest the highest index seen on this stream (RFC 3711 section
+// 3.3.1). The sequence number wraps about every 22 minutes of audio, and a
+// packet from just before a wrap can arrive just after it. Taking the cycle
+// from the stream's current position instead would place that late packet a
+// whole cycle in the future and make every later packet look stale.
+func (t *sequenceTrack) index(sequence uint16) uint64 {
+	if !t.started {
+		return uint64(sequence)
+	}
+	cycle := t.highest >> 16
+	distance := func(candidate uint64) uint64 {
+		if candidate > t.highest {
+			return candidate - t.highest
+		}
+		return t.highest - candidate
+	}
+	best := cycle<<16 | uint64(sequence)
+	if cycle > 0 {
+		if earlier := (cycle-1)<<16 | uint64(sequence); distance(earlier) < distance(best) {
+			best = earlier
+		}
+	}
+	if later := (cycle+1)<<16 | uint64(sequence); distance(later) < distance(best) {
+		best = later
+	}
+	return best
+}
+
 // accept records a packet index and reports whether it is new.
 func (t *sequenceTrack) accept(index uint64) bool {
 	if !t.started {
@@ -302,14 +331,15 @@ func (r *Receiver) Open(datagram []byte, now time.Time) (Received, error) {
 		return out, ErrDatagram
 	}
 	payload := plain[rtpHeaderSize:]
-	rollover, _ := r.context.ROC(header.SSRC)
-	index := uint64(rollover)<<16 | uint64(header.SequenceNumber)
 	r.packets++
+	// The packet is authentic, so its sequence number is the sender's. Each
+	// stream extends it against its own history; the SRTP context's current
+	// rollover counter is not the counter this particular packet was sent under.
 	switch header.SSRC {
 	case ssrcAudio:
-		r.openAudio(index, header.Timestamp, payload, now, &out)
+		r.openAudio(r.audio.index(header.SequenceNumber), header.Timestamp, payload, now, &out)
 	case ssrcVideo:
-		r.openVideo(index, header.Timestamp, header.Marker, payload, now, &out)
+		r.openVideo(r.video.index(header.SequenceNumber), header.Timestamp, header.Marker, payload, now, &out)
 	}
 	return out, nil
 }

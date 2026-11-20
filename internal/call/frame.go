@@ -14,8 +14,10 @@ import (
 // ErrFrame reports a call frame that is not exactly one canonical encoding.
 var ErrFrame = errors.New("invalid call signaling frame")
 
-// ID identifies one call. It is random, never zero and never reused; the media
-// keys of a call are bound to it.
+// ID identifies one call. It is random and never zero. The caller chooses it.
+// It is not by itself enough to key media: the answering side adds its own
+// random Answer value, so each side contributes fresh randomness to every call
+// and neither can make the other derive the same media keys twice.
 type ID [16]byte
 
 func (id ID) IsZero() bool { return id == ID{} }
@@ -103,6 +105,7 @@ type Frame struct {
 	Call     ID
 	Media    Media  // Offer, Accept
 	Codecs   Codec  // Offer: every video codec offered. Accept: the one chosen.
+	Answer   ID     // Accept: the answering side's fresh random value, never zero
 	Reason   Reason // Decline, Hangup
 	MicMuted bool   // MediaState
 	CameraOn bool   // MediaState
@@ -111,9 +114,10 @@ type Frame struct {
 }
 
 const (
-	headerSize = 1 + 16 + 1
+	headerSize     = 1 + 16 + 1
+	acceptBodySize = 2 + 16
 	// MaxFrameSize bounds every encoded frame.
-	MaxFrameSize = headerSize + 3
+	MaxFrameSize = headerSize + acceptBodySize
 
 	flagMicMuted = 1
 	flagCameraOn = 2
@@ -121,8 +125,10 @@ const (
 
 func bodySize(kind Kind) (int, bool) {
 	switch kind {
-	case KindOffer, KindAccept:
+	case KindOffer:
 		return 2, true
+	case KindAccept:
+		return acceptBodySize, true
 	case KindDecline, KindHangup, KindMediaState:
 		return 1, true
 	case KindReceiverReport:
@@ -146,10 +152,10 @@ func (f Frame) Validate() error {
 		}
 		expect.Media, expect.Codecs = f.Media, f.Codecs
 	case KindAccept:
-		if !f.Media.valid() || (f.Media == Video && !f.Codecs.single()) || (f.Media == Audio && f.Codecs != 0) {
+		if !f.Media.valid() || (f.Media == Video && !f.Codecs.single()) || (f.Media == Audio && f.Codecs != 0) || f.Answer.IsZero() {
 			return ErrFrame
 		}
-		expect.Media, expect.Codecs = f.Media, f.Codecs
+		expect.Media, expect.Codecs, expect.Answer = f.Media, f.Codecs, f.Answer
 	case KindDecline:
 		if !declineReason(f.Reason) {
 			return ErrFrame
@@ -185,8 +191,11 @@ func Encode(f Frame) ([]byte, error) {
 	wire = append(wire, f.Call[:]...)
 	wire = append(wire, byte(size))
 	switch f.Kind {
-	case KindOffer, KindAccept:
+	case KindOffer:
 		wire = append(wire, byte(f.Media), byte(f.Codecs))
+	case KindAccept:
+		wire = append(wire, byte(f.Media), byte(f.Codecs))
+		wire = append(wire, f.Answer[:]...)
 	case KindDecline, KindHangup:
 		wire = append(wire, byte(f.Reason))
 	case KindMediaState:
@@ -219,13 +228,16 @@ func Read(reader io.Reader) (Frame, error) {
 	if !known || int(header[17]) != size || f.Call.IsZero() {
 		return Frame{}, ErrFrame
 	}
-	var body [3]byte
+	var body [acceptBodySize]byte
 	if _, err := io.ReadFull(reader, body[:size]); err != nil {
 		return Frame{}, ErrFrame
 	}
 	switch f.Kind {
-	case KindOffer, KindAccept:
+	case KindOffer:
 		f.Media, f.Codecs = Media(body[0]), Codec(body[1])
+	case KindAccept:
+		f.Media, f.Codecs = Media(body[0]), Codec(body[1])
+		copy(f.Answer[:], body[2:acceptBodySize])
 	case KindDecline, KindHangup:
 		f.Reason = Reason(body[0])
 	case KindMediaState:

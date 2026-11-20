@@ -204,7 +204,8 @@ func TestTailcatUDPFlowIsExactPeerDatagramAndClosedWithoutListener(t *testing.T)
 	}
 
 	// 3. Call-rate traffic: 20 ms cadence, both directions, nothing lost or
-	// reordered on the disposable relay path. Timing is logged, not asserted.
+	// reordered. Both nodes share one host, so the tunnel may run direct or
+	// through the loopback relay; timing is logged, not asserted.
 	const frames = 150
 	var worst, total time.Duration
 	for i := 0; i < frames; i++ {
@@ -231,7 +232,7 @@ func TestTailcatUDPFlowIsExactPeerDatagramAndClosedWithoutListener(t *testing.T)
 		}
 		time.Sleep(20*time.Millisecond - min(elapsed, 20*time.Millisecond))
 	}
-	t.Logf("%d round trips over the disposable relay: mean %s, worst %s", frames, total/frames, worst)
+	t.Logf("%d round trips through the tunnel on one host: mean %s, worst %s", frames, total/frames, worst)
 
 	// 4. A peer the server did not approve gets nothing, even with the listener open.
 	stranger := udpProbeClient(t, profile, server, key.NewNode())

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -177,6 +177,24 @@ test('native uninstall recipes preserve profile data and retain scoped Linux san
   assert.match(post, /apparmor_parser -r \/etc\/apparmor.d\/whatsup-development/);
   assert.doesNotMatch(post + remove, /sysctl|rm -r|\.vault|\.sqlite/);
   assert.match(remove, /remove\|purge\)/);
+});
+
+test('every retained third-party license file is installed by both packages and removed by the Windows uninstaller', async () => {
+  const nsis = (await read('build/windows/nsis/project.nsi')).replaceAll('\r\n', '\n');
+  const nfpm = (await read('build/linux/nfpm/nfpm.yaml')).replaceAll('\r\n', '\n');
+  const entries = await readdir(path.join(root, 'third_party/licenses'), { recursive: true, withFileTypes: true });
+  const files = entries.filter((entry) => entry.isFile())
+    .map((entry) => path.relative(path.join(root, 'third_party/licenses'), path.join(entry.parentPath, entry.name)).split(path.sep).join('/'))
+    .sort();
+  // A notice kept in the source tree but left out of an installer is a
+  // distribution defect that no other check would notice.
+  assert.ok(files.length >= 5 && files.includes('pion-MIT.txt') && files.includes('pion-transport-xor-BSD-3-Clause.txt'));
+  for (const file of files) {
+    const windowsPath = file.replaceAll('/', '\\');
+    assert.ok(nsis.includes(`File "..\\..\\..\\third_party\\licenses\\${windowsPath}"`), `Windows installer omits ${file}`);
+    assert.ok(nsis.includes(`Delete "$INSTDIR\\third_party\\licenses\\${windowsPath}"`), `Windows uninstaller leaves ${file} behind`);
+    assert.ok(nfpm.includes(`  - src: ./third_party/licenses/${file}\n    dst: /usr/share/doc/whatsup/third_party/licenses/${file}\n`), `Linux package omits ${file}`);
+  }
 });
 
 test('the Linux launcher icon has a self-contained asset in a registered hicolor directory', async () => {

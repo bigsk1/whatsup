@@ -85,7 +85,39 @@ const (
 	callAnswer
 	callEnd
 	callSetMedia
+	callEnforce
 )
+
+// Inbound call frames are tiny and rare: a handful to set a call up, then
+// about one reception report a second and an occasional keyframe request. A
+// peer sending them faster than this is not making a call. The session is
+// ended, as for any other protocol violation; saved pins, history and the
+// outbox are untouched and the normal reconnect follows.
+const (
+	callFrameBurst      = 40
+	callFramesPerSecond = 20
+)
+
+type callFrameBudget struct {
+	tokens float64
+	at     time.Time
+}
+
+func (b *callFrameBudget) allow(now time.Time) bool {
+	if b.at.IsZero() {
+		b.tokens = callFrameBurst
+	} else if now.After(b.at) {
+		if b.tokens += now.Sub(b.at).Seconds() * callFramesPerSecond; b.tokens > callFrameBurst {
+			b.tokens = callFrameBurst
+		}
+	}
+	b.at = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
 
 type callResult struct {
 	snapshot call.Snapshot
@@ -183,6 +215,15 @@ func (m *Manager) EndCall(ctx context.Context, id call.ID) (call.Snapshot, error
 	return m.callDo(ctx, &callRequest{kind: callEnd, id: id})
 }
 
+// CallSettingsChanged applies the current call settings to a call already in
+// progress with this contact. Switching calls off ends it in any state, also
+// while it is ringing or an answer is on its way; switching only video off
+// ends a video call or turns a ringing one into a voice call. With no live
+// session there is no call and nothing to do.
+func (m *Manager) CallSettingsChanged(ctx context.Context) {
+	_, _ = m.callDo(ctx, &callRequest{kind: callEnforce})
+}
+
 // SetCallMedia records and announces this side's mute and camera state.
 func (m *Manager) SetCallMedia(ctx context.Context, id call.ID, micMuted, cameraOn bool) (call.Snapshot, error) {
 	return m.callDo(ctx, &callRequest{kind: callSetMedia, id: id, micMuted: micMuted, cameraOn: cameraOn})
@@ -230,6 +271,7 @@ type callRuntime struct {
 	live    *callSession
 	events  chan callMediaEvent
 	run     *callMediaRun
+	budget  callFrameBudget
 }
 
 func (m *Manager) newCallRuntime(ctx context.Context, session *sessionauth.Session) *callRuntime {
@@ -348,7 +390,11 @@ func (r *callRuntime) handle(frame call.Frame) error {
 	if r == nil {
 		return errProtocol
 	}
-	return r.apply(r.machine.Handle(time.Now(), frame, r.env(frame.Kind == call.KindOffer)))
+	now := time.Now()
+	if !r.budget.allow(now) {
+		return errProtocol
+	}
+	return r.apply(r.machine.Handle(now, frame, r.env(frame.Kind == call.KindOffer)))
 }
 
 // request performs one local action and answers its caller.
@@ -376,6 +422,8 @@ func (r *callRuntime) request(request *callRequest) error {
 		effects, err = r.machine.Hangup(now, request.id, call.EndHungUp)
 	case callSetMedia:
 		effects, err = r.machine.SetMedia(request.id, request.micMuted, request.cameraOn)
+	case callEnforce:
+		effects = r.machine.Enforce(now, r.env(false))
 	default:
 		err = ErrUnavailable
 	}
@@ -473,6 +521,23 @@ func (r *Registry) EndCall(ctx context.Context, id string, callID call.ID) (call
 		return call.Snapshot{}, err
 	}
 	return m.EndCall(ctx, callID)
+}
+
+// CallSettingsChanged applies the current call settings to every contact's
+// call. The desktop layer calls it whenever a call setting changes.
+func (r *Registry) CallSettingsChanged(ctx context.Context) {
+	if r == nil || r.registryState == nil {
+		return
+	}
+	r.mu.Lock()
+	managers := make([]*Manager, 0, len(r.managers))
+	for _, m := range r.managers {
+		managers = append(managers, m)
+	}
+	r.mu.Unlock()
+	for _, m := range managers {
+		m.CallSettingsChanged(ctx)
+	}
 }
 
 func (r *Registry) SetCallMedia(ctx context.Context, id string, callID call.ID, micMuted, cameraOn bool) (call.Snapshot, error) {

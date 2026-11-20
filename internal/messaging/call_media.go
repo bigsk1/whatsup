@@ -120,10 +120,11 @@ func (r *callMediaRun) loop(ctx context.Context, session *sessionauth.Session, r
 		emit(callMediaEvent{failed: true})
 		return
 	}
-	// Keys come from this exact authenticated session and this call ID. They
-	// are derived before the port opens, so no datagram is ever handled
-	// without them.
-	keys, err := callmedia.Derive(session, r.plan.Call, inviter)
+	// Keys come from this exact authenticated session and this call's key
+	// context, half of which is this device's own fresh randomness. The
+	// session exports a context only once, so these keys are new. They are
+	// derived before the port opens, so no datagram is handled without them.
+	keys, err := callmedia.Derive(session, r.plan.KeyContext(), inviter)
 	if err != nil {
 		emit(callMediaEvent{failed: true})
 		return

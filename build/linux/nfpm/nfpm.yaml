@@ -68,6 +68,14 @@ contents:
     dst: /usr/share/doc/whatsup/third_party/licenses/pixelarticons-MIT.txt
     file_info:
       mode: 0644
+  - src: ./third_party/licenses/pion-MIT.txt
+    dst: /usr/share/doc/whatsup/third_party/licenses/pion-MIT.txt
+    file_info:
+      mode: 0644
+  - src: ./third_party/licenses/pion-transport-xor-BSD-3-Clause.txt
+    dst: /usr/share/doc/whatsup/third_party/licenses/pion-transport-xor-BSD-3-Clause.txt
+    file_info:
+      mode: 0644
   - src: ./third_party/licenses/fonts/jetbrains-mono-OFL-1.1.txt
     dst: /usr/share/doc/whatsup/third_party/licenses/fonts/jetbrains-mono-OFL-1.1.txt
     file_info:

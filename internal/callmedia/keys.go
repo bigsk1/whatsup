@@ -34,7 +34,7 @@ var ErrKeys = errors.New("call media keys are unavailable")
 // session. sessionauth.Session provides it only when both sides negotiated
 // the call capability and the session is live.
 type Exporter interface {
-	ExportCallKeyMaterial(callID []byte, length int) ([]byte, error)
+	ExportCallKeyMaterial(context []byte, length int) ([]byte, error)
 }
 
 // Keys holds one call's two directional master keys. The zero value is unusable.
@@ -53,14 +53,22 @@ func (Keys) GoString() string             { return "[private WhatsUp call media 
 func (Keys) MarshalJSON() ([]byte, error) { return nil, ErrKeys }
 
 // Derive exports this call's keys from the live session. Each direction gets
-// its own key and salt, so the two ends never encrypt under the same key, and
-// each call ID yields unrelated keys. inviter is this device's fixed pairing
-// role for the contact; the peer passes the opposite value.
-func Derive(session Exporter, callID [16]byte, inviter bool) (*Keys, error) {
-	if session == nil || callID == [16]byte{} {
+// its own key and salt, so the two ends never encrypt under the same key.
+//
+// context is the call's key context: the caller's call ID followed by the
+// answering side's answer value. Because each side supplies one half from its
+// own random source, neither can make the other derive keys it has used
+// before, and the session itself refuses to export a context twice. That
+// matters because every call's packet counters start from the beginning: the
+// same key with the same counters would repeat AES-GCM nonces.
+//
+// inviter is this device's fixed pairing role for the contact; the peer passes
+// the opposite value.
+func Derive(session Exporter, context [32]byte, inviter bool) (*Keys, error) {
+	if session == nil || [16]byte(context[:16]) == [16]byte{} || [16]byte(context[16:]) == [16]byte{} {
 		return nil, ErrKeys
 	}
-	material, err := session.ExportCallKeyMaterial(callID[:], materialSize)
+	material, err := session.ExportCallKeyMaterial(context[:], materialSize)
 	if err != nil || len(material) != materialSize {
 		clear(material)
 		return nil, ErrKeys

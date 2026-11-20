@@ -729,3 +729,132 @@ func TestCallPacketsRequireTheNegotiatedCapability(t *testing.T) {
 		t.Fatal("a malformed call frame was accepted")
 	}
 }
+
+func TestSwitchingCallsOffEndsALiveCall(t *testing.T) {
+	inviter, joiner, id, network := connectedCallPair(t, 1, 1, nil)
+	establish(t, inviter, joiner, id, false, 0)
+	inviter.policy.Store(0)
+	inviter.registry.CallSettingsChanged(background())
+	waitCall(t, inviter, id, "interrupted", endedAs(call.EndInterrupted))
+	waitCall(t, joiner, id, "peer hung up", endedAs(call.EndPeerHungUp))
+	waitFor(t, "media flows to close", func() bool { return network.hub(id).openFlows() == 0 })
+
+	// A ringing call on the device that switches calls off stops ringing at once.
+	inviter.policy.Store(1)
+	time.Sleep(call.DefaultMinOfferGap)
+	startCall(t, joiner, id, false, 0)
+	waitCall(t, inviter, id, "incoming", isState(call.Incoming))
+	inviter.policy.Store(0)
+	inviter.registry.CallSettingsChanged(background())
+	waitCall(t, inviter, id, "interrupted", endedAs(call.EndInterrupted))
+	waitCall(t, joiner, id, "peer unavailable", endedAs(call.EndPeerUnavailable))
+	// Unchanged settings and contacts without a call are left alone.
+	joiner.registry.CallSettingsChanged(background())
+	if got := joiner.registry.Call(id); got.State != call.Idle || got.Last.End != call.EndPeerUnavailable {
+		t.Fatal("applying unchanged settings altered the call record")
+	}
+}
+
+// Calls are switched off while the call is ringing on the other side, and the
+// answer arrives before anything else. The answer must not start media here.
+func TestALateAnswerStartsNoMediaAfterCallsAreSwitchedOff(t *testing.T) {
+	inviter, joiner, id, network := connectedCallPair(t, 1, 1, nil)
+	callID := startCall(t, inviter, id, false, 0)
+	waitCall(t, joiner, id, "incoming", isState(call.Incoming))
+	inviter.policy.Store(0) // no settings-changed call: only the answer arrives
+	if _, err := joiner.registry.AnswerCall(background(), id, callID, false, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitCall(t, inviter, id, "interrupted", endedAs(call.EndInterrupted))
+	waitCall(t, joiner, id, "peer hung up", endedAs(call.EndPeerHungUp))
+	hub := network.hub(id)
+	waitFor(t, "media flows to close", func() bool { return hub.openFlows() == 0 })
+	hub.mu.Lock()
+	opened := hub.opens[0]
+	hub.mu.Unlock()
+	if opened != 0 {
+		t.Fatal("a late answer opened a media flow on a device with calls switched off")
+	}
+	if inviter.sink.count(callmedia.FrameAudio) != 0 {
+		t.Fatal("media was delivered on a device with calls switched off")
+	}
+}
+
+func TestCallFrameBudget(t *testing.T) {
+	var budget callFrameBudget
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < callFrameBurst; i++ {
+		if !budget.allow(now) {
+			t.Fatalf("frame %d of the initial burst was refused", i+1)
+		}
+	}
+	if budget.allow(now) {
+		t.Fatal("a frame beyond the burst was allowed")
+	}
+	now = now.Add(time.Second)
+	allowed := 0
+	for i := 0; i < 100; i++ {
+		if budget.allow(now) {
+			allowed++
+		}
+	}
+	if allowed != callFramesPerSecond {
+		t.Fatalf("one second refilled %d frames, want %d", allowed, callFramesPerSecond)
+	}
+	now = now.Add(time.Hour)
+	allowed = 0
+	for i := 0; i < 100; i++ {
+		if budget.allow(now) {
+			allowed++
+		}
+	}
+	if allowed != callFrameBurst {
+		t.Fatalf("a long idle period allowed %d frames, want the burst of %d", allowed, callFrameBurst)
+	}
+}
+
+// A peer that floods call frames is not making a call. The session ends like
+// any other protocol violation and the saved contact simply reconnects.
+func TestCallFrameFloodEndsTheSessionAndTheContactReconnects(t *testing.T) {
+	inviter, joiner, id, _ := connectedCallPair(t, 1, 1, nil)
+	// Make sure the call path is installed on both ends first.
+	first := establish(t, inviter, joiner, id, false, 0)
+	if _, err := inviter.registry.EndCall(background(), id, first); err != nil {
+		t.Fatal(err)
+	}
+	waitCall(t, joiner, id, "ended", isState(call.Idle))
+	victim, err := inviter.registry.manager(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attacker, err := joiner.registry.manager(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	victim.mu.Lock()
+	sessions := victim.authenticated
+	victim.mu.Unlock()
+	attacker.mu.Lock()
+	session := attacker.controls.session
+	attacker.mu.Unlock()
+	var stranger call.ID
+	stranger[0] = 0xEE
+	for i := 0; i < 20*callFrameBurst; i++ {
+		// Frames for a call that does not exist: harmless one at a time.
+		if writePacket(session, packet{kind: callPacket, call: call.Frame{Kind: call.KindKeyframeRequest, Call: stranger}}) != nil {
+			break // the victim has already closed the session
+		}
+	}
+	waitFor(t, "the flooded session to be replaced", func() bool {
+		victim.mu.Lock()
+		defer victim.mu.Unlock()
+		return victim.authenticated > sessions && victim.sessionActive
+	})
+	// Nothing durable was lost, and calls work on the new session.
+	if _, err := inviter.registry.Send(id, "still here"); err != nil {
+		t.Fatal(err)
+	}
+	waitRegistry(t, joiner.registryPeer, id, func(s Snapshot) bool { return len(s.Messages) == 1 && s.Messages[0].Text == "still here" })
+	time.Sleep(call.DefaultMinOfferGap)
+	establish(t, inviter, joiner, id, false, 0)
+}

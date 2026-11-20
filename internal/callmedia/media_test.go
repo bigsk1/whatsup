@@ -25,7 +25,7 @@ type fakeSession struct {
 	short  bool
 }
 
-func (f fakeSession) ExportCallKeyMaterial(callID []byte, length int) ([]byte, error) {
+func (f fakeSession) ExportCallKeyMaterial(context []byte, length int) ([]byte, error) {
 	if f.fail {
 		return nil, errors.New("session closed")
 	}
@@ -33,7 +33,7 @@ func (f fakeSession) ExportCallKeyMaterial(callID []byte, length int) ([]byte, e
 	for block := uint32(0); len(out) < length; block++ {
 		hash := sha256.New()
 		hash.Write([]byte(f.secret))
-		hash.Write(callID)
+		hash.Write(context)
 		_ = binary.Write(hash, binary.BigEndian, block)
 		out = hash.Sum(out)
 	}
@@ -44,9 +44,12 @@ func (f fakeSession) ExportCallKeyMaterial(callID []byte, length int) ([]byte, e
 }
 
 var (
-	callA = [16]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
-	callB = [16]byte{16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1}
-	start = time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	// A key context is the caller's call ID followed by the answer value.
+	callA = [32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36}
+	callB = [32]byte{16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36}
+	// callA's call ID answered again with a different answer value.
+	callAReanswered = [32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 99, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36}
+	start           = time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 )
 
 type link struct {
@@ -56,7 +59,7 @@ type link struct {
 }
 
 // newLink returns media from the inviter to the joiner for one call.
-func newLink(t testing.TB, session Exporter, call [16]byte) link {
+func newLink(t testing.TB, session Exporter, call [32]byte) link {
 	t.Helper()
 	inviter, err := Derive(session, call, true)
 	if err != nil {
@@ -109,6 +112,7 @@ func TestKeysAreDirectionalCallScopedAndRedacted(t *testing.T) {
 	for name, keys := range map[string]func() (*Keys, error){
 		"sender's own receive key": func() (*Keys, error) { return Derive(session, callA, true) },
 		"another call":             func() (*Keys, error) { return Derive(session, callB, false) },
+		"same call ID, new answer": func() (*Keys, error) { return Derive(session, callAReanswered, false) },
 		"another session":          func() (*Keys, error) { return Derive(fakeSession{secret: "session-two"}, callA, false) },
 	} {
 		wrong, err := keys()
@@ -124,7 +128,9 @@ func TestKeysAreDirectionalCallScopedAndRedacted(t *testing.T) {
 
 	for name, attempt := range map[string]func() (*Keys, error){
 		"nil session":    func() (*Keys, error) { return Derive(nil, callA, true) },
-		"zero call ID":   func() (*Keys, error) { return Derive(session, [16]byte{}, true) },
+		"zero context":   func() (*Keys, error) { return Derive(session, [32]byte{}, true) },
+		"zero call ID":   func() (*Keys, error) { return Derive(session, [32]byte{16: 1}, true) },
+		"zero answer":    func() (*Keys, error) { return Derive(session, [32]byte{0: 1}, true) },
 		"closed session": func() (*Keys, error) { return Derive(fakeSession{fail: true}, callA, true) },
 		"short export":   func() (*Keys, error) { return Derive(fakeSession{secret: "x", short: true}, callA, true) },
 	} {
@@ -525,4 +531,143 @@ func FuzzReceiverOpen(f *testing.F) {
 			t.Fatal("a datagram this call's sender never produced yielded a frame")
 		}
 	})
+}
+
+func TestSequenceIndexFollowsTheNearestCycle(t *testing.T) {
+	var fresh sequenceTrack
+	if fresh.index(7) != 7 {
+		t.Fatal("the first packet of a stream is not in cycle zero")
+	}
+	at := func(highest uint64) *sequenceTrack {
+		return &sequenceTrack{started: true, first: 1, highest: highest, seen: 1}
+	}
+	for _, c := range []struct {
+		name     string
+		highest  uint64
+		sequence uint16
+		want     uint64
+	}{
+		{"next in the same cycle", 100, 101, 101},
+		{"slightly late in the same cycle", 100, 98, 98},
+		{"first packet after a wrap", 65535, 0, 65536},
+		{"jump over a wrap", 65530, 4, 65540},
+		{"late packet from before the wrap", 65537, 65535, 65535},
+		{"late packet from well before the wrap", 65600, 65500, 65500},
+		{"second wrap forward", 131071, 2, 131074},
+		{"late packet from before the second wrap", 131080, 65530, 131066},
+		{"no cycle before zero", 5, 65535, 65535},
+		{"far ahead in the same cycle", 100, 30000, 30000},
+	} {
+		if got := at(c.highest).index(c.sequence); got != c.want {
+			t.Errorf("%s: highest %d, sequence %d gave index %d, want %d", c.name, c.highest, c.sequence, got, c.want)
+		}
+	}
+}
+
+// The RTP sequence number wraps about every 22 minutes at the audio rate.
+// Packets that arrive out of order around a wrap must not make the receiver
+// throw away the valid audio that follows.
+func TestReorderingAroundSequenceWrapKeepsAudioFlowing(t *testing.T) {
+	l := newLink(t, fakeSession{secret: "s"}, callA)
+	const total = 2*65536 + 600 // crosses two wraps
+	datagrams := make([][]byte, total+1)
+	for i := 1; i <= total; i++ {
+		datagram, err := l.sender.Audio(audioFrame(i), uint32(i)*AudioFrameSamples)
+		if err != nil {
+			t.Fatal(err)
+		}
+		datagrams[i] = datagram
+	}
+	// Delivery order: in order, except that around each wrap packets are
+	// shuffled within a small window, with the pre-wrap packet 65535 (and
+	// 131071) arriving after several post-wrap packets.
+	order := make([]int, 0, total)
+	for i := 1; i <= total; i++ {
+		order = append(order, i)
+	}
+	shuffle := rand.New(rand.NewSource(7))
+	for _, wrap := range []int{65536, 131072} {
+		// wrap is the index of the first packet of the new cycle (sequence 0).
+		window := order[wrap-1-12 : wrap-1+12]
+		shuffle.Shuffle(len(window), func(a, b int) { window[a], window[b] = window[b], window[a] })
+		// Force the hardest case explicitly: the last packet before the wrap
+		// arrives after the first four of the new cycle.
+		position := map[int]int{}
+		for at, n := range order[wrap-1-12 : wrap-1+12] {
+			position[n] = at
+		}
+		last, target := position[wrap-1], position[wrap+3]
+		if last < target {
+			window[last], window[target] = window[target], window[last]
+		}
+	}
+	delivered := make([]int, total+1)
+	now := start
+	for _, n := range order {
+		now = now.Add(20 * time.Millisecond)
+		got, err := l.receiver.Open(datagrams[n], now)
+		if err != nil {
+			t.Fatalf("authentic packet %d was rejected near a sequence wrap: %v", n, err)
+		}
+		for _, frame := range got.Frames {
+			number := int(binary.BigEndian.Uint32(frame.Data))
+			if number < 1 || number > total || !bytes.Equal(frame.Data, audioFrame(number)) || frame.Timestamp != uint32(number)*AudioFrameSamples {
+				t.Fatalf("a damaged or misnumbered frame came out near packet %d", n)
+			}
+			delivered[number]++
+		}
+	}
+	for number := 1; number <= total; number++ {
+		if delivered[number] != 1 {
+			t.Fatalf("frame %d was delivered %d times (wraps are at 65536 and 131072)", number, delivered[number])
+		}
+	}
+	if stats := l.receiver.Stats(); stats.Loss != 0 {
+		t.Fatalf("no packet was lost, but the receiver reported %d%% loss", stats.Loss)
+	}
+}
+
+// The same boundary for video: reordered fragments are treated as loss, but
+// the stream must recover at the next keyframe instead of staying stuck.
+func TestVideoRecoversAfterReorderingAroundSequenceWrap(t *testing.T) {
+	l := newLink(t, fakeSession{secret: "s"}, callA)
+	now := start
+	open := func(datagram []byte) Received {
+		now = now.Add(time.Second)
+		return mustOpen(t, l.receiver, datagram, now)
+	}
+	// Single-fragment frames up to just before the wrap, starting with a keyframe.
+	const before = 65530
+	for i := 1; i <= before; i++ {
+		datagrams, err := l.sender.Video([]byte{byte(i), byte(i >> 8), 1}, uint32(i), i == 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := mustOpen(t, l.receiver, datagrams[0], now); len(got.Frames) != 1 {
+			t.Fatalf("frame %d was not delivered before the wrap", i)
+		}
+	}
+	// A frame whose fragments straddle the wrap, delivered out of order.
+	straddling, _ := l.sender.Video(videoFrame(1, 10*videoFragment), before+1, false)
+	for _, part := range []int{0, 1, 2, 3, 4, 6, 5, 8, 7, 9} {
+		open(straddling[part])
+	}
+	// A late fragment from before the wrap must not poison what follows.
+	delta, _ := l.sender.Video([]byte{9, 9, 9}, before+2, false)
+	if got := open(delta[0]); len(got.Frames) != 0 {
+		t.Fatal("a delta frame was shown after a damaged frame")
+	}
+	keyframe := videoFrame(2, 3*videoFragment)
+	repaired, _ := l.sender.Video(keyframe, before+3, true)
+	var frames []Frame
+	for _, datagram := range repaired {
+		frames = append(frames, open(datagram).Frames...)
+	}
+	if len(frames) != 1 || !frames[0].Key || !bytes.Equal(frames[0].Data, keyframe) {
+		t.Fatal("video did not recover at the keyframe after the sequence wrap")
+	}
+	after, _ := l.sender.Video([]byte{7, 7, 7}, before+4, false)
+	if got := open(after[0]); len(got.Frames) != 1 {
+		t.Fatal("video stayed stuck after recovering across the sequence wrap")
+	}
 }

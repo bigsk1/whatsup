@@ -48,10 +48,15 @@ const (
 	// callExporterLabel uses the prefix RFC 5705 section 4 reserves for private
 	// labels that are not registered with IANA.
 	callExporterLabel = "EXPERIMENTAL whatsup call media v1"
-	// CallIDSize is the length of the random per-call identifier bound into
-	// exported media keys. MaxCallKeyMaterial bounds one export.
-	CallIDSize         = 16
+	// CallContextSize is the length of the per-call key context: the caller's
+	// 16-byte call ID followed by the answering side's 16-byte answer value.
+	// Each side supplies one half from its own random source.
+	CallContextSize = 32
+	// MaxCallKeyMaterial bounds one export.
 	MaxCallKeyMaterial = 128
+	// MaxCallExports bounds how many calls one session can key. A session
+	// lasts at most MaxLifetime; reaching this limit only means reconnecting.
+	MaxCallExports = 1024
 	// Previous protocol framing is selected only after exact-contact mutual TLS.
 	previousProtocol = "whatsup-contact/3"
 	// Wire 2 is diagnostic-only: authenticate its exact pin and context before
@@ -107,8 +112,11 @@ type sessionState struct {
 	expires            time.Time
 	closed             bool
 	avatarScopeClaimed bool
-	stop               func() bool
-	timer              *time.Timer
+	// callContexts records every key context this session has exported, so
+	// the same media keys can never be handed out twice.
+	callContexts map[[CallContextSize]byte]struct{}
+	stop         func() bool
+	timer        *time.Timer
 }
 
 func (Session) String() string               { return "[private authenticated WhatsUp contact session]" }
@@ -342,21 +350,26 @@ func (s *Session) ClaimAvatarScope() error {
 
 // ExportCallKeyMaterial derives secret bytes for one call from this live TLS
 // 1.3 session using the standard exporter (RFC 8446 section 7.5). Both ends of
-// the same session and call ID obtain identical bytes; another session, or
-// another call ID, obtains unrelated bytes. The result therefore inherits this
-// session's pinned-identity authentication without any new key agreement.
+// the same session and key context obtain identical bytes; another session,
+// or another context, obtains unrelated bytes. The result therefore inherits
+// this session's pinned-identity authentication without any new key agreement.
+//
+// A context is exported at most once per session, on every copy of it. Media
+// keys are used with a packet counter that starts over for each call, so the
+// same keys must never be issued twice; refusing here makes that impossible
+// whatever a peer sends and however the caller is driven.
 //
 // It grants no permission to place or accept a call. The caller keeps the
 // bytes out of logs, storage and the frontend, and clears them after use.
-func (s *Session) ExportCallKeyMaterial(callID []byte, length int) ([]byte, error) {
-	if s == nil || s.state == nil || len(callID) != CallIDSize || length < 1 || length > MaxCallKeyMaterial {
+func (s *Session) ExportCallKeyMaterial(context []byte, length int) ([]byte, error) {
+	if s == nil || s.state == nil || len(context) != CallContextSize || length < 1 || length > MaxCallKeyMaterial {
 		return nil, ErrAuthentication
 	}
-	var any byte
-	for _, b := range callID {
-		any |= b
-	}
-	if any == 0 {
+	var key [CallContextSize]byte
+	copy(key[:], context)
+	// Both halves must be present: a zero call ID or a zero answer value
+	// means one side contributed nothing.
+	if [CallContextSize / 2]byte(key[:CallContextSize/2]) == [CallContextSize / 2]byte{} || [CallContextSize / 2]byte(key[CallContextSize/2:]) == [CallContextSize / 2]byte{} {
 		return nil, ErrAuthentication
 	}
 	s.state.mu.Lock()
@@ -367,14 +380,21 @@ func (s *Session) ExportCallKeyMaterial(callID []byte, length int) ([]byte, erro
 	if !s.state.capabilities.Calls {
 		return nil, ErrAuthentication
 	}
+	if _, used := s.state.callContexts[key]; used || len(s.state.callContexts) >= MaxCallExports {
+		return nil, ErrAuthentication
+	}
 	state := s.state.tls.ConnectionState()
 	if !state.HandshakeComplete || state.Version != tls.VersionTLS13 || state.DidResume {
 		return nil, ErrAuthentication
 	}
-	material, err := state.ExportKeyingMaterial(callExporterLabel, callID, length)
+	material, err := state.ExportKeyingMaterial(callExporterLabel, key[:], length)
 	if err != nil || len(material) != length {
 		return nil, ErrAuthentication
 	}
+	if s.state.callContexts == nil {
+		s.state.callContexts = make(map[[CallContextSize]byte]struct{})
+	}
+	s.state.callContexts[key] = struct{}{}
 	return material, nil
 }
 
