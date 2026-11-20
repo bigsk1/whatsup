@@ -453,6 +453,11 @@ func (m *CallMediaSession) Done() <-chan struct{} { return m.done }
 
 // SendAudio seals and sends one encoded audio frame from the interface. An
 // error means the call is over and the stream should close.
+//
+// The interface starts capturing as soon as it learns the call was answered,
+// and the encrypted media flow opens a moment later. A frame that arrives in
+// between is dropped, never queued, and is not an error: closing the stream
+// for it would leave the whole call silent in both directions.
 func (m *CallMediaSession) SendAudio(timestamp uint32, frame []byte) error {
 	select {
 	case <-m.done:
@@ -462,10 +467,14 @@ func (m *CallMediaSession) SendAudio(timestamp uint32, frame []byte) error {
 	if audio, _ := m.service.calls.policy(); !audio {
 		return ErrCallMedia
 	}
-	if m.messages.SendCallAudio(m.contactID, m.id, frame, timestamp) != nil {
-		return ErrCallMedia
+	if m.messages.SendCallAudio(m.contactID, m.id, frame, timestamp) == nil {
+		return nil
 	}
-	return nil
+	snapshot := m.messages.Call(m.contactID)
+	if snapshot.Call == m.id && (snapshot.State == call.Connecting || snapshot.State == call.Active) {
+		return nil
+	}
+	return ErrCallMedia
 }
 
 func (m *CallMediaSession) Close() {

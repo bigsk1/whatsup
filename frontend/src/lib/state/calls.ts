@@ -9,6 +9,8 @@ import {
 } from '../call/audio';
 
 export type { AudioStats };
+/** Audio counters plus the state of the page's link to the desktop. */
+export type CallStats = AudioStats & { link: MediaLinkState | 'unknown' };
 import {
   callMediaStream,
   decodeAudio,
@@ -138,42 +140,108 @@ export const callBridge: CallBridge = {
   },
 };
 
+export type MediaLinkState = 'connecting' | 'open' | 'closed';
+
 export interface MediaLink {
   send(frame: Uint8Array): void;
   close(): void;
+  /** Whether audio can currently pass between the page and the desktop. */
+  state?(): MediaLinkState;
 }
+
+/** The part of a stream socket the media link uses. */
+export interface MediaSocket {
+  binaryType: string;
+  readyState: number;
+  send(data: Uint8Array<ArrayBuffer>): void;
+  close(): void;
+  addEventListener(type: string, listener: (event: Event) => void): void;
+}
+
+const linkRetryMs = 300;
+const linkMaxOpens = 6;
 
 export type OpenMedia = (
   callID: string,
   receive: (frame: ReceivedAudio) => void,
 ) => MediaLink;
 
-/** Encoded audio to and from Go over the app's own origin. No port is opened. */
-export const openStreamMedia: OpenMedia = (callID, receive) => {
-  const socket = Stream(callMediaStream);
-  socket.binaryType = 'arraybuffer';
+/**
+ * Encoded audio to and from Go over a stream socket. If the socket ends while
+ * the call is still answered, a new one is opened and names the call again,
+ * a bounded number of times: a call must not stay up with no way for audio to
+ * pass. Go accepts a stream only for an answered call, so a reopen after the
+ * call has ended simply closes again.
+ */
+export function createMediaLink(
+  connect: () => MediaSocket,
+  callID: string,
+  receive: (frame: ReceivedAudio) => void,
+  retryMs = linkRetryMs,
+): MediaLink {
+  const OPEN = 1;
+  let socket: MediaSocket | null = null;
   let ready = false;
-  socket.addEventListener('open', () => {
-    socket.send(encodeHello(callID) as Uint8Array<ArrayBuffer>);
-    ready = true;
-  });
-  socket.addEventListener('message', (event) => {
-    const frame = decodeAudio((event as MessageEvent).data);
-    if (frame) receive(frame);
-  });
+  let finished = false;
+  let opens = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  function open() {
+    if (finished || opens >= linkMaxOpens) return;
+    opens += 1;
+    const current = connect();
+    socket = current;
+    ready = false;
+    current.binaryType = 'arraybuffer';
+    current.addEventListener('open', () => {
+      if (finished || socket !== current) return;
+      current.send(encodeHello(callID) as Uint8Array<ArrayBuffer>);
+      ready = true;
+    });
+    current.addEventListener('message', (event) => {
+      if (finished || socket !== current) return;
+      const frame = decodeAudio((event as MessageEvent).data);
+      if (frame) receive(frame);
+    });
+    current.addEventListener('close', () => {
+      if (finished || socket !== current) return;
+      ready = false;
+      socket = null;
+      timer = setTimeout(open, retryMs);
+    });
+  }
+  open();
+
   return {
     // Audio produced before the stream is up is dropped, never queued: late
     // audio is worse than none.
     send(frame) {
-      if (ready && socket.readyState === socket.OPEN)
+      if (ready && socket?.readyState === OPEN)
         socket.send(frame as Uint8Array<ArrayBuffer>);
     },
     close() {
+      finished = true;
       ready = false;
-      socket.close();
+      if (timer) clearTimeout(timer);
+      socket?.close();
+      socket = null;
     },
+    state: () =>
+      finished || (!socket && opens >= linkMaxOpens)
+        ? 'closed'
+        : ready && socket?.readyState === OPEN
+          ? 'open'
+          : 'connecting',
   };
-};
+}
+
+/** Encoded audio to and from Go over the app's own origin. No port is opened. */
+export const openStreamMedia: OpenMedia = (callID, receive) =>
+  createMediaLink(
+    () => Stream(callMediaStream) as unknown as MediaSocket,
+    callID,
+    receive,
+  );
 
 export interface CallEngine {
   start(): Promise<void>;
@@ -229,6 +297,8 @@ export function createCalls(options: {
   engine?: EngineFactory;
   ringer?: Ringer;
   openMedia?: OpenMedia;
+  /** How long an ordinary "call ended" notice stays; 0 keeps it. */
+  endNoticeMs?: number;
 }) {
   const bridge = options.bridge ?? callBridge;
   const makeEngine: EngineFactory = options.engine ?? createAudioEngine;
@@ -246,6 +316,21 @@ export function createCalls(options: {
     current = { ...current, ...value };
     state.set(current);
   };
+
+  // An ordinary ending ("Call ended.", "No answer.") clears itself. A notice
+  // about a problem stays until it is dismissed or the next call starts.
+  const endNoticeMs = options.endNoticeMs ?? 6000;
+  let noticeTimer: ReturnType<typeof setTimeout> | null = null;
+  function passingNotice(text: string) {
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeTimer = null;
+    publish({ notice: text });
+    if (endNoticeMs > 0)
+      noticeTimer = setTimeout(() => {
+        noticeTimer = null;
+        if (current.notice === text) publish({ notice: '' });
+      }, endNoticeMs);
+  }
 
   let generation = 0;
   const sequence: Record<string, number> = {};
@@ -309,7 +394,7 @@ export function createCalls(options: {
     if (previous && previous.state !== 'idle' && !view) {
       const ended = current.views[previous.contactID];
       const text = ended ? (endNotices[ended.lastEnd] ?? '') : '';
-      if (text && !current.notice) publish({ notice: text });
+      if (text && !current.notice) passingNotice(text);
     }
   }
 
@@ -405,10 +490,18 @@ export function createCalls(options: {
      * Counters for the answered call's audio, or null when no call is
      * answered. Read on demand by the call details readout.
      */
-    stats: (): AudioStats | null => media?.engine.stats?.() ?? null,
+    stats: (): (AudioStats & { link: MediaLinkState | 'unknown' }) | null => {
+      if (!media) return null;
+      const audio = media.engine.stats?.();
+      return audio
+        ? { ...audio, link: media.link.state?.() ?? 'unknown' }
+        : null;
+    },
     /** Storage locked or the app is closing: release everything at once. */
     reset() {
       generation += 1;
+      if (noticeTimer) clearTimeout(noticeTimer);
+      noticeTimer = null;
       ringing = '';
       ringer.stop();
       stopMedia();
@@ -417,6 +510,8 @@ export function createCalls(options: {
     destroy() {
       unsubscribe?.();
       unsubscribe = null;
+      if (noticeTimer) clearTimeout(noticeTimer);
+      noticeTimer = null;
       generation += 1;
       ringer.stop();
       stopMedia();

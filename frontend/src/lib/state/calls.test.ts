@@ -3,6 +3,7 @@ import { get } from 'svelte/store';
 import type { AudioFailure, AudioStage } from '../call/audio';
 import type { Ringer } from '../call/ring';
 import {
+  createMediaLink,
   createCalls,
   validateCallHint,
   validateCallView,
@@ -40,7 +41,7 @@ function view(patch: Partial<CallView> = {}): CallView {
   };
 }
 
-function harness() {
+function harness(endNoticeMs = 0) {
   const log: string[] = [];
   let hint: (value: unknown) => void = () => {};
   let serverView = view();
@@ -81,6 +82,7 @@ function harness() {
   const calls = createCalls({
     enabled: () => enabled,
     ringMuted: () => false,
+    endNoticeMs,
     bridge,
     ringer,
     engine: (options) => {
@@ -281,6 +283,21 @@ describe('calls', () => {
     expect(h.engines[0].stopped).toBe(1);
   });
 
+  it('clears an ordinary ending by itself but keeps a problem on screen', async () => {
+    const ended = harness(400);
+    await ended.calls.start(contactID);
+    await ended.push(view({ lastEnd: 'no-answer', lastOutgoing: true }));
+    expect(get(ended.calls.state).notice).toBe('No answer.');
+    await vi.waitFor(() => expect(get(ended.calls.state).notice).toBe(''));
+
+    const failed = harness(100);
+    await failed.push(view({ state: 'connecting', callID }));
+    failed.failures[0]('permission');
+    await vi.waitFor(() => expect(get(failed.calls.state).current).toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(get(failed.calls.state).notice).toContain('microphone');
+  });
+
   it('names the step that failed when the device cannot run call audio', async () => {
     const h = harness();
     await h.push(view({ state: 'connecting', callID }));
@@ -371,5 +388,111 @@ describe('calls', () => {
     expect(get(h.calls.state).current?.micMuted).toBe(true);
     expect(h.engines[0].muted.at(-1)).toBe(true);
     expect(h.engines[0].started).toBe(1);
+  });
+});
+
+describe('call media link', () => {
+  function fakeSockets() {
+    const sockets: {
+      readyState: number;
+      binaryType: string;
+      sent: Uint8Array[];
+      closed: boolean;
+      fire(type: string, data?: unknown): void;
+    }[] = [];
+    const connect = () => {
+      const listeners: Record<string, ((event: Event) => void)[]> = {};
+      const socket = {
+        readyState: 0,
+        binaryType: '',
+        sent: [] as Uint8Array[],
+        closed: false,
+        send(data: Uint8Array) {
+          socket.sent.push(data);
+        },
+        close() {
+          socket.closed = true;
+          socket.readyState = 3;
+        },
+        addEventListener(type: string, listener: (event: Event) => void) {
+          (listeners[type] ??= []).push(listener);
+        },
+        fire(type: string, data?: unknown) {
+          if (type === 'open') socket.readyState = 1;
+          if (type === 'close') socket.readyState = 3;
+          for (const listener of listeners[type] ?? [])
+            listener({ data } as unknown as Event);
+        },
+      };
+      sockets.push(socket);
+      return socket;
+    };
+    return { sockets, connect };
+  }
+  const audio = new Uint8Array([1, 0, 0, 0, 3, 192, 5, 6]);
+
+  it('names the call when the stream opens and drops audio until then', () => {
+    const { sockets, connect } = fakeSockets();
+    const received: number[] = [];
+    const link = createMediaLink(connect, callID, (frame) =>
+      received.push(frame.timestamp),
+    );
+    expect(link.state?.()).toBe('connecting');
+    link.send(new Uint8Array([1, 2]));
+    expect(sockets[0].sent).toHaveLength(0);
+    sockets[0].fire('open');
+    expect(link.state?.()).toBe('open');
+    expect(sockets[0].sent[0][0]).toBe(0);
+    expect(sockets[0].sent[0]).toHaveLength(23);
+    link.send(new Uint8Array([1, 2]));
+    expect(sockets[0].sent).toHaveLength(2);
+    sockets[0].fire('message', audio);
+    expect(received).toEqual([960]);
+  });
+
+  it('opens a new stream and names the call again when the stream ends during the call', async () => {
+    const { sockets, connect } = fakeSockets();
+    const received: number[] = [];
+    const link = createMediaLink(
+      connect,
+      callID,
+      (frame) => received.push(frame.timestamp),
+      5,
+    );
+    sockets[0].fire('open');
+    sockets[0].fire('close');
+    expect(link.state?.()).toBe('connecting');
+    link.send(new Uint8Array([1, 2])); // nothing to send on
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+    sockets[1].fire('open');
+    expect(sockets[1].sent[0]).toHaveLength(23);
+    expect(link.state?.()).toBe('open');
+    // A late event from the dead socket is ignored.
+    sockets[0].fire('message', audio);
+    expect(received).toEqual([]);
+    sockets[1].fire('message', audio);
+    expect(received).toEqual([960]);
+  });
+
+  it('stops for good when the call closes it, and gives up after a bounded number of tries', async () => {
+    const closing = fakeSockets();
+    const link = createMediaLink(closing.connect, callID, () => {}, 5);
+    closing.sockets[0].fire('open');
+    link.close();
+    expect(closing.sockets[0].closed).toBe(true);
+    expect(link.state?.()).toBe('closed');
+    closing.sockets[0].fire('close');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(closing.sockets).toHaveLength(1);
+
+    const failing = fakeSockets();
+    const dead = createMediaLink(failing.connect, callID, () => {}, 1);
+    for (let i = 0; i < 6; i++) {
+      await vi.waitFor(() => expect(failing.sockets).toHaveLength(i + 1));
+      failing.sockets[i].fire('close');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(failing.sockets).toHaveLength(6);
+    expect(dead.state?.()).toBe('closed');
   });
 });

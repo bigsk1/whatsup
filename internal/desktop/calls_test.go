@@ -16,6 +16,7 @@ import (
 
 	"github.com/tailscale/tailcat"
 	"tailscale.com/types/key"
+	"whatsup/internal/call"
 	"whatsup/internal/callmedia"
 	"whatsup/internal/messaging"
 	"whatsup/internal/storage"
@@ -98,9 +99,19 @@ type callTestConn struct {
 	mu                   sync.Mutex
 	flow                 *callTestFlow
 	opened               *atomic.Int32
+	openDelay            *atomic.Int64
 }
 
 func (c *callTestConn) OpenCallMedia(ctx context.Context) (net.Conn, error) {
+	// A real flow takes a moment to open: a tunnel dial on one side, a wait
+	// for the first datagram on the other.
+	if wait := time.Duration(c.openDelay.Load()); wait > 0 {
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return nil, transport.ErrCallMedia
+		}
+	}
 	flow := &callTestFlow{in: c.towardMe, out: c.towardPeer, closed: make(chan struct{})}
 	if c.listener {
 		select {
@@ -148,6 +159,8 @@ type callTestNetwork struct {
 	mu       sync.Mutex
 	listener *callTestListener
 	flows    atomic.Int32
+	// openDelay, in nanoseconds, slows every media flow opening.
+	openDelay atomic.Int64
 }
 
 func (n *callTestNetwork) factories() messaging.Factories {
@@ -178,8 +191,8 @@ func (n *callTestNetwork) factories() messaging.Factories {
 				left.Close()
 				right.Close()
 				return nil, net.ErrClosed
-			case l.incoming <- &callTestConn{Conn: left, towardMe: a, towardPeer: b, listener: true, opened: &n.flows}:
-				return &callTestConn{Conn: right, towardMe: b, towardPeer: a, opened: &n.flows}, nil
+			case l.incoming <- &callTestConn{Conn: left, towardMe: a, towardPeer: b, listener: true, opened: &n.flows, openDelay: &n.openDelay}:
+				return &callTestConn{Conn: right, towardMe: b, towardPeer: a, opened: &n.flows, openDelay: &n.openDelay}, nil
 			}
 		},
 	}
@@ -519,5 +532,160 @@ func TestCallActionsRejectStaleOrMalformedHandles(t *testing.T) {
 	}
 	if _, err := a.service.StartCall(contact); err == nil {
 		t.Fatal("a call was placed while storage is locked")
+	}
+}
+
+// A device may place several calls in a row. Each one must carry audio both
+// ways through the attachment the native stream handler uses, attached the
+// way the interface does it: as soon as a view says the call was answered.
+func TestRepeatedCallsFromTheSameSideEachCarryAudioBothWays(t *testing.T) {
+	a, b, contact, _ := callTestPair(t, true, true)
+	answered := func(v CallView) bool { return v.State == "connecting" || v.State == "active" }
+	round := 0
+	oneCall := func(caller, callee *callTestHost, callerHangsUp bool) {
+		t.Helper()
+		round++
+		var placed CallView
+		callWait(t, "the next call to be placed", func() bool {
+			var err error
+			placed, err = caller.service.StartCall(contact)
+			return err == nil && placed.State == "outgoing"
+		})
+		ringing := callState(t, callee, contact, "incoming")
+		if ringing.CallID != placed.CallID {
+			t.Fatalf("call %d rang with a different ID", round)
+		}
+		view, err := callee.service.AnswerCall(contact, ringing.CallID)
+		if err != nil || !answered(view) {
+			t.Fatalf("call %d: answer failed: %+v %v", round, view, err)
+		}
+		fromCallee, err := AttachCallMedia(callee.service, placed.CallID)
+		if err != nil {
+			t.Fatalf("call %d: the callee could not attach media", round)
+		}
+		callWait(t, "the caller to see the answer", func() bool { v, _ := caller.service.GetCall(contact); return answered(v) })
+		fromCaller, err := AttachCallMedia(caller.service, placed.CallID)
+		if err != nil {
+			t.Fatalf("call %d: the caller could not attach media", round)
+		}
+		callState(t, caller, contact, "active")
+		callState(t, callee, contact, "active")
+		for _, way := range []struct {
+			name     string
+			from, to *CallMediaSession
+		}{{"caller to callee", fromCaller, fromCallee}, {"callee to caller", fromCallee, fromCaller}} {
+			for i := 1; i <= 10; i++ {
+				if err := way.from.SendAudio(uint32(i)*callmedia.AudioFrameSamples, bytes.Repeat([]byte{byte(round), byte(i)}, 40)); err != nil {
+					t.Fatalf("call %d, %s: frame %d was refused: %v", round, way.name, i, err)
+				}
+			}
+			for i := 1; i <= 10; i++ {
+				select {
+				case frame := <-way.to.Frames():
+					if !bytes.Equal(frame.Data, bytes.Repeat([]byte{byte(round), byte(i)}, 40)) {
+						t.Fatalf("call %d, %s: frame %d arrived damaged", round, way.name, i)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatalf("call %d, %s: frame %d never arrived", round, way.name, i)
+				}
+			}
+		}
+		ender := callee
+		if callerHangsUp {
+			ender = caller
+		}
+		if _, err := ender.service.EndCall(contact, placed.CallID); err != nil {
+			t.Fatalf("call %d: hang-up failed: %v", round, err)
+		}
+		callState(t, caller, contact, "idle")
+		callState(t, callee, contact, "idle")
+		for _, session := range []*CallMediaSession{fromCaller, fromCallee} {
+			select {
+			case <-session.Done():
+			case <-time.After(2 * time.Second):
+				t.Fatalf("call %d: a media stream stayed attached after the call", round)
+			}
+		}
+		// A device refuses a new offer that follows the last one too closely.
+		time.Sleep(call.DefaultMinOfferGap)
+	}
+	oneCall(a, b, true)
+	oneCall(a, b, false)
+	oneCall(b, a, true)
+	oneCall(b, a, false)
+}
+
+// The interface starts sending microphone audio the moment it learns a call
+// was answered, which can be before the encrypted media flow has opened. That
+// early audio is dropped. It must not end the media stream: a stream closed
+// here stays closed for the whole call, leaving it silent in both directions.
+func TestAudioSentBeforeTheMediaFlowOpensDoesNotEndTheStream(t *testing.T) {
+	for _, callerIsInviter := range []bool{true, false} {
+		a, b, contact, network := callTestPair(t, true, true)
+		caller, callee := a, b
+		if !callerIsInviter {
+			caller, callee = b, a
+		}
+		network.openDelay.Store(int64(400 * time.Millisecond))
+		placed, err := caller.service.StartCall(contact)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ringing := callState(t, callee, contact, "incoming")
+		if _, err := callee.service.AnswerCall(contact, ringing.CallID); err != nil {
+			t.Fatal(err)
+		}
+		fromCallee, err := AttachCallMedia(callee.service, placed.CallID)
+		if err != nil {
+			t.Fatal("the callee could not attach media to its answered call")
+		}
+		callWait(t, "the caller to see the answer", func() bool {
+			v, _ := caller.service.GetCall(contact)
+			return v.State == "connecting" || v.State == "active"
+		})
+		fromCaller, err := AttachCallMedia(caller.service, placed.CallID)
+		if err != nil {
+			t.Fatal("the caller could not attach media to its answered call")
+		}
+		// Both interfaces send at once, before either flow can be open.
+		for name, session := range map[string]*CallMediaSession{"caller": fromCaller, "callee": fromCallee} {
+			for i := 1; i <= 5; i++ {
+				if err := session.SendAudio(uint32(i)*callmedia.AudioFrameSamples, []byte{1, 2, 3}); err != nil {
+					t.Fatalf("inviter=%v: early audio from the %s ended its media stream: %v", callerIsInviter, name, err)
+				}
+			}
+			select {
+			case <-session.Done():
+				t.Fatalf("inviter=%v: the %s's media stream closed while the call was still connecting", callerIsInviter, name)
+			default:
+			}
+		}
+		callState(t, caller, contact, "active")
+		callState(t, callee, contact, "active")
+		// The same streams carry audio once the flow is open.
+		for _, way := range []struct{ from, to *CallMediaSession }{{fromCaller, fromCallee}, {fromCallee, fromCaller}} {
+			for len(way.to.Frames()) > 0 {
+				<-way.to.Frames()
+			}
+			if err := way.from.SendAudio(100*callmedia.AudioFrameSamples, []byte{9, 9, 9}); err != nil {
+				t.Fatalf("inviter=%v: audio was refused on an active call: %v", callerIsInviter, err)
+			}
+			select {
+			case frame := <-way.to.Frames():
+				if !bytes.Equal(frame.Data, []byte{9, 9, 9}) {
+					t.Fatalf("inviter=%v: audio arrived damaged", callerIsInviter)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("inviter=%v: audio never arrived after the flow opened", callerIsInviter)
+			}
+		}
+		// Once the call is over, sending is an error again.
+		if _, err := caller.service.EndCall(contact, placed.CallID); err != nil {
+			t.Fatal(err)
+		}
+		callState(t, callee, contact, "idle")
+		if fromCaller.SendAudio(1, []byte{1}) == nil || fromCallee.SendAudio(1, []byte{1}) == nil {
+			t.Fatalf("inviter=%v: audio was accepted after the call ended", callerIsInviter)
+		}
 	}
 }

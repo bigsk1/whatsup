@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from '../icons/Icon.svelte';
-  import type { AudioStats, CallView } from '../state/calls';
+  import type { CallStats, CallView } from '../state/calls';
 
   let {
     call,
@@ -27,14 +27,14 @@
     onmute: (call: CallView) => void;
     ondismiss: () => void;
     /** Audio counters for the answered call; numbers only. */
-    readStats?: () => AudioStats | null;
+    readStats?: () => CallStats | null;
   } = $props();
 
   let dialog: HTMLDialogElement;
   let declineButton: HTMLButtonElement;
   let now = $state(Date.now());
   let showDetails = $state(false);
-  let stats = $state<AudioStats | null>(null);
+  let stats = $state<CallStats | null>(null);
 
   const incoming = $derived(call?.state === 'incoming');
   const answered = $derived(
@@ -195,7 +195,7 @@
           </div>
           <div>
             <dt>Sound output</dt>
-            <dd>{stats.output}</dd>
+            <dd>{stats.output} · audio link {stats.link}</dd>
           </div>
         {:else}
           <div>

@@ -212,6 +212,26 @@ func TestVoiceCallOverRealTailcatCarriesSealedAudioAndReleasesThePort(t *testing
 		t.Fatal("a call ID was reused")
 	}
 
+	// The same side calls again, twice from each side. Alternating callers
+	// alone hides state that is left behind for the next call in the same
+	// direction.
+	hangUp := func(ender, other *messaging.Manager, id call.ID) {
+		t.Helper()
+		if _, err := ender.EndCall(ctx, id); err != nil {
+			t.Fatalf("hang-up was refused: %v", err)
+		}
+		waitCallState(t, ctx, ender, "hung up", func(s call.Snapshot) bool { return s.State == call.Idle && s.Last.Call == id })
+		waitCallState(t, ctx, other, "peer hung up", func(s call.Snapshot) bool { return s.State == call.Idle && s.Last.Call == id })
+		time.Sleep(call.DefaultMinOfferGap)
+	}
+	hangUp(owner.manager, joiner.manager, second)
+	third := voiceCall(owner.manager, joiner.manager, ownerSink, joinerSink, 0xC3)
+	hangUp(joiner.manager, owner.manager, third)
+	fourth := voiceCall(joiner.manager, owner.manager, joinerSink, ownerSink, 0xD4)
+	hangUp(joiner.manager, owner.manager, fourth)
+	fifth := voiceCall(joiner.manager, owner.manager, joinerSink, ownerSink, 0xE5)
+	second = fifth
+
 	// The session ends during the call: the call ends with it.
 	joiner.manager.Close()
 	joiner.manager = nil
