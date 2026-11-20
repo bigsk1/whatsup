@@ -242,7 +242,7 @@ ${changes.trim()}
 sudo apt install ./${names.linux}
 \`\`\`
 
-Quit WhatsUp from its tray before upgrading. Upgrades keep your identity, contacts and history, and uninstalling keeps your personal data. Before relying on a preview, export a recovery copy from **Settings → Security & recovery**.
+Quit WhatsUp from its tray before upgrading. Upgrades keep your identity, contacts and history, and uninstalling keeps your personal data. Before relying on WhatsUp, export a recovery copy from **Settings → Security & recovery**.
 
 ## Verify your download
 
@@ -272,7 +272,7 @@ gh attestation verify ${names.linux} --repo ${repository} --signer-workflow ${wo
 
 ## Good to know
 
-- This is an unsigned preview with no independent security audit. See [SECURITY.md](https://github.com/${repository}/blob/v${version}/SECURITY.md).
+- This release is not code-signed and has had no independent security audit. See [SECURITY.md](https://github.com/${repository}/blob/v${version}/SECURITY.md).
 - Attestations link each file to this repository's release workflow. They are not Windows code signing.
 - In-app updates are off. Download new versions from this page.
 - Both devices should run the same version.
@@ -282,7 +282,7 @@ gh attestation verify ${names.linux} --repo ${repository} --signer-workflow ${wo
 export function releaseArguments(context, notesPath, files) {
   if (files.length !== 7 || files.some((name) => typeof name !== 'string' || !path.isAbsolute(name))) throw new Error('A complete verified release bundle is required');
   return ['release', 'create', context.tag, ...files, '--repo', context.repository, '--verify-tag', '--latest',
-    '--title', `${context.tag} (unsigned preview)`, '--notes-file', notesPath];
+    '--title', `${context.tag} (unsigned)`, '--notes-file', notesPath];
 }
 
 export async function releasePublish(root) {

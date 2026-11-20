@@ -25,10 +25,13 @@ export function AllowAttachmentRelay(id: string, attachment: string): $Cancellab
 }
 
 /**
- * AnswerCall accepts the ringing voice call.
+ * AnswerCall accepts the ringing call. With video false a video call is
+ * answered as a voice call. Asking for video on a voice call, or with video
+ * calls switched off, answers with voice only: the answer is never lost over
+ * the camera.
  */
-export function AnswerCall(contactID: string, callID: string): $CancellablePromise<$models.CallView> {
-    return $Call.ByID(2044687135, contactID, callID);
+export function AnswerCall(contactID: string, callID: string, video: boolean): $CancellablePromise<$models.CallView> {
+    return $Call.ByID(2044687135, contactID, callID, video);
 }
 
 /**
@@ -315,6 +318,20 @@ export function SetAvatarPreferences(shareAvatar: boolean, showContactPhotos: bo
 }
 
 /**
+ * SetCallCamera records and announces whether this device is sending video,
+ * and opens or closes the camera's capture gate with it. The interface calls
+ * it before it asks for the camera, and again with false if the camera could
+ * not be started.
+ * 
+ * While the connection is relayed, turning the camera on needs overRelay: a
+ * relay operator carries that traffic, so the person chooses it explicitly,
+ * once per call. The path is a sampled reading, not a guarantee.
+ */
+export function SetCallCamera(contactID: string, callID: string, on: boolean, overRelay: boolean): $CancellablePromise<$models.CallView> {
+    return $Call.ByID(1478366372, contactID, callID, on, overRelay);
+}
+
+/**
  * SetCallMuted records and announces this side's mute state.
  */
 export function SetCallMuted(contactID: string, callID: string, muted: boolean): $CancellablePromise<$models.CallView> {
@@ -345,11 +362,12 @@ export function StageRecoveryImport(secret: string): $CancellablePromise<$models
 }
 
 /**
- * StartCall places a voice call. It never opens the microphone: capture starts
- * in the interface only after the other person answers.
+ * StartCall places a voice call, or a video call when video is true. It never
+ * opens the microphone or the camera: capture starts in the interface only
+ * after the other person answers.
  */
-export function StartCall(contactID: string): $CancellablePromise<$models.CallView> {
-    return $Call.ByID(1108379935, contactID);
+export function StartCall(contactID: string, video: boolean): $CancellablePromise<$models.CallView> {
+    return $Call.ByID(1108379935, contactID, video);
 }
 
 /**

@@ -700,7 +700,7 @@ async function nativePackage() {
     await writeFile(path.join(destination, 'SHA256SUMS'), checksumFiles.map(({ name, sha256 }) => `${sha256}  ${name}`).join('\n') + '\n', 'utf8');
     const after = await captureReviewSource(root);
     if (after.sourceDigest !== source.sourceDigest || after.sourceCommit !== source.sourceCommit) throw new Error('Source changed during packaging');
-    console.log(`Unsigned preview installer, SBOM and SHA256SUMS: ${destination}. No upload, publication or unsigned updater was performed.`);
+    console.log(`Unsigned installer, SBOM and SHA256SUMS: ${destination}. No upload, publication or unsigned updater was performed.`);
   } catch (error) {
     // Keep failed output for diagnosis, with no plausible successful manifest.
     await writeFile(path.join(destination, 'PACKAGE_FAILED'), 'Packaging failed. Do not distribute this directory.\n', 'utf8');

@@ -177,8 +177,18 @@ func TestVideoNegotiation(t *testing.T) {
 		if mine != theirs || !mine.Video || mine.Codec != VP9 {
 			t.Fatalf("expected VP9 on both sides, got %+v / %+v", mine, theirs)
 		}
-		if !caller.machine.Snapshot().CameraOn || !callee.machine.Snapshot().PeerCameraOn {
-			t.Fatal("video call did not start with cameras marked on")
+		for name, side := range map[string]*side{"caller": caller, "callee": callee} {
+			if snapshot := side.machine.Snapshot(); snapshot.CameraOn || snapshot.PeerCameraOn {
+				t.Fatalf("%s: a video call started with a camera marked on before anyone switched one on", name)
+			}
+		}
+		on, err := caller.machine.SetMedia(id, false, true)
+		if err != nil || len(on.Send) != 1 || !caller.machine.Snapshot().CameraOn {
+			t.Fatal("switching the camera on was not recorded and announced")
+		}
+		deliver(t, epoch, on, callee)
+		if snapshot := callee.machine.Snapshot(); !snapshot.PeerCameraOn || snapshot.CameraOn {
+			t.Fatal("the announcement did not reach the other side, or switched its own camera on")
 		}
 	})
 	t.Run("no common codec becomes a voice call", func(t *testing.T) {
@@ -542,20 +552,64 @@ func TestLocalActionsRequireTheCurrentCall(t *testing.T) {
 	}
 }
 
+func TestMuteAndCameraEachChangeOnlyTheirOwnSetting(t *testing.T) {
+	caller, callee := newSide(t, Inviter, allowAll), newSide(t, Joiner, allowAll)
+	id := ring(t, caller, callee, Video, VP8)
+	answer(t, caller, callee, id, Video, VP8)
+	muted, err := caller.machine.SetMuted(id, true)
+	if err != nil || len(muted.Send) != 1 || !muted.Send[0].MicMuted || muted.Send[0].CameraOn {
+		t.Fatalf("mute alone was not announced as mute alone: %+v %v", muted.Send, err)
+	}
+	// Switching the camera on carries the mute the machine holds, never an
+	// older one from whoever asked.
+	on, err := caller.machine.SetCamera(id, true)
+	if err != nil || len(on.Send) != 1 || !on.Send[0].MicMuted || !on.Send[0].CameraOn {
+		t.Fatalf("camera-on undid the mute or was not announced: %+v %v", on.Send, err)
+	}
+	if snapshot := caller.machine.Snapshot(); !snapshot.MicMuted || !snapshot.CameraOn {
+		t.Fatalf("after mute then camera-on: %+v", snapshot)
+	}
+	// And unmuting leaves the camera on.
+	unmuted, err := caller.machine.SetMuted(id, false)
+	if err != nil || len(unmuted.Send) != 1 || unmuted.Send[0].MicMuted || !unmuted.Send[0].CameraOn {
+		t.Fatalf("unmute switched the camera off or was not announced: %+v %v", unmuted.Send, err)
+	}
+	off, err := caller.machine.SetCamera(id, false)
+	if err != nil || len(off.Send) != 1 || off.Send[0].MicMuted || off.Send[0].CameraOn {
+		t.Fatalf("camera-off changed the microphone: %+v %v", off.Send, err)
+	}
+	var other ID
+	other[0] = 0xFF
+	if _, err := caller.machine.SetMuted(other, true); err == nil {
+		t.Fatal("mute for another call was accepted")
+	}
+	if _, err := caller.machine.SetCamera(other, true); err == nil {
+		t.Fatal("camera for another call was accepted")
+	}
+}
+
 func TestMuteAndCameraStateReachThePeer(t *testing.T) {
 	caller, callee := newSide(t, Inviter, allowAll), newSide(t, Joiner, allowAll)
 	id := ring(t, caller, callee, Video, VP8)
 	answer(t, caller, callee, id, Video, VP8)
-	changed, err := caller.machine.SetMedia(id, true, false)
+	changed, err := caller.machine.SetMedia(id, true, true)
 	if err != nil || len(changed.Send) != 1 {
-		t.Fatal("mute and camera-off were not announced")
+		t.Fatal("mute and camera-on were not announced")
 	}
 	deliver(t, epoch, changed, callee)
-	if snapshot := callee.machine.Snapshot(); !snapshot.PeerMicMuted || snapshot.PeerCameraOn {
+	if snapshot := callee.machine.Snapshot(); !snapshot.PeerMicMuted || !snapshot.PeerCameraOn {
 		t.Fatal("peer mute and camera state did not arrive")
 	}
-	if again, _ := caller.machine.SetMedia(id, true, false); len(again.Send) != 0 {
+	if again, _ := caller.machine.SetMedia(id, true, true); len(again.Send) != 0 {
 		t.Fatal("an unchanged media state was announced again")
+	}
+	off, err := caller.machine.SetMedia(id, true, false)
+	if err != nil || len(off.Send) != 1 {
+		t.Fatal("camera-off was not announced")
+	}
+	deliver(t, epoch, off, callee)
+	if snapshot := callee.machine.Snapshot(); !snapshot.PeerMicMuted || snapshot.PeerCameraOn {
+		t.Fatal("peer camera-off did not arrive")
 	}
 	request, err := callee.machine.RequestKeyframe(id)
 	if err != nil {

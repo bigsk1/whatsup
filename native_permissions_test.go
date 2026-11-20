@@ -36,30 +36,26 @@ func TestWebviewPermissionsDenyEveryNamedCapability(t *testing.T) {
 	}
 }
 
-// The microphone is the one capability calls need. It is allowed only by the
-// capture gate, only for the microphone, and deny is restored afterwards.
-func TestTheCaptureGateChangesOnlyTheMicrophoneAndRestoresDeny(t *testing.T) {
+// The microphone and camera are the capabilities calls need. Each is allowed
+// only by the capture gate, independently, and deny is restored afterwards.
+func TestTheCaptureGateChangesOnlyTheMicrophoneAndCameraAndRestoresDeny(t *testing.T) {
 	table := webviewPermissions()
-	setCapturePermission(table, true)
-	for kind, state := range table {
-		want := application.PermissionDeny
-		if kind == application.PermissionMicrophone {
-			want = application.PermissionAllow
-		}
-		if state != want {
-			t.Errorf("during a call permission kind %d is %d, want %d", kind, state, want)
-		}
-	}
-	setCapturePermission(table, false)
-	for kind, state := range table {
-		if state != application.PermissionDeny {
-			t.Errorf("after the call permission kind %d is %d, want deny", kind, state)
+	for _, step := range []struct{ microphone, camera bool }{{true, false}, {true, true}, {false, true}, {false, false}} {
+		setCapturePermission(table, step.microphone, step.camera)
+		for kind, state := range table {
+			want := application.PermissionDeny
+			if (kind == application.PermissionMicrophone && step.microphone) || (kind == application.PermissionCamera && step.camera) {
+				want = application.PermissionAllow
+			}
+			if state != want {
+				t.Errorf("with microphone=%v camera=%v permission kind %d is %d, want %d", step.microphone, step.camera, kind, state, want)
+			}
 		}
 	}
 	if len(table) != len(webviewPermissions()) {
 		t.Error("the capture gate added or removed table entries")
 	}
-	setCapturePermission(nil, true) // a host without a table must not panic
+	setCapturePermission(nil, true, true) // a host without a table must not panic
 }
 
 // A gate update that was queued when a call was answered may run after the
@@ -71,14 +67,14 @@ func TestALateCaptureGateUpdateAppliesThePresentTruth(t *testing.T) {
 	truth := func() bool { return answered }
 
 	answered = true
-	queuedWhenAnswered := captureGateUpdate(table, truth)
+	queuedWhenAnswered := captureGateUpdate(table, truth, truth)
 	answered = false
-	queuedWhenEnded := captureGateUpdate(table, truth)
+	queuedWhenEnded := captureGateUpdate(table, truth, truth)
 
 	// The later update runs first; the earlier one arrives afterwards.
 	queuedWhenEnded()
 	queuedWhenAnswered()
-	if table[application.PermissionMicrophone] != application.PermissionDeny {
+	if table[application.PermissionMicrophone] != application.PermissionDeny || table[application.PermissionCamera] != application.PermissionDeny {
 		t.Fatal("an update queued for an earlier call state reopened the capture gate")
 	}
 	// Run again after any number of state changes: always the present truth.
@@ -90,13 +86,18 @@ func TestALateCaptureGateUpdateAppliesThePresentTruth(t *testing.T) {
 	answered = false
 	queuedWhenAnswered()
 	queuedWhenAnswered()
-	if table[application.PermissionMicrophone] != application.PermissionDeny {
+	if table[application.PermissionMicrophone] != application.PermissionDeny || table[application.PermissionCamera] != application.PermissionDeny {
 		t.Fatal("the gate stayed open after the call ended")
 	}
+	// The two halves are independent: a voice call opens the microphone only.
+	captureGateUpdate(table, func() bool { return true }, func() bool { return false })()
+	if table[application.PermissionMicrophone] != application.PermissionAllow || table[application.PermissionCamera] != application.PermissionDeny {
+		t.Fatal("a voice call opened the camera, or did not open the microphone")
+	}
 	// Without a source of truth the gate is closed.
-	table[application.PermissionMicrophone] = application.PermissionAllow
-	captureGateUpdate(table, nil)()
-	if table[application.PermissionMicrophone] != application.PermissionDeny {
+	table[application.PermissionCamera] = application.PermissionAllow
+	captureGateUpdate(table, nil, nil)()
+	if table[application.PermissionMicrophone] != application.PermissionDeny || table[application.PermissionCamera] != application.PermissionDeny {
 		t.Fatal("a gate update with no source of truth left capture allowed")
 	}
 }

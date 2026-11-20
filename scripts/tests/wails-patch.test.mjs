@@ -35,7 +35,7 @@ test('Wails source approval checks the whole tree and cannot be forged or waive 
   const directory = await fixture(t);
   const approved = verifyWailsPatch(directory);
   assert.equal(isVerifiedWailsPatch(approved), true);
-  assert.equal(approved.patchVersion, 6);
+  assert.equal(approved.patchVersion, 7);
   assert.equal(isVerifiedWailsPatch({ ...approved }), false);
   assert.equal(isVerifiedWailsPatch(ensureWailsPatch(directory, { executable: 'must-not-run-for-a-verified-existing-tree' })), true);
   const tailcat = verifyTailcatPatch(root, policy.reviewedGoPins);
@@ -89,7 +89,7 @@ test('setup stages an exact reviewed prior Wails tree upgrade and then remains f
   for (const previousPatchVersion of [1, 2, 3, 4]) {
     const value = await upgradeFixture(t, { previousPatchVersion });
     assert.throws(() => verifyWailsPatch(value.directory), /changed or unsafe/);
-    assert.equal(ensureWailsPatch(value.directory, { spawn: value.spawn }).patchVersion, 6);
+    assert.equal(ensureWailsPatch(value.directory, { spawn: value.spawn }).patchVersion, 7);
     assert.equal(value.downloads(), 1);
     assert.equal(await readFile(path.join(value.location, 'pkg/native.go'), 'utf8'), 'package application\n// reviewed synthetic\n');
     ensureWailsPatch(value.directory, { spawn() { throw new Error('frozen setup must not download'); } });

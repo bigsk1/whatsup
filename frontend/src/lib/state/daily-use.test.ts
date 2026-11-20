@@ -60,6 +60,7 @@ describe('local app preferences', () => {
       notificationPreview: false,
       voiceCalls: false,
       callRingMuted: false,
+      videoCalls: false,
     });
     // A preference object from before call settings existed is incomplete.
     const { voiceCalls: _voiceCalls, ...withoutCalls } = defaultAppPreferences;

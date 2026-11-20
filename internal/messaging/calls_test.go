@@ -440,7 +440,7 @@ func TestVoiceCallBetweenTwoManagersCarriesSealedAudioAndEndsCleanly(t *testing.
 		if err := caller.registry.SendCallVideo(id, callID, []byte{1, 2, 3}, 0, true); !errors.Is(err, ErrUnavailable) {
 			t.Fatal("video was sent on a voice call")
 		}
-		if _, err := callee.registry.SetCallMedia(background(), id, callID, true, false); err != nil {
+		if _, err := callee.registry.SetCallMuted(background(), id, callID, true); err != nil {
 			t.Fatal(err)
 		}
 		waitCall(t, caller, id, "peer muted", func(s call.Snapshot) bool { return s.PeerMicMuted })

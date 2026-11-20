@@ -292,3 +292,23 @@ func TestCallSettingsDefaultOffAndLeaveTheEarlierStoredFormUnchanged(t *testing.
 		t.Fatal("switching voice calls off did not return to the default values")
 	}
 }
+
+func TestVideoCallSettingIsOffByDefaultAndStoredOnlyWhenOn(t *testing.T) {
+	if Defaults().VideoCalls {
+		t.Fatal("video calls are on by default")
+	}
+	off, err := json.Marshal(toStored(Snapshot{Values: Defaults()}))
+	if err != nil || bytes.Contains(off, []byte("videoCalls")) {
+		t.Fatalf("a profile with video calls off names the setting on disk: %s %v", off, err)
+	}
+	values := Defaults()
+	values.VoiceCalls, values.VideoCalls = true, true
+	on, err := json.Marshal(toStored(Snapshot{Values: values}))
+	if err != nil || !bytes.Contains(on, []byte(`"voiceCalls":true,"videoCalls":true`)) {
+		t.Fatalf("video calls were not stored when on: %s %v", on, err)
+	}
+	var back storedSnapshot
+	if json.Unmarshal(on, &back) != nil || !fromStored(back).Values.VideoCalls {
+		t.Fatal("the stored video setting did not read back")
+	}
+}

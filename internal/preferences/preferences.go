@@ -45,6 +45,9 @@ type Values struct {
 	VoiceCalls bool `json:"voiceCalls"`
 	// CallRingMuted silences the ring sound; an incoming call still shows.
 	CallRingMuted bool `json:"callRingMuted"`
+	// VideoCalls allows video in calls, which uses the camera. It has no
+	// effect unless VoiceCalls is on too, and is off unless switched on.
+	VideoCalls bool `json:"videoCalls"`
 }
 
 func Defaults() Values { return Values{CloseToTray: true, Notifications: true} }
@@ -67,6 +70,7 @@ type storedValues struct {
 	NotificationPreview bool `json:"notificationPreview"`
 	VoiceCalls          bool `json:"voiceCalls,omitempty"`
 	CallRingMuted       bool `json:"callRingMuted,omitempty"`
+	VideoCalls          bool `json:"videoCalls,omitempty"`
 }
 
 type storedSnapshot struct {

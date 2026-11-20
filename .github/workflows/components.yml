@@ -2,7 +2,11 @@ name: Implemented components (not release validation)
 
 on:
   pull_request:
+  # Branches only. A version tag starts the release workflow, which runs these
+  # same component checks before it packages; running them here as well only
+  # repeats them on the same commit.
   push:
+    branches: ['**']
   workflow_dispatch:
 
 permissions:

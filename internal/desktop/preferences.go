@@ -147,7 +147,7 @@ func (s *Service) SetAppPreferences(values AppPreferences) (AppPreferences, erro
 		state.options.OnChanged(values)
 	}
 	// A call setting takes effect at once, including on a call in progress.
-	if old.Values.VoiceCalls != values.VoiceCalls {
+	if old.Values.VoiceCalls != values.VoiceCalls || old.Values.VideoCalls != values.VideoCalls {
 		s.applyCallSettings(values)
 	}
 	return values, nil

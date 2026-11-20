@@ -1,19 +1,45 @@
 <script lang="ts">
   import Icon from '../icons/Icon.svelte';
-  import type { CallStats, CallView } from '../state/calls';
+  import { showCamera } from '../call/video';
+  import Avatar from './Avatar.svelte';
+  import type { CallStats, CallView, CameraState } from '../state/calls';
 
   let {
     call,
     name,
+    seed = '',
+    photoURL = '',
     path,
     notice,
     busy,
+    camera = 'off',
+    cameraHeld = false,
+    remotePicture = false,
     onanswer,
     onend,
     onmute,
+    oncamera,
+    oncanvas,
+    localStream,
     ondismiss,
     readStats,
   }: {
+    /** What the initials avatar's colour is derived from: their fingerprint. */
+    seed?: string;
+    /** Their profile picture, if they share one and photos are shown. */
+    photoURL?: string;
+    /** This window's camera: off, starting or on. */
+    camera?: CameraState;
+    /** The call is relayed and video waits for the person's choice. */
+    cameraHeld?: boolean;
+    /** The other person's first picture has been painted. */
+    remotePicture?: boolean;
+    /** Switch the camera; overRelay is the explicit choice to use a relay. */
+    oncamera?: (call: CallView, overRelay: boolean) => void;
+    /** Hand over the canvas the other person's picture is painted on. */
+    oncanvas?: (canvas: HTMLCanvasElement | null) => void;
+    /** This device's live camera stream for the small preview. */
+    localStream?: () => MediaStream | null;
     /** The one call in progress on this device, or null. */
     call: CallView | null;
     /** Display name of the person on that call. */
@@ -22,7 +48,7 @@
     path: string;
     notice: string;
     busy: boolean;
-    onanswer: (call: CallView) => void;
+    onanswer: (call: CallView, video: boolean) => void;
     onend: (call: CallView) => void;
     onmute: (call: CallView) => void;
     ondismiss: () => void;
@@ -35,6 +61,8 @@
   let now = $state(Date.now());
   let showDetails = $state(false);
   let stats = $state<CallStats | null>(null);
+  let remoteCanvas = $state<HTMLCanvasElement | null>(null);
+  let localPreview = $state<HTMLVideoElement | null>(null);
 
   const incoming = $derived(call?.state === 'incoming');
   const answered = $derived(
@@ -71,6 +99,45 @@
   $effect(() => {
     if (!call) showDetails = false;
   });
+
+  const showVideo = $derived(answered && call?.video === true);
+
+  $effect(() => {
+    // The picture area exists only during an answered video call.
+    const canvas = showVideo ? remoteCanvas : null;
+    oncanvas?.(canvas);
+    return () => oncanvas?.(null);
+  });
+
+  $effect(() => {
+    // The small preview shows this device's own camera, mirrored. It follows
+    // the camera state: off means no stream is attached at all.
+    //
+    // It is attached once and left alone until the camera itself changes.
+    // This runs again whenever the call screen refreshes, and an element
+    // must never let go of a camera that is still running: one engine locks
+    // the whole window up when that happens. So nothing is undone here; the
+    // camera is always stopped before its state reaches 'off', and only then
+    // is the picture detached.
+    const preview = localPreview;
+    if (!preview) return;
+    const stream = camera === 'on' ? (localStream?.() ?? null) : null;
+    if (preview.srcObject === stream) return;
+    if (stream) void showCamera(preview, stream).catch(() => {});
+    else preview.srcObject = null;
+  });
+
+  // Their live picture is shown only while their camera is on and a picture
+  // has actually been painted. Until then, and whenever their camera is off,
+  // the area shows who they are instead of an empty frame.
+  const livePicture = $derived(call?.peerCameraOn === true && remotePicture);
+  const videoStatus = $derived(
+    livePicture
+      ? ''
+      : call?.peerCameraOn
+        ? 'Starting video…'
+        : 'Their camera is off',
+  );
 
   function elapsed(since: number): string {
     const seconds = Math.max(0, Math.floor((now - since) / 1000));
@@ -111,14 +178,20 @@
 >
   <div class="dialog-heading">
     <div class="dialog-title">
-      <div class="small-icon"><Icon name="phone" /></div>
-      <h2 id="incoming-call-title">Incoming voice call</h2>
+      <div class="small-icon">
+        <Icon name={call?.video ? 'video' : 'phone'} />
+      </div>
+      <h2 id="incoming-call-title">
+        {call?.video ? 'Incoming video call' : 'Incoming voice call'}
+      </h2>
     </div>
   </div>
   <div class="dialog-body">
     <p id="incoming-call-description" class="caller" dir="auto">{name}</p>
     <p class="muted small">
-      Your microphone turns on only if you accept. Headphones are recommended.
+      {call?.video
+        ? 'Your microphone and camera turn on only if you accept with video. Headphones are recommended.'
+        : 'Your microphone turns on only if you accept. Headphones are recommended.'}
     </p>
   </div>
   <div class="dialog-footer">
@@ -129,18 +202,41 @@
       onclick={() => call && onend(call)}
       ><Icon name="phoneEnd" size="1.1em" /><span>Decline</span></button
     >
-    <button
-      class="primary-button compact"
-      disabled={busy || !call}
-      onclick={() => call && onanswer(call)}
-      ><Icon name="phone" size="1.1em" /><span>Accept</span></button
-    >
+    {#if call?.video}
+      <button
+        class="secondary-button compact"
+        disabled={busy || !call}
+        onclick={() => call && onanswer(call, false)}
+        ><Icon name="phone" size="1.1em" /><span>Accept without video</span
+        ></button
+      >
+      <button
+        class="primary-button compact"
+        disabled={busy || !call}
+        onclick={() => call && onanswer(call, true)}
+        ><Icon name="video" size="1.1em" /><span>Accept with video</span
+        ></button
+      >
+    {:else}
+      <button
+        class="primary-button compact"
+        disabled={busy || !call}
+        onclick={() => call && onanswer(call, false)}
+        ><Icon name="phone" size="1.1em" /><span>Accept</span></button
+      >
+    {/if}
   </div>
 </dialog>
 
 {#if call && !incoming}
-  <section class="call-bar" aria-label="Voice call" aria-live="polite">
-    <span class="call-icon"><Icon name="phone" /></span>
+  <section
+    class="call-bar"
+    class:with-video={showVideo}
+    aria-label={call.video ? 'Video call' : 'Voice call'}
+    aria-live="polite"
+  >
+    <span class="call-icon"><Icon name={call.video ? 'video' : 'phone'} /></span
+    >
     <span class="call-who">
       <strong dir="auto">{name}</strong>
       <span class="call-status">{status}{answered ? ` · ${path}` : ''}</span>
@@ -160,6 +256,18 @@
         onclick={() => call && onmute(call)}
         ><Icon name={call.micMuted ? 'micOff' : 'mic'} /></button
       >
+      {#if call.video}
+        <button
+          type="button"
+          class="icon-button"
+          aria-pressed={camera !== 'off'}
+          disabled={camera === 'starting'}
+          aria-label={camera === 'off' ? 'Turn camera on' : 'Turn camera off'}
+          title={camera === 'off' ? 'Turn camera on' : 'Turn camera off'}
+          onclick={() => call && oncamera?.(call, false)}
+          ><Icon name={camera === 'off' ? 'videoOff' : 'video'} /></button
+        >
+      {/if}
       <button
         type="button"
         class="secondary-button compact"
@@ -177,6 +285,42 @@
         >{answered ? 'Hang up' : 'Cancel'}</span
       ></button
     >
+    {#if showVideo}
+      <div class="call-video">
+        <canvas
+          bind:this={remoteCanvas}
+          class="remote-video"
+          class:waiting={!livePicture}
+          aria-label="Their video"
+          width="640"
+          height="360"
+        ></canvas>
+        {#if !livePicture}
+          <div class="video-placeholder">
+            <Avatar {name} seed={seed || name} size="large" {photoURL} />
+            <p class="video-status" role="status">{videoStatus}</p>
+          </div>
+        {/if}
+        <video
+          bind:this={localPreview}
+          class="local-video"
+          class:off={camera !== 'on'}
+          aria-label="Your camera"
+          playsinline
+        ></video>
+        {#if cameraHeld && camera === 'off'}
+          <div class="video-held">
+            <p>This call is using a relay, so your video is not being sent.</p>
+            <button
+              type="button"
+              class="secondary-button compact"
+              onclick={() => call && oncamera?.(call, true)}
+              >Send video over the relay</button
+            >
+          </div>
+        {/if}
+      </div>
+    {/if}
     {#if showDetails && answered}
       <dl id="call-details" class="call-details" aria-live="off">
         {#if stats}
@@ -197,6 +341,25 @@
             <dt>Sound output</dt>
             <dd>{stats.output} · audio link {stats.link}</dd>
           </div>
+          {#if stats.video}
+            <div>
+              <dt>Your video</dt>
+              <dd>
+                camera {stats.video.camera} · captured {stats.video.captured} · sent
+                {stats.video.sent} · keyframes {stats.video.keyframesSent}
+              </dd>
+            </div>
+            <div>
+              <dt>Their video</dt>
+              <dd>
+                received {stats.video.received} · keyframes {stats.video
+                  .keyframesReceived} · decoded {stats.video.decoded} · shown {stats
+                  .video.shown}{stats.video.waitingForKeyframe
+                  ? ' · waiting for a keyframe'
+                  : ''}
+              </dd>
+            </div>
+          {/if}
         {:else}
           <div>
             <dt>Audio</dt>
@@ -276,6 +439,86 @@
   }
   .call-details dd {
     margin: 0;
+  }
+  .call-bar.with-video {
+    max-width: min(680px, calc(100vw - 40px));
+  }
+  .call-video {
+    position: relative;
+    flex-basis: 100%;
+    aspect-ratio: 16 / 9;
+    border-radius: calc(var(--radius, 14px) - 4px);
+    overflow: hidden;
+    background: #000;
+  }
+  .remote-video {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+  }
+  .remote-video.waiting {
+    /* The last painted picture must not linger behind the avatar. */
+    visibility: hidden;
+  }
+  .video-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    pointer-events: none;
+  }
+  .video-placeholder :global(.avatar) {
+    width: clamp(64px, 22%, 128px);
+    height: auto;
+    aspect-ratio: 1;
+    font-size: clamp(1.6rem, 5vw, 3rem);
+  }
+  .video-status {
+    margin: 0;
+    color: #fff;
+    font-size: 0.95rem;
+    text-shadow: 0 1px 2px rgb(0 0 0 / 0.8);
+  }
+  .local-video {
+    position: absolute;
+    right: 10px;
+    bottom: 10px;
+    width: 26%;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    border-radius: 8px;
+    border: 1px solid rgb(255 255 255 / 0.5);
+    background: #111;
+    /* A mirror image is what people expect of their own preview. Only the
+       preview is mirrored; the other person sees the picture unmirrored. */
+    transform: scaleX(-1);
+  }
+  .local-video.off {
+    display: none;
+  }
+  .video-held {
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgb(0 0 0 / 0.72);
+    color: #fff;
+    font-size: 0.85rem;
+  }
+  .video-held p {
+    margin: 0;
+    flex: 1 1 12em;
   }
   .call-notice {
     bottom: 84px;

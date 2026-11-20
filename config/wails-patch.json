@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "module": "github.com/wailsapp/wails/v3",
   "version": "v3.1.0",
-  "patchVersion": 6,
+  "patchVersion": 7,
   "replacement": "./.local/modules/wails-v3",
   "upstreamSum": "h1:ld0AXSicXiTTsIvmTq3qNn9FzCP8vIHRSJdkRLgaAo8=",
   "upstreamGoModSum": "h1:tzDY3W1jzN3ksSqfGalTt7K3PwnGfIqtl+IgIXlXz0I=",
@@ -12,7 +12,8 @@
     "minimal_notification_activation",
     "native_only_drag_state",
     "clipboard_write_failure",
-    "live_unsaved_permissions"
+    "live_unsaved_permissions",
+    "linux_page_sound_without_click"
   ],
   "upstreamTree": {
     "sha256": "031658ed3d2445aea47806f219cb50187eb495404a7cee9d9d06a01a1b1ba420",
@@ -20,14 +21,14 @@
     "size": 41908357
   },
   "patchedTree": {
-    "sha256": "e5a778c136340d73108c0706f52d147309f834f951e34a69b6db336b45fff15d",
+    "sha256": "e717032d74d75afc425a2ac0c6e751f6292edf91ff28aa78990f59ac272b4b79",
     "count": 4564,
-    "size": 42007923
+    "size": 42008556
   },
   "patch": {
     "path": "third_party/patches/wails-v3-native.patch",
-    "sha256": "40a2dfae84f4c5c7dbb2fd11ef259d7ad40b32e8d3e194cb8e6c14353c0b72f4",
-    "size": 113692
+    "sha256": "8a3929db973cef111560180aeb457a048e90d5eed631fdf598616a70e3523755",
+    "size": 114981
   },
   "files": [
     {
@@ -71,6 +72,12 @@
       "upstreamSHA256": null,
       "sha256": "9e5c86646d40208774384ba305f80fe5f2209ecca421d1457a46d09055bc4c1e",
       "size": 6433
+    },
+    {
+      "path": "pkg/application/linux_cgo.c",
+      "upstreamSHA256": "3c47f8f6013800536fc599ea68ededabcbfbc6f668592c726cb141b09b0e36d2",
+      "sha256": "3d8bdd670979758a86a554e5c643c09de81e77a206d40ecd17f500c6f51caf86",
+      "size": 45780
     },
     {
       "path": "pkg/application/linux_cgo.go",
@@ -265,6 +272,12 @@
       "sha256": "6586428005a6ce6c26a27359c6877e67abd99a27aff0aab8880ebd2bfd69b96c",
       "count": 4560,
       "size": 41977994
+    },
+    {
+      "patchVersion": 6,
+      "sha256": "e5a778c136340d73108c0706f52d147309f834f951e34a69b6db336b45fff15d",
+      "count": 4564,
+      "size": 42007923
     }
   ]
 }

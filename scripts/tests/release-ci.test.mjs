@@ -111,7 +111,7 @@ test('release arguments publish the verified tag without overwriting an existing
   assert.equal(args.includes('--latest'), true);
   assert.equal(args.includes('--verify-tag'), true);
   assert.equal(args.includes('--clobber'), false);
-  assert.equal(args[args.indexOf('--title') + 1], 'v0.1.0 (unsigned preview)');
+  assert.equal(args[args.indexOf('--title') + 1], 'v0.1.0 (unsigned)');
   assert.throws(() => releaseArguments(assertReleaseContext(context), path.resolve('notes.md'), []));
 });
 

@@ -9,8 +9,8 @@ info:
   productIdentifier: local.whatsup.desktop
   description: Private one-to-one desktop messenger
   copyright: Copyright (c) 2026 bigsk1
-  comments: Unsigned preview
-  version: 0.1.2
+  comments: Not code-signed
+  version: 0.2.0
 
 dev_mode:
   root_path: .

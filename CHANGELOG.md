@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 (unsigned)
 
 - Voice calls between two connected contacts. Calls are off until you turn on
   **Allow voice calls** under **Settings → App behavior**. Place a call from the
@@ -9,15 +9,34 @@
   with fresh keys for every call. The microphone is used only during an answered
   call and is released as soon as it ends. Both devices need a version with
   voice calls.
+- Video calls between two connected contacts, off until you turn on **Allow
+  video calls** under **Settings → App behavior**. Place one from the video
+  button; the other person can accept with video, accept without video or
+  decline. The camera button turns your camera off and on during the call, and
+  while someone's camera is off you see their profile picture. Video is
+  encrypted like call audio. On a relayed connection your video waits until the
+  connection is direct or you choose **Send video over the relay**. The camera
+  is used only while your video is on in an answered call.
+- On Linux, sending video needs WebKitGTK 2.54.3 or newer. With an older
+  version WhatsUp tells you the camera picture is not updating and continues
+  with voice; received video is shown either way. See
+  [Linux support](docs/linux-support.md#calls).
 - **Silence the ring sound** in App behavior turns off the ring for incoming and
   outgoing calls.
+- On Linux an incoming call now rings even when the WhatsUp window has not been
+  clicked since it started, for example after starting at login.
 - On Linux desktops that don't let an app raise its own window, the tray's
   **Show WhatsUp**, launching WhatsUp again and an incoming call now bring a
   minimized or covered window to the front.
 - On GNOME and other Wayland desktops the running WhatsUp window now belongs
   to its launcher: one dock icon instead of two, and the desktop names the app
-  **WhatsUp**. If you created the menu entry by hand from the Arch guide, change
-  its `StartupWMClass` line to `StartupWMClass=org.wails.whatsup`.
+  **WhatsUp**. WhatsUp's application ID is now `io.github.bigsk1.whatsup`, and
+  the menu entry is named `io.github.bigsk1.whatsup.desktop` to match, so that
+  the desktop can ask for camera permission in WhatsUp's name. Package upgrades
+  rename the entry for you; a dock pin made before the upgrade needs pinning
+  once more. If you created the menu entry by hand from the Arch guide, rename
+  it to `io.github.bigsk1.whatsup.desktop` and set
+  `StartupWMClass=io.github.bigsk1.whatsup`.
 - The sidebar tagline is now **Private & encrypted**.
 
 ## 0.1.2 (unsigned preview)

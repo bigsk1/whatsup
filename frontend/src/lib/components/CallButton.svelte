@@ -6,10 +6,16 @@
     name,
     view,
     voiceCalls,
+    video = false,
+    videoCalls = false,
     inCall,
     busy,
     onrequest,
   }: {
+    /** A video call button; otherwise a voice call button. */
+    video?: boolean;
+    /** The local "Allow video calls" setting. Used by the video button. */
+    videoCalls?: boolean;
     name: string;
     /** This contact's call view, once it has been read from the desktop. */
     view: CallView | undefined;
@@ -40,7 +46,13 @@
                   : '',
   );
   const label = $derived(
-    !voiceCalls ? 'Voice call (switched off)' : blocked || `Call ${name}`,
+    video
+      ? !voiceCalls || !videoCalls
+        ? 'Video call (switched off)'
+        : blocked || `Video call ${name}`
+      : !voiceCalls
+        ? 'Voice call (switched off)'
+        : blocked || `Call ${name}`,
   );
 </script>
 
@@ -50,5 +62,5 @@
   aria-label={label}
   title={label}
   disabled={busy || blocked !== ''}
-  onclick={onrequest}><Icon name="phone" /></button
+  onclick={onrequest}><Icon name={video ? 'video' : 'phone'} /></button
 >

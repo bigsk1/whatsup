@@ -124,24 +124,30 @@ calls=[]
 def command(args):
  calls.append(args)
  if args[:2]==['/usr/bin/xdg-user-dir','DESKTOP']: output=str(desktop)+'\\n'
- elif args[:2]==['/usr/bin/gsettings','get']: output="['org.gnome.Terminal.desktop', 'whatsup-development.desktop']\\n"
+ elif args[:2]==['/usr/bin/gsettings','get']: output="['whatsup.desktop', 'org.gnome.Terminal.desktop', 'whatsup-development.desktop', 'org.wails.whatsup.desktop']\\n"
  else: output=''
  return subprocess.CompletedProcess(args,0,stdout=output,stderr='')
+(data/'applications').mkdir(mode=0o700,parents=True)
+for legacy in ['whatsup.desktop','whatsup-development.desktop','org.wails.whatsup.desktop']: (data/'applications'/legacy).write_text('[Desktop Entry]\\nName=WhatsUp\\n')
 with patch.object(m,'command',side_effect=command), patch.object(m.Path,'home',return_value=home), patch.dict(m.os.environ,{'XDG_DATA_HOME':str(data),'XDG_CURRENT_DESKTOP':'GNOME'}), patch.object(m.sys,'argv',['install-linux-launcher.py','--software-rendering','--desktop-shortcut','--pin-to-dock']), patch.object(m.os,'geteuid',return_value=1000):
  assert m.main()==0
 installed=data/'icons/whatsup-development.png'
 assert installed.read_bytes()==(root/'build/appicon.png').read_bytes()
 assert stat.S_IMODE(installed.stat().st_mode)==0o644 and installed.stat().st_uid==os.getuid()
-for relative in ['applications/whatsup.desktop']:
+for relative in ['applications/io.github.bigsk1.whatsup.desktop']:
  entry=(data/relative).read_text()
  assert 'Icon='+str(installed)+'\\n' in entry and 'internet-chat' not in entry
  assert 'Exec=/opt/whatsup-development/whatsup --software-rendering\\n' in entry
- assert 'StartupWMClass=org.wails.whatsup\\n' in entry
+ assert 'StartupWMClass=io.github.bigsk1.whatsup\\n' in entry
+# Entries under the names earlier installers used are retired: left in place
+# they would claim the running window instead of the entry named after the ID.
 assert not (data/'applications/whatsup-development.desktop').exists()
-assert 'Name=WhatsUp\\n' in (data/'applications/whatsup.desktop').read_text()
-assert (desktop/'whatsup.desktop').read_text()==(data/'applications/whatsup.desktop').read_text()
+assert not (data/'applications/whatsup.desktop').exists()
+assert not (data/'applications/org.wails.whatsup.desktop').exists()
+assert 'Name=WhatsUp\\n' in (data/'applications/io.github.bigsk1.whatsup.desktop').read_text()
+assert (desktop/'whatsup.desktop').read_text()==(data/'applications/io.github.bigsk1.whatsup.desktop').read_text()
 assert stat.S_IMODE((desktop/'whatsup.desktop').stat().st_mode)==0o755
-assert ['/usr/bin/gsettings','set','org.gnome.shell','favorite-apps',"['org.gnome.Terminal.desktop', 'whatsup.desktop']"] in calls
+assert ['/usr/bin/gsettings','set','org.gnome.shell','favorite-apps',"['io.github.bigsk1.whatsup.desktop', 'org.gnome.Terminal.desktop']"] in calls
 assert all(call[0] in ['/usr/bin/desktop-file-validate','/usr/bin/xdg-user-dir','/usr/bin/gio','/usr/bin/gsettings','/usr/bin/update-desktop-database'] for call in calls)
 `;
   const result = checkLauncher(code, directory);
@@ -206,4 +212,22 @@ test('every desktop entry names the application ID the window really has', async
     assert.ok(classes.length > 0, `${name} has no StartupWMClass`);
     for (const value of classes) assert.equal(value, id, `${name} names StartupWMClass=${value}`);
   }
+  // The application-menu entry is also named after the ID. A desktop looks it
+  // up by that name when the app asks for the camera, and GNOME refuses to ask
+  // unless the application in front is the entry so named.
+  const entry = `${id}.desktop`;
+  const nfpm = await readFile(path.join(root, 'build/linux/nfpm/nfpm.yaml'), 'utf8');
+  assert.deepEqual([...nfpm.matchAll(/dst: \/usr\/share\/applications\/(\S+)/g)].map((match) => match[1]), [entry]);
+  const installer = await readFile(path.join(root, 'scripts/install-linux-launcher.py'), 'utf8');
+  assert.ok(installer.includes(`LAUNCHER = "${entry}"`) && installer.includes('install_entry(applications / LAUNCHER,'));
+  const migration = await readFile(path.join(root, 'scripts/migrate-linux-launchers.py'), 'utf8');
+  assert.ok(migration.includes(`LAUNCHER = "${entry}"`));
+  const guide = await readFile(path.join(root, 'docs/arch-installation.md'), 'utf8');
+  assert.deepEqual([...guide.matchAll(/entry="\$applications\/([^"]+)"/g)].map((match) => match[1]), [entry]);
+  // The hand-run block retires every earlier entry name and keeps a saved
+  // software-rendering choice, as the package's own migration does.
+  for (const earlier of ['org.wails.whatsup.desktop', 'whatsup.desktop', 'whatsup-development.desktop']) {
+    assert.ok(guide.includes(`rm -f "$applications/org.wails.whatsup.desktop"`) && guide.split('rm -f')[1].includes(earlier), `${earlier} is not retired by the guide`);
+  }
+  assert.ok(guide.includes('Exec="$appdir/whatsup"$rendering') && guide.includes(`grep -q '^Exec=.*--software-rendering'`));
 });

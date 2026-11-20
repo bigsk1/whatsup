@@ -13,14 +13,21 @@ const LinuxProgramName = "whatsup"
 
 // LinuxApplicationID is the GTK application ID. With GTK 4 it is also the
 // Wayland app ID of the window, which is how a desktop decides which launcher
-// a running window belongs to. Every desktop entry WhatsUp installs or
-// documents names it as StartupWMClass; without that the desktop shows the
-// window as a second, unnamed application and labels it with this raw ID.
+// a running window belongs to, and it is the identity the web engine gives
+// the desktop's permission portal when it asks for the camera.
 //
-// It is the ID the pinned Wails derives from the application name, set
-// explicitly so that it cannot drift from the desktop entries. Changing it
-// needs every entry changed with it.
-const LinuxApplicationID = "org.wails.whatsup"
+// The application-menu entry WhatsUp installs or documents is therefore named
+// exactly this ID plus ".desktop", and carries it as StartupWMClass. A desktop
+// looks the entry up by that name to say who is asking, and GNOME refuses to
+// ask at all unless the application in front is the entry so named. With any
+// other name the window also shows as a second, unnamed application.
+//
+// It sits under the project's own namespace, the reverse of its repository
+// address, rather than the framework's default "org.wails.<name>", and is set
+// explicitly so that it cannot drift from the entries. Changing it needs every
+// entry renamed and changed with it, and desktops ask for camera permission
+// again under the new name.
+const LinuxApplicationID = "io.github.bigsk1.whatsup"
 
 // LinuxWebviewProfile describes backend-only paths. It is never a bridge DTO.
 type LinuxWebviewProfile struct {

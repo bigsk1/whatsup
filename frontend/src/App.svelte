@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick, untrack } from 'svelte';
   import { Browser } from '@wailsio/runtime';
   import { copyText } from './lib/clipboard';
   import Icon from './lib/icons/Icon.svelte';
@@ -58,7 +58,9 @@
   // Switching voice calls off releases the microphone in this window at once,
   // before the desktop is asked and whatever it answers.
   const appPreferences = createAppPreferences(undefined, (next) => {
-    if (!next.voiceCalls) calls.stopCapture();
+    // Switching video off ends a video call, so its capture stops here too.
+    if (!next.voiceCalls || (!next.videoCalls && $callsState.current?.video))
+      calls.stopCapture();
   });
   const appPreferencesState = appPreferences.state;
   // Calls need unlocked storage but must not wait for unrelated busy work:
@@ -66,6 +68,10 @@
   const calls = createCalls({
     enabled: () => mounted && native && status.storageState === 'unlocked',
     ringMuted: () => $appPreferencesState.value.callRingMuted,
+    // Video is not sent over a relay until the person chooses to.
+    relayed: (contactID) =>
+      $contactsState.contacts.find((contact) => contact.contactID === contactID)
+        ?.path === 'Relayed',
   });
   const callsState = calls.state;
   let callConfirm: CallConfirmDialog;
@@ -433,11 +439,22 @@
   const voiceCalls = $derived(
     $appPreferencesState.loaded && $appPreferencesState.value.voiceCalls,
   );
+  const videoCalls = $derived(
+    voiceCalls && $appPreferencesState.value.videoCalls,
+  );
   const callContact = $derived(
     $contactsState.contacts.find(
       (contact) => contact.contactID === $callsState.current?.contactID,
     ),
   );
+  $effect(() => {
+    // A call that began over a relay holds this device's video back. Tell
+    // the call store whenever the path changes so it can start once direct.
+    const contact = callContact;
+    if (!contact) return;
+    void contact.path;
+    untrack(() => calls.pathChanged(contact.contactID));
+  });
   $effect(() => {
     // Read the selected contact's call view once voice calls are on. Later
     // changes arrive as call events from the desktop.
@@ -948,6 +965,16 @@
             busy={$callsState.busy}
             onrequest={() => callConfirm.show()}
           />
+          <CallButton
+            video
+            name={contactName}
+            view={$callsState.views[conversation.contactID]}
+            {voiceCalls}
+            {videoCalls}
+            inCall={$callsState.current !== null}
+            busy={$callsState.busy}
+            onrequest={() => callConfirm.show(true)}
+          />
         {/if}
         {#if hasContact && conversation.state !== 'peer-removed'}
           <button
@@ -1092,7 +1119,7 @@
           <p class="connection-notice tone-danger" role="alert">
             <Icon name="reload" /><span
               >Update required: update both devices to the latest WhatsUp
-              preview, then choose Connect. Your saved contact and queued
+              version, then choose Connect. Your saved contact and queued
               messages are retained.</span
             >
           </p>
@@ -1115,7 +1142,7 @@
         {:else if conversation.state === 'capacity-reached'}
           <p class="connection-notice tone-danger" role="alert">
             <Icon name="warning" /><span
-              >This preview's local message storage is full. New messages cannot
+              >This device's local message storage is full. New messages cannot
               be saved. Existing history and queued messages are retained.</span
             >
           </p>
@@ -1432,7 +1459,7 @@
         aria-label="Open WhatsUp on GitHub"
         onclick={() => void openRepository()}
         >{native
-          ? `v${status.version} preview`
+          ? `v${status.version}`
           : 'Browser preview · desktop actions unavailable'}</button
       >
     </footer>
@@ -1444,25 +1471,35 @@
   contactID={conversation.contactID}
   name={contactName}
   {voiceCalls}
+  {videoCalls}
   inCall={$callsState.current !== null}
   busy={$callsState.busy || $appPreferencesState.busy}
-  onstart={(id) => void calls.start(id)}
-  onenable={() =>
+  onstart={(id, video) => void calls.start(id, video)}
+  onenable={(video) =>
     void appPreferences.save({
       ...$appPreferencesState.value,
       voiceCalls: true,
+      ...(video ? { videoCalls: true } : {}),
     })}
 />
 
 <CallOverlay
   call={$callsState.current}
   name={callContact ? contactLabel(callContact) : 'Approved contact'}
+  seed={callContact?.peerFingerprint ?? ''}
+  photoURL={callContact ? (contactPhotos[callContact.contactID] ?? '') : ''}
   path={callContact?.path ?? 'Unknown'}
   notice={$callsState.notice}
   busy={$callsState.busy}
-  onanswer={(call) => void calls.answer(call)}
+  camera={$callsState.camera}
+  cameraHeld={$callsState.cameraHeld}
+  remotePicture={$callsState.remotePicture}
+  onanswer={(call, video) => void calls.answer(call, video)}
   onend={(call) => void calls.end(call)}
   onmute={(call) => void calls.toggleMute(call)}
+  oncamera={(call, overRelay) => void calls.toggleCamera(call, overRelay)}
+  oncanvas={(canvas) => calls.setVideoCanvas(canvas)}
+  localStream={() => calls.localStream()}
   ondismiss={() => calls.dismissNotice()}
   readStats={() => calls.stats()}
 />
@@ -1617,7 +1654,7 @@
     <div class="build-notice">
       <Icon name="info" />
       <p>
-        This is an unsigned preview. Pairing requires your chosen connection
+        This build is not code-signed. Pairing requires your chosen connection
         service and explicit consent. Messages and attachments use approved
         contact credentials. Files require receiver approval and are never
         opened automatically. Strict direct-only delivery is unavailable.

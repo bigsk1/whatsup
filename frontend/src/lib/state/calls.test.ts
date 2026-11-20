@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 import type { AudioFailure, AudioStage } from '../call/audio';
+import type { ReceivedMedia } from '../call/protocol';
+import type { VideoFailure } from '../call/video';
 import type { Ringer } from '../call/ring';
 import {
   createMediaLink,
@@ -38,6 +40,9 @@ function view(patch: Partial<CallView> = {}): CallView {
     lastEnd: '',
     lastOutgoing: false,
     lastConnected: false,
+    video: false,
+    cameraOn: false,
+    peerCameraOn: false,
     ...patch,
   };
 }
@@ -49,6 +54,26 @@ function harness(endNoticeMs = 0) {
   const failures: ((reason: AudioFailure, stage?: AudioStage) => void)[] = [];
   const sent: Uint8Array[] = [];
   const engines: { started: number; stopped: number; muted: boolean[] }[] = [];
+  // Video engines the store created, with what it did to each.
+  const videos: {
+    camera: 'off' | 'starting' | 'on';
+    cameraStarts: number;
+    cameraStops: number;
+    stopped: number;
+    keyframes: number;
+    received: { timestamp: number; key: boolean }[];
+    canvas: unknown;
+    forgotten: number;
+    fail: (reason: VideoFailure) => void;
+  }[] = [];
+  let relayedNow = false;
+  let focused = true;
+  let onFocus: () => void = () => {};
+  // What the next attempt to start a camera does.
+  let cameraStart: 'on' | VideoFailure = 'on';
+  // While set, the desktop has not yet answered a camera request.
+  let cameraGate: Promise<void> | null = null;
+  let deliver: (frame: ReceivedMedia) => void = () => {};
   const bridge: CallBridge = {
     get: vi.fn(async () => serverView),
     start: vi.fn(async () => {
@@ -65,6 +90,14 @@ function harness(endNoticeMs = 0) {
     }),
     setMuted: vi.fn(async (_c, _i, muted) => {
       serverView = { ...serverView, micMuted: muted };
+      return serverView;
+    }),
+    setCamera: vi.fn(async (_c, _i, on, overRelay) => {
+      log.push('desktop-camera:' + (on ? 'on' : 'off'));
+      if (on && relayedNow && !overRelay)
+        throw new Error('This call is using a relay');
+      if (cameraGate) await cameraGate;
+      serverView = { ...serverView, cameraOn: on };
       return serverView;
     }),
     subscribe: (callback) => {
@@ -114,12 +147,87 @@ function harness(endNoticeMs = 0) {
         }),
       };
     },
+    relayed: () => relayedNow,
+    windowFocus: {
+      has: () => focused,
+      subscribe: (callback) => {
+        onFocus = callback;
+        return () => {
+          onFocus = () => {};
+        };
+      },
+    },
+    video: (options) => {
+      const record = {
+        camera: 'off' as 'off' | 'starting' | 'on',
+        cameraStarts: 0,
+        cameraStops: 0,
+        stopped: 0,
+        keyframes: 0,
+        received: [] as { timestamp: number; key: boolean }[],
+        canvas: undefined as unknown,
+        forgotten: 0,
+        fail: options.failed,
+      };
+      videos.push(record);
+      return {
+        startCamera: async () => {
+          record.cameraStarts += 1;
+          log.push('camera-start');
+          if (cameraStart !== 'on') {
+            options.failed(cameraStart);
+            return;
+          }
+          record.camera = 'on';
+          options.changed();
+        },
+        stopCamera: () => {
+          record.cameraStops += 1;
+          log.push('camera-stop');
+          record.camera = 'off';
+          options.changed();
+        },
+        stop: () => {
+          record.stopped += 1;
+          record.camera = 'off';
+          log.push('video-stop');
+        },
+        keyframe: () => {
+          record.keyframes += 1;
+        },
+        receive: (timestamp, key) => record.received.push({ timestamp, key }),
+        setCanvas: (canvas) => {
+          record.canvas = canvas;
+        },
+        localStream: () => null,
+        camera: () => record.camera,
+        hasPicture: () => record.received.length > 0,
+        forgetPicture: () => {
+          record.forgotten += 1;
+          record.received.length = 0;
+          options.changed();
+        },
+        stats: () => ({
+          camera: record.camera,
+          captured: 4,
+          sent: 3,
+          keyframesSent: 1,
+          received: record.received.length,
+          keyframesReceived: 0,
+          decoded: 0,
+          shown: 0,
+          waitingForKeyframe: true,
+        }),
+      };
+    },
     openMedia: (id, receive) => {
       log.push('media-open:' + id);
+      deliver = receive;
       return {
         send: (frame) => {
           sent.push(frame);
           receive({
+            kind: 'audio',
             timestamp: 960,
             recovered: false,
             data: new Uint8Array([9]),
@@ -133,8 +241,16 @@ function harness(endNoticeMs = 0) {
   const push = async (next: CallView) => {
     serverView = next;
     hint({ contactID: next.contactID });
+    // The desktop changes a video view itself when the camera goes on, so wait
+    // for the call and its state rather than for an unchanged view.
     await vi.waitFor(() =>
-      expect(get(calls.state).views[next.contactID]).toEqual(next),
+      expect(get(calls.state).views[next.contactID]).toMatchObject({
+        callID: next.callID,
+        state: next.state,
+        lastEnd: next.lastEnd,
+        micMuted: next.micMuted,
+        peerRinging: next.peerRinging,
+      }),
     );
   };
   return {
@@ -143,6 +259,25 @@ function harness(endNoticeMs = 0) {
     log,
     engines,
     failures,
+    videos,
+    setRelayed: (value: boolean) => (relayedNow = value),
+    setCameraStart: (value: 'on' | VideoFailure) => (cameraStart = value),
+    /** The desktop holds its answers to camera requests until released. */
+    holdCamera() {
+      let release: () => void = () => {};
+      cameraGate = new Promise<void>((resolve) => (release = resolve));
+      return () => {
+        cameraGate = null;
+        release();
+      };
+    },
+    /** The window goes to the back, or comes to the front. */
+    setFocused(value: boolean) {
+      const cameForward = value && !focused;
+      focused = value;
+      if (cameForward) onFocus();
+    },
+    deliver: (frame: ReceivedMedia) => deliver(frame),
     sent,
     push,
     setEnabled: (value: boolean) => (enabled = value),
@@ -193,7 +328,7 @@ describe('calls', () => {
     expect(get(h.calls.state).current?.state).toBe('incoming');
 
     await h.calls.answer(get(h.calls.state).current!);
-    expect(h.bridge.answer).toHaveBeenCalledWith(contactID, callID);
+    expect(h.bridge.answer).toHaveBeenCalledWith(contactID, callID, false);
     expect(h.log).toEqual([
       'ringtone',
       'ring-stop',
@@ -387,6 +522,9 @@ describe('calls', () => {
       current: null,
       notice: '',
       busy: false,
+      camera: 'off',
+      cameraHeld: false,
+      remotePicture: false,
     });
     release(view({ state: 'active', callID, activeSince: 1 }));
     await Promise.resolve();
@@ -441,6 +579,466 @@ describe('calls', () => {
   });
 });
 
+describe('video calls', () => {
+  const video = (patch: Partial<CallView> = {}) =>
+    view({ state: 'active', callID, activeSince: 1, video: true, ...patch });
+
+  it('creates no video engine and never touches the camera for a voice call', async () => {
+    const h = harness();
+    await h.push(view({ state: 'active', callID, activeSince: 1 }));
+    expect(h.videos).toHaveLength(0);
+    expect(h.bridge.setCamera).not.toHaveBeenCalled();
+    expect(get(h.calls.state).camera).toBe('off');
+    await h.calls.toggleCamera(get(h.calls.state).current!);
+    expect(h.bridge.setCamera).not.toHaveBeenCalled();
+    expect(h.calls.stats()?.video).toBeNull();
+  });
+
+  it('tells the desktop the camera is on before starting it, and sends pictures on the media link', async () => {
+    const h = harness();
+    await h.push(video({ state: 'connecting' }));
+    await vi.waitFor(() => expect(get(h.calls.state).camera).toBe('on'));
+    expect(h.videos).toHaveLength(1);
+    expect(h.bridge.setCamera).toHaveBeenCalledWith(
+      contactID,
+      callID,
+      true,
+      false,
+    );
+    // The desktop opens the camera permission for a camera it knows is on.
+    expect(h.log.indexOf('desktop-camera:on')).toBeLessThan(
+      h.log.indexOf('camera-start'),
+    );
+    expect(h.log.indexOf('desktop-camera:on')).toBeGreaterThan(-1);
+    expect(get(h.calls.state).cameraHeld).toBe(false);
+    expect(h.calls.stats()?.video).toMatchObject({ camera: 'on', sent: 3 });
+  });
+
+  it('routes incoming audio, video and the keyframe signal to the right engine', async () => {
+    const h = harness();
+    await h.push(video());
+    await vi.waitFor(() => expect(get(h.calls.state).camera).toBe('on'));
+    expect(get(h.calls.state).remotePicture).toBe(false);
+    const audioBefore = h.log.filter((entry) => entry === 'audio-in').length;
+    h.deliver({
+      kind: 'video',
+      timestamp: 90000,
+      key: true,
+      data: new Uint8Array([1]),
+    });
+    h.deliver({ kind: 'keyframe' });
+    h.deliver({
+      kind: 'audio',
+      timestamp: 960,
+      recovered: false,
+      data: new Uint8Array([2]),
+    });
+    expect(h.videos[0].received).toEqual([{ timestamp: 90000, key: true }]);
+    expect(h.videos[0].keyframes).toBe(1);
+    expect(h.log.filter((entry) => entry === 'audio-in')).toHaveLength(
+      audioBefore + 1,
+    );
+  });
+
+  it("starts the camera when a later refresh overtakes the desktop's answer to the camera request", async () => {
+    // A call that has just been answered changes state several times in its
+    // first moments, and each change refreshes the view. The camera must not
+    // depend on which of those answers arrives last.
+    const h = harness();
+    const release = h.holdCamera();
+    await h.push(video({ state: 'connecting' }));
+    await vi.waitFor(() => expect(h.bridge.setCamera).toHaveBeenCalledTimes(1));
+    await h.push(video({ state: 'active' }));
+    expect(h.videos[0].cameraStarts).toBe(0);
+    release();
+    await vi.waitFor(() => expect(get(h.calls.state).camera).toBe('on'));
+    expect(h.videos[0].cameraStarts).toBe(1);
+    expect(get(h.calls.state).notice).toBe('');
+  });
+
+  it('starts video that a relay held back once the connection is direct, without being asked', async () => {
+    const h = harness();
+    h.setRelayed(true);
+    await h.push(video({ state: 'connecting' }));
+    await vi.waitFor(() => expect(get(h.calls.state).cameraHeld).toBe(true));
+    expect(h.bridge.setCamera).not.toHaveBeenCalled();
+    // Still relayed: a path report changes nothing.
+    h.calls.pathChanged(contactID);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(h.bridge.setCamera).not.toHaveBeenCalled();
+    // Direct now.
+    h.setRelayed(false);
+    h.calls.pathChanged(otherContact);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(h.bridge.setCamera).not.toHaveBeenCalled();
+    h.calls.pathChanged(contactID);
+    await vi.waitFor(() => expect(get(h.calls.state).camera).toBe('on'));
+    expect(get(h.calls.state).cameraHeld).toBe(false);
+    expect(h.bridge.setCamera).toHaveBeenLastCalledWith(
+      contactID,
+      callID,
+      true,
+      false,
+    );
+    // A camera the person switched off themselves is not switched back on.
+    await h.calls.toggleCamera(get(h.calls.state).current!, false);
+    await vi.waitFor(() => expect(get(h.calls.state).camera).toBe('off'));
+    h.calls.pathChanged(contactID);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(get(h.calls.state).camera).toBe('off');
+    expect(h.videos[0].cameraStarts).toBe(1);
+  });
+
+  it('stops video when the connection falls back to a relay, unless sending over a relay was already chosen for this call', async () => {
+    const h = harness();
+    await h.push(video({ state: 'connecting' }));
+    await vi.waitFor(() => expect(get(h.calls.state).camera).toBe('on'));
+    // Direct so far. The connection falls back to a relay part-way through.
+    h.setRelayed(true);
+    h.calls.pathChanged(contactID);
+    await vi.waitFor(() => expect(get(h.calls.state).camera).toBe('off'));
+    expect(get(h.calls.state).cameraHeld).toBe(true);
+    await vi.waitFor(() =>
+      expect(h.bridge.setCamera).toHaveBeenLastCalledWith(
+        contactID,
+        callID,
+        false,
+        false,
+      ),
+    );
+    expect(h.videos[0].cameraStops).toBe(1);
+    // The call itself carries on.
+    expect(h.bridge.end).not.toHaveBeenCalled();
+    // The person chooses to send over the relay: video is back, and a later
+    // path report while still relayed leaves it alone.
+    await h.calls.toggleCamera(get(h.calls.state).current!, true);
+    await vi.waitFor(() => expect(get(h.calls.state).camera).toBe('on'));
+    expect(get(h.calls.state).cameraHeld).toBe(false);
+    h.calls.pathChanged(contactID);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(get(h.calls.state).camera).toBe('on');
+    // Direct again and relayed again within the same call: the choice stands.
+    h.setRelayed(false);
+    h.calls.pathChanged(contactID);
+    h.setRelayed(true);
+    h.calls.pathChanged(contactID);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(get(h.calls.state).camera).toBe('on');
+    expect(h.videos[0].cameraStops).toBe(1);
+  });
+
+  it('does not start the camera when the connection turns relayed while the desktop is still being asked', async () => {
+    const h = harness();
+    const release = h.holdCamera();
+    await h.push(video({ state: 'connecting' }));
+    await vi.waitFor(() => expect(h.bridge.setCamera).toHaveBeenCalledTimes(1));
+    // Asked while direct. The connection falls back before the answer comes:
+    // the camera is still off, so the path report alone stops nothing.
+    h.setRelayed(true);
+    h.calls.pathChanged(contactID);
+    expect(h.videos[0].cameraStarts).toBe(0);
+    release();
+    // The approval arrives. No camera opens, the approval is taken back and
+    // the choice is offered.
+    await vi.waitFor(() =>
+      expect(h.bridge.setCamera).toHaveBeenLastCalledWith(
+        contactID,
+        callID,
+        false,
+        false,
+      ),
+    );
+    await vi.waitFor(() => expect(get(h.calls.state).cameraHeld).toBe(true));
+    expect(h.videos[0].cameraStarts).toBe(0);
+    expect(get(h.calls.state).camera).toBe('off');
+    expect(h.bridge.end).not.toHaveBeenCalled();
+    // Choosing to send over the relay still works afterwards.
+    await h.calls.toggleCamera(get(h.calls.state).current!, true);
+    await vi.waitFor(() => expect(get(h.calls.state).camera).toBe('on'));
+    expect(h.videos[0].cameraStarts).toBe(1);
+  });
+
+  it("says so when this device's camera picture is stuck, and carries on with voice", async () => {
+    const h = harness();
+    h.setCameraStart('stuck');
+    await h.push(video({ state: 'connecting' }));
+    await vi.waitFor(() =>
+      expect(get(h.calls.state).notice).toBe(
+        "This device's camera picture is not updating, so your video was switched off. The call continues with voice.",
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(h.bridge.setCamera).toHaveBeenLastCalledWith(
+        contactID,
+        callID,
+        false,
+        false,
+      ),
+    );
+    expect(get(h.calls.state).camera).toBe('off');
+    expect(get(h.calls.state).current?.state).toBe('connecting');
+    expect(h.bridge.end).not.toHaveBeenCalled();
+  });
+
+  it('forgets their picture when their camera goes off, so a stale frame never stands in for them', async () => {
+    const h = harness();
+    await h.push(video({ peerCameraOn: true }));
+    await vi.waitFor(() => expect(get(h.calls.state).camera).toBe('on'));
+    h.deliver({
+      kind: 'video',
+      timestamp: 1,
+      key: true,
+      data: new Uint8Array([1]),
+    });
+    expect(h.videos[0].received).toHaveLength(1);
+    // Their camera is still on: nothing is forgotten by an ordinary refresh.
+    h.hint({ contactID });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(h.videos[0].forgotten).toBe(0);
+    await h.push(video({ cameraOn: true, peerCameraOn: false }));
+    await vi.waitFor(() => expect(h.videos[0].forgotten).toBe(1));
+    expect(get(h.calls.state).remotePicture).toBe(false);
+    // Off stays forgotten once; it is not blanked again on every refresh.
+    h.hint({ contactID });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(h.videos[0].forgotten).toBe(1);
+  });
+
+  it('holds video on a relayed call until the person chooses to send it', async () => {
+    const h = harness();
+    h.setRelayed(true);
+    await h.push(video());
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(get(h.calls.state).cameraHeld).toBe(true);
+    expect(h.bridge.setCamera).not.toHaveBeenCalled();
+    expect(h.videos[0].cameraStarts).toBe(0);
+    // Incoming video is still shown: only sending is held.
+    h.deliver({
+      kind: 'video',
+      timestamp: 1,
+      key: true,
+      data: new Uint8Array([1]),
+    });
+    expect(h.videos[0].received).toHaveLength(1);
+    // An ordinary camera press is refused by the desktop and stays held.
+    await h.calls.toggleCamera(get(h.calls.state).current!);
+    expect(h.videos[0].cameraStarts).toBe(0);
+    expect(get(h.calls.state).cameraHeld).toBe(true);
+    // The explicit choice goes through.
+    await h.calls.toggleCamera(get(h.calls.state).current!, true);
+    expect(h.bridge.setCamera).toHaveBeenLastCalledWith(
+      contactID,
+      callID,
+      true,
+      true,
+    );
+    expect(h.videos[0].cameraStarts).toBe(1);
+    expect(get(h.calls.state).camera).toBe('on');
+    expect(get(h.calls.state).cameraHeld).toBe(false);
+  });
+
+  it('switches the camera off here first, then tells the desktop', async () => {
+    const h = harness();
+    await h.push(video());
+    await vi.waitFor(() => expect(get(h.calls.state).camera).toBe('on'));
+    h.log.length = 0;
+    await h.calls.toggleCamera(get(h.calls.state).current!);
+    expect(h.log.slice(0, 2)).toEqual(['camera-stop', 'desktop-camera:off']);
+    expect(get(h.calls.state).camera).toBe('off');
+    // The call and its microphone carry on.
+    expect(h.engines[0].stopped).toBe(0);
+    expect(get(h.calls.state).current?.state).toBe('active');
+  });
+
+  it('tries the camera once more when the window comes forward, if it was turned down while the window was behind', async () => {
+    const h = harness();
+    h.setFocused(false); // the person is at the other device
+    h.setCameraStart('unavailable');
+    await h.push(video({ state: 'connecting' }));
+    await vi.waitFor(() => expect(h.videos).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(get(h.calls.state).notice).toContain(
+        'Bring WhatsUp to the front and press the camera button',
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(h.bridge.setCamera).toHaveBeenLastCalledWith(
+        contactID,
+        callID,
+        false,
+        false,
+      ),
+    );
+    expect(h.videos[0].cameraStarts).toBe(1);
+    expect(get(h.calls.state).camera).toBe('off');
+    // Still behind: nothing more is tried.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(h.videos[0].cameraStarts).toBe(1);
+
+    h.setCameraStart('on');
+    h.setFocused(true);
+    await vi.waitFor(() => expect(get(h.calls.state).camera).toBe('on'));
+    expect(h.videos[0].cameraStarts).toBe(2);
+    expect(get(h.calls.state).notice).toBe('');
+    // Once only: going behind and coming forward again starts nothing new.
+    h.setFocused(false);
+    h.setFocused(true);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(h.videos[0].cameraStarts).toBe(2);
+  });
+
+  it('does not retry the camera on its own when it was turned down with the window in front, or for another kind of failure', async () => {
+    for (const [result, behind] of [
+      ['permission', false],
+      ['no-camera', true],
+      ['no-picture', true],
+    ] as const) {
+      const h = harness();
+      h.setFocused(!behind);
+      h.setCameraStart(result);
+      await h.push(video({ state: 'connecting' }));
+      await vi.waitFor(() => expect(h.videos).toHaveLength(1));
+      await vi.waitFor(() => expect(get(h.calls.state).notice).not.toBe(''));
+      await vi.waitFor(() => expect(h.videos[0].cameraStarts).toBe(1));
+      h.setCameraStart('on');
+      h.setFocused(false);
+      h.setFocused(true);
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(h.videos[0].cameraStarts).toBe(1);
+    }
+    // And a retry that was pending is dropped when the person presses the
+    // camera button themselves, or the call ends.
+    const pressed = harness();
+    pressed.setFocused(false);
+    pressed.setCameraStart('unavailable');
+    await pressed.push(video({ state: 'connecting' }));
+    await vi.waitFor(() => expect(pressed.videos).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(get(pressed.calls.state).notice).not.toBe(''),
+    );
+    await vi.waitFor(() => expect(pressed.videos[0].cameraStarts).toBe(1));
+    pressed.setCameraStart('on');
+    await pressed.calls.end(get(pressed.calls.state).current!);
+    pressed.setFocused(true);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(pressed.videos[0].cameraStarts).toBe(1);
+  });
+
+  it('keeps the call going with voice when the camera cannot be used', async () => {
+    const h = harness();
+    await h.push(video({ state: 'connecting' }));
+    await vi.waitFor(() => expect(h.videos).toHaveLength(1));
+    await vi.waitFor(() => expect(get(h.calls.state).camera).toBe('on'));
+    h.videos[0].fail('no-picture');
+    await vi.waitFor(() =>
+      expect(h.bridge.setCamera).toHaveBeenLastCalledWith(
+        contactID,
+        callID,
+        false,
+        false,
+      ),
+    );
+    expect(get(h.calls.state).notice).toContain('camera gave no picture');
+    expect(get(h.calls.state).notice).toContain('continues with voice');
+    expect(h.engines[0].stopped).toBe(0);
+    expect(h.bridge.end).not.toHaveBeenCalled();
+    expect(get(h.calls.state).current?.state).toBe('connecting');
+  });
+
+  it('releases the camera and decoder before asking the desktop to hang up, and never restarts them for that call', async () => {
+    const h = harness();
+    await h.push(video());
+    await vi.waitFor(() => expect(get(h.calls.state).camera).toBe('on'));
+    h.log.length = 0;
+    h.bridge.end = vi.fn(async () => {
+      h.log.push('desktop-end');
+      throw new Error('The call could not be changed');
+    });
+    await h.calls.end(get(h.calls.state).current!);
+    expect(h.log.indexOf('video-stop')).toBeGreaterThan(-1);
+    expect(h.log.indexOf('video-stop')).toBeLessThan(
+      h.log.indexOf('desktop-end'),
+    );
+    expect(h.log.indexOf('mic-stop')).toBeLessThan(
+      h.log.indexOf('desktop-end'),
+    );
+    expect(get(h.calls.state)).toMatchObject({
+      camera: 'off',
+      cameraHeld: false,
+      remotePicture: false,
+    });
+    h.hint({ contactID });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(h.videos).toHaveLength(1);
+    expect(h.videos[0].cameraStarts).toBe(1);
+  });
+
+  it('starts a fresh video engine and camera for a second video call', async () => {
+    const h = harness();
+    await h.push(video());
+    await vi.waitFor(() => expect(get(h.calls.state).camera).toBe('on'));
+    await h.push(view({ lastEnd: 'peer-hung-up', lastConnected: true }));
+    expect(h.videos[0].stopped).toBe(1);
+    expect(get(h.calls.state).camera).toBe('off');
+    await h.push(video({ callID: otherCallID }));
+    await vi.waitFor(() => expect(h.videos).toHaveLength(2));
+    await vi.waitFor(() => expect(get(h.calls.state).camera).toBe('on'));
+    expect(h.videos[1].cameraStarts).toBe(1);
+    expect(h.log.filter((entry) => entry.startsWith('media-open:'))).toEqual([
+      'media-open:' + callID,
+      'media-open:' + otherCallID,
+    ]);
+  });
+
+  it('asks for video when placing or answering a video call, and only when it was offered', async () => {
+    const h = harness();
+    await h.calls.start(contactID, true);
+    expect(h.bridge.start).toHaveBeenLastCalledWith(contactID, true);
+    const other = harness();
+    await other.push(view({ state: 'incoming', callID, video: true }));
+    await other.calls.answer(get(other.calls.state).current!, true);
+    expect(other.bridge.answer).toHaveBeenLastCalledWith(
+      contactID,
+      callID,
+      true,
+    );
+    const voice = harness();
+    await voice.push(view({ state: 'incoming', callID }));
+    await voice.calls.answer(get(voice.calls.state).current!, true);
+    expect(voice.bridge.answer).toHaveBeenLastCalledWith(
+      contactID,
+      callID,
+      false,
+    );
+    const declined = harness();
+    await declined.push(view({ state: 'incoming', callID, video: true }));
+    await declined.calls.answer(get(declined.calls.state).current!);
+    expect(declined.bridge.answer).toHaveBeenLastCalledWith(
+      contactID,
+      callID,
+      false,
+    );
+  });
+
+  it('accepts camera flags only on a video call in progress', () => {
+    const base = view({ state: 'active', callID, activeSince: 1 });
+    expect(
+      validateCallView(
+        { ...base, video: true, cameraOn: true, peerCameraOn: true },
+        contactID,
+      ),
+    ).toMatchObject({ video: true, cameraOn: true, peerCameraOn: true });
+    for (const bad of [
+      { ...base, cameraOn: true },
+      { ...base, peerCameraOn: true },
+      { ...view(), video: true },
+      { ...base, video: 'yes' },
+      (({ video: _video, ...rest }) => rest)(base),
+    ])
+      expect(() => validateCallView(bad, contactID)).toThrow();
+  });
+});
+
 describe('call media link', () => {
   function fakeSockets() {
     const sockets: {
@@ -485,7 +1083,7 @@ describe('call media link', () => {
     const { sockets, connect } = fakeSockets();
     const received: number[] = [];
     const link = createMediaLink(connect, callID, (frame) =>
-      received.push(frame.timestamp),
+      received.push(frame.kind === 'audio' ? frame.timestamp : -1),
     );
     expect(link.state?.()).toBe('connecting');
     link.send(new Uint8Array([1, 2]));
@@ -506,7 +1104,7 @@ describe('call media link', () => {
     const link = createMediaLink(
       connect,
       callID,
-      (frame) => received.push(frame.timestamp),
+      (frame) => received.push(frame.kind === 'audio' ? frame.timestamp : -1),
       5,
     );
     sockets[0].fire('open');

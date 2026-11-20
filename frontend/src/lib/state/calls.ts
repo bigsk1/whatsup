@@ -9,16 +9,32 @@ import {
 } from '../call/audio';
 
 export type { AudioStats };
-/** Audio counters plus the state of the page's link to the desktop. */
-export type CallStats = AudioStats & { link: MediaLinkState | 'unknown' };
+/**
+ * Audio counters, the state of the page's link to the desktop, and video
+ * counters when the call is a video call.
+ */
+export type CallStats = AudioStats & {
+  link: MediaLinkState | 'unknown';
+  video: VideoStats | null;
+};
 import {
   callMediaStream,
-  decodeAudio,
+  decodeMedia,
   encodeAudio,
   encodeHello,
+  encodeVideo,
   validCallID,
-  type ReceivedAudio,
+  type ReceivedMedia,
 } from '../call/protocol';
+import {
+  createVideoEngine,
+  type CameraState,
+  type VideoEngine,
+  type VideoFailure,
+  type VideoStats,
+} from '../call/video';
+
+export type { CameraState, VideoStats };
 import { createRinger, type Ringer } from '../call/ring';
 import { validID } from './bridge';
 
@@ -39,6 +55,12 @@ export interface CallView {
   lastEnd: string;
   lastOutgoing: boolean;
   lastConnected: boolean;
+  /** The call in progress is a video call. */
+  video: boolean;
+  /** This device's camera, as the desktop recorded it. */
+  cameraOn: boolean;
+  /** The other device's camera, as it last announced it. */
+  peerCameraOn: boolean;
 }
 
 const states = ['idle', 'outgoing', 'incoming', 'connecting', 'active'];
@@ -74,7 +96,7 @@ export function validateCallView(value: unknown, contactID: string): CallView {
     throw invalid();
   const record = value as Record<string, unknown>;
   if (
-    Object.keys(record).length !== 11 ||
+    Object.keys(record).length !== 14 ||
     record.contactID !== contactID ||
     !validID(contactID) ||
     typeof record.state !== 'string' ||
@@ -93,7 +115,13 @@ export function validateCallView(value: unknown, contactID: string): CallView {
     typeof record.lastEnd !== 'string' ||
     !ends.includes(record.lastEnd) ||
     typeof record.lastOutgoing !== 'boolean' ||
-    typeof record.lastConnected !== 'boolean'
+    typeof record.lastConnected !== 'boolean' ||
+    typeof record.video !== 'boolean' ||
+    typeof record.cameraOn !== 'boolean' ||
+    typeof record.peerCameraOn !== 'boolean' ||
+    // Camera state means nothing outside a video call in progress.
+    (!record.video && (record.cameraOn || record.peerCameraOn)) ||
+    (record.state === 'idle' && record.video)
   )
     throw invalid();
   return {
@@ -108,6 +136,9 @@ export function validateCallView(value: unknown, contactID: string): CallView {
     lastEnd: record.lastEnd,
     lastOutgoing: record.lastOutgoing,
     lastConnected: record.lastConnected,
+    video: record.video,
+    cameraOn: record.cameraOn,
+    peerCameraOn: record.peerCameraOn,
   };
 }
 
@@ -126,18 +157,27 @@ async function service() {
 
 export interface CallBridge {
   get(contactID: string): Promise<unknown>;
-  start(contactID: string): Promise<unknown>;
-  answer(contactID: string, callID: string): Promise<unknown>;
+  start(contactID: string, video: boolean): Promise<unknown>;
+  answer(contactID: string, callID: string, video: boolean): Promise<unknown>;
   end(contactID: string, callID: string): Promise<unknown>;
   setMuted(contactID: string, callID: string, muted: boolean): Promise<unknown>;
+  setCamera(
+    contactID: string,
+    callID: string,
+    on: boolean,
+    overRelay: boolean,
+  ): Promise<unknown>;
   subscribe(callback: (hint: unknown) => void): () => void;
 }
 
 export const callBridge: CallBridge = {
   get: async (contactID) => (await service()).GetCall(contactID),
-  start: async (contactID) => (await service()).StartCall(contactID),
-  answer: async (contactID, callID) =>
-    (await service()).AnswerCall(contactID, callID),
+  start: async (contactID, video) =>
+    (await service()).StartCall(contactID, video),
+  answer: async (contactID, callID, video) =>
+    (await service()).AnswerCall(contactID, callID, video),
+  setCamera: async (contactID, callID, on, overRelay) =>
+    (await service()).SetCallCamera(contactID, callID, on, overRelay),
   end: async (contactID, callID) =>
     (await service()).EndCall(contactID, callID),
   setMuted: async (contactID, callID, muted) =>
@@ -170,11 +210,11 @@ const linkMaxOpens = 6;
 
 export type OpenMedia = (
   callID: string,
-  receive: (frame: ReceivedAudio) => void,
+  receive: (frame: ReceivedMedia) => void,
 ) => MediaLink;
 
 /**
- * Encoded audio to and from Go over a stream socket. If the socket ends while
+ * Encoded audio and video to and from Go over a stream socket. If the socket ends while
  * the call is still answered, a new one is opened and names the call again,
  * a bounded number of times: a call must not stay up with no way for audio to
  * pass. Go accepts a stream only for an answered call, so a reopen after the
@@ -183,7 +223,7 @@ export type OpenMedia = (
 export function createMediaLink(
   connect: () => MediaSocket,
   callID: string,
-  receive: (frame: ReceivedAudio) => void,
+  receive: (frame: ReceivedMedia) => void,
   retryMs = linkRetryMs,
 ): MediaLink {
   const OPEN = 1;
@@ -207,7 +247,7 @@ export function createMediaLink(
     });
     current.addEventListener('message', (event) => {
       if (finished || socket !== current) return;
-      const frame = decodeAudio((event as MessageEvent).data);
+      const frame = decodeMedia((event as MessageEvent).data);
       if (frame) receive(frame);
     });
     current.addEventListener('close', () => {
@@ -220,8 +260,8 @@ export function createMediaLink(
   open();
 
   return {
-    // Audio produced before the stream is up is dropped, never queued: late
-    // audio is worse than none.
+    // Media produced before the stream is up is dropped, never queued: late
+    // audio or video is worse than none.
     send(frame) {
       if (ready && socket?.readyState === OPEN)
         socket.send(frame as Uint8Array<ArrayBuffer>);
@@ -263,6 +303,43 @@ export type EngineFactory = (options: {
   failed(reason: AudioFailure, stage?: AudioStage): void;
 }) => CallEngine;
 
+/** The part of the video engine the store uses. */
+export type CallVideo = Pick<
+  VideoEngine,
+  | 'startCamera'
+  | 'stopCamera'
+  | 'stop'
+  | 'keyframe'
+  | 'receive'
+  | 'setCanvas'
+  | 'localStream'
+  | 'camera'
+  | 'hasPicture'
+  | 'forgetPicture'
+  | 'stats'
+>;
+
+export interface WindowFocus {
+  has(): boolean;
+  /** Calls back each time the window comes to the front; returns a stop. */
+  subscribe(callback: () => void): () => void;
+}
+
+const browserWindowFocus: WindowFocus = {
+  has: () => typeof document === 'undefined' || document.hasFocus(),
+  subscribe(callback) {
+    if (typeof window === 'undefined') return () => {};
+    window.addEventListener('focus', callback);
+    return () => window.removeEventListener('focus', callback);
+  },
+};
+
+export type VideoFactory = (options: {
+  send(timestamp: number, key: boolean, data: Uint8Array): void;
+  failed(reason: VideoFailure): void;
+  changed(): void;
+}) => CallVideo;
+
 const endNotices: Record<string, string> = {
   'peer-hung-up': 'Call ended.',
   'peer-declined': 'Call declined.',
@@ -275,6 +352,22 @@ const endNotices: Record<string, string> = {
   'device-error': 'Call ended: the microphone stopped working.',
   protocol: 'Call ended unexpectedly.',
   interrupted: 'Call ended.',
+};
+
+// A desktop may only ask about the camera while this window is in front, so
+// these two say how to try again.
+const cameraRetryHint =
+  'Bring WhatsUp to the front and press the camera button to try again; your system may ask for permission first. The call continues with voice.';
+const videoNotices: Record<VideoFailure, string> = {
+  permission: 'WhatsUp was not allowed to use the camera. ' + cameraRetryHint,
+  unavailable: 'The camera could not be started. ' + cameraRetryHint,
+  'no-camera':
+    'No camera was found on this device. The call continues with voice.',
+  unsupported: 'This device cannot send video. The call continues with voice.',
+  'no-picture': 'The camera gave no picture. The call continues with voice.',
+  stuck:
+    "This device's camera picture is not updating, so your video was switched off. The call continues with voice.",
+  failed: 'The camera stopped working. The call continues with voice.',
 };
 
 const audioNotices: Record<AudioFailure, string> = {
@@ -291,6 +384,15 @@ export interface CallsState {
   current: CallView | null;
   notice: string;
   busy: boolean;
+  /** This window's camera: off, starting or on. */
+  camera: CameraState;
+  /**
+   * The call is relayed, so video is not sent until the person chooses to
+   * send it over the relay.
+   */
+  cameraHeld: boolean;
+  /** The other person's first picture has been painted. */
+  remotePicture: boolean;
 }
 
 const answered = (view: CallView | null) =>
@@ -304,6 +406,11 @@ export function createCalls(options: {
   engine?: EngineFactory;
   ringer?: Ringer;
   openMedia?: OpenMedia;
+  video?: VideoFactory;
+  /** Whether the connection to this contact is currently relayed. */
+  relayed?: (contactID: string) => boolean;
+  /** Whether this window is in front, and a way to hear when it becomes so. */
+  windowFocus?: WindowFocus;
   /** How long an ordinary "call ended" notice stays; 0 keeps it. */
   endNoticeMs?: number;
 }) {
@@ -311,12 +418,33 @@ export function createCalls(options: {
   const makeEngine: EngineFactory = options.engine ?? createAudioEngine;
   const ringer = options.ringer ?? createRinger(options.ringMuted);
   const openMedia = options.openMedia ?? openStreamMedia;
+  const makeVideo: VideoFactory = options.video ?? createVideoEngine;
+  const relayed = options.relayed ?? (() => false);
+  const windowFocus = options.windowFocus ?? browserWindowFocus;
+  // A call whose camera was turned down while this window was not in front.
+  // Some desktops only ask about the camera for the window in front, so it is
+  // tried once more, on its own, when the window next comes forward.
+  let cameraOnFocus = '';
+  const stopFocus = windowFocus.subscribe(() => {
+    const callID = cameraOnFocus;
+    cameraOnFocus = '';
+    if (!callID || media?.callID !== callID || !media.video) return;
+    if (media.video.camera() !== 'off' || current.cameraHeld) return;
+    publish({ notice: '' });
+    void cameraOn(media.contactID, callID, false);
+  });
 
+  const noVideo = {
+    camera: 'off',
+    cameraHeld: false,
+    remotePicture: false,
+  } as const;
   let current: CallsState = {
     views: {},
     current: null,
     notice: '',
     busy: false,
+    ...noVideo,
   };
   const state = writable(current);
   const publish = (value: Partial<CallsState>) => {
@@ -342,8 +470,15 @@ export function createCalls(options: {
   let generation = 0;
   const sequence: Record<string, number> = {};
   let ringing = '';
-  let media: { callID: string; link: MediaLink; engine: CallEngine } | null =
-    null;
+  let media: {
+    callID: string;
+    contactID: string;
+    link: MediaLink;
+    engine: CallEngine;
+    video: CallVideo | null;
+    /** The person chose to send this call's video over a relay. */
+    relayChosen: boolean;
+  } | null = null;
   // Calls this device has ended on its own side: hung up, declined, or calls
   // switched off. Capture for such a call never starts again, whatever a
   // later view says. A failed or slow hang-up must not reopen the microphone.
@@ -358,9 +493,14 @@ export function createCalls(options: {
     if (!media) return;
     const stale = media;
     media = null;
-    // Release the microphone first; closing the stream cannot block that.
+    // Release the microphone and camera first; closing the stream cannot
+    // block that.
     stale.engine.stop();
+    stale.video?.stop();
     stale.link.close();
+    cameraOnFocus = '';
+    if (current.camera !== 'off' || current.cameraHeld || current.remotePicture)
+      publish({ ...noVideo });
   }
 
   function startMedia(view: CallView) {
@@ -381,12 +521,96 @@ export function createCalls(options: {
         void end(contactID, callID);
       },
     });
+    // A video call decodes whatever video arrives from the start. This
+    // device's own camera is a separate decision; see cameraOn.
+    const video = view.video
+      ? makeVideo({
+          send: (timestamp, key, data) => {
+            if (media?.callID === callID)
+              media.link.send(encodeVideo(timestamp, key, data));
+          },
+          failed: (reason) => {
+            if (media?.callID !== callID) return;
+            // The camera is already released. The call carries on with voice.
+            publish({ notice: videoNotices[reason] });
+            if (
+              (reason === 'permission' || reason === 'unavailable') &&
+              !windowFocus.has()
+            )
+              cameraOnFocus = callID;
+            void cameraOff(contactID, callID);
+          },
+          changed: () => {
+            if (media?.callID === callID && media.video)
+              publish({
+                camera: media.video.camera(),
+                remotePicture: media.video.hasPicture(),
+              });
+          },
+        })
+      : null;
     const link = openMedia(callID, (frame) => {
-      if (media?.callID === callID) engine.receive(frame.timestamp, frame.data);
+      if (media?.callID !== callID) return;
+      if (frame.kind === 'audio') engine.receive(frame.timestamp, frame.data);
+      else if (frame.kind === 'video')
+        video?.receive(frame.timestamp, frame.key, frame.data);
+      else video?.keyframe();
     });
-    media = { callID, link, engine };
+    media = { callID, contactID, link, engine, video, relayChosen: false };
     engine.setMuted(view.micMuted);
     void engine.start();
+    if (video) {
+      // Over a relay, video waits for the person to choose it.
+      if (relayed(contactID)) publish({ cameraHeld: true });
+      else void cameraOn(contactID, callID, false);
+    }
+  }
+
+  /**
+   * Switch this device's camera on for the answered video call. The desktop
+   * is told first: it opens the camera permission only for a camera it has
+   * recorded as on, and refuses over a relay unless that was chosen.
+   */
+  async function cameraOn(
+    contactID: string,
+    callID: string,
+    overRelay: boolean,
+  ) {
+    if (media?.callID !== callID || !media.video) return;
+    if (endedHere.includes(callID) || media.video.camera() !== 'off') return;
+    publish({ cameraHeld: false });
+    // The desktop's own answer decides, not the view on screen: a refresh
+    // that started later may be the one shown, and it can predate the change.
+    const view = await run(contactID, () =>
+      bridge.setCamera(contactID, callID, true, overRelay),
+    );
+    if (media?.callID !== callID || !media.video) return;
+    if (!view || view.callID !== callID || !view.cameraOn) {
+      // Refused: most likely the connection became relayed in the meantime.
+      if (relayed(contactID)) publish({ cameraHeld: true });
+      return;
+    }
+    if (overRelay) media.relayChosen = true;
+    // The desktop approved this while the connection was direct. If the
+    // connection turned relayed while it was being asked, the path handler saw
+    // a camera that was still off and had nothing to stop, so the check is
+    // made again here, before any camera opens: take the approval back and
+    // offer the choice.
+    if (!media.relayChosen && relayed(contactID)) {
+      publish({ cameraHeld: true });
+      await cameraOff(contactID, callID);
+      return;
+    }
+    await media.video.startCamera();
+  }
+
+  /** Release the camera here first, then tell the desktop. */
+  function cameraOff(contactID: string, callID: string) {
+    if (media?.callID === callID) media.video?.stopCamera();
+    if (endedHere.includes(callID)) return Promise.resolve();
+    return run(contactID, () =>
+      bridge.setCamera(contactID, callID, false, false),
+    );
   }
 
   function settle(view: CallView | null, previous: CallView | null) {
@@ -406,6 +630,10 @@ export function createCalls(options: {
     if (answered(view) && !endedHere.includes(view!.callID)) {
       if (media?.callID !== view!.callID) startMedia(view!);
       else media.engine.setMuted(view!.micMuted);
+      // Their camera is off: the last picture is no longer them. The next
+      // one shown will be a fresh one.
+      if (media?.video && !view!.peerCameraOn && media.video.hasPicture())
+        media.video.forgetPicture();
     } else stopMedia();
     if (previous && previous.state !== 'idle' && !view) {
       const ended = current.views[previous.contactID];
@@ -427,19 +655,26 @@ export function createCalls(options: {
     settle(live, previous);
   }
 
+  /**
+   * Makes a request and shows its answer, unless a later request for the same
+   * contact has been made since. Returns the answer either way, or null when
+   * the request failed or the store was reset meanwhile.
+   */
   async function run(
     contactID: string,
     request: () => Promise<unknown>,
     quiet = false,
-  ) {
-    if (!options.enabled() || !validID(contactID)) return;
+  ): Promise<CallView | null> {
+    if (!options.enabled() || !validID(contactID)) return null;
     const epoch = generation;
     const turn = (sequence[contactID] = (sequence[contactID] ?? 0) + 1);
     try {
       const view = validateCallView(await request(), contactID);
-      if (epoch === generation && turn === sequence[contactID]) apply(view);
+      if (epoch !== generation) return null;
+      if (turn === sequence[contactID]) apply(view);
+      return view;
     } catch (error) {
-      if (epoch !== generation || quiet) return;
+      if (epoch !== generation || quiet) return null;
       const message = error instanceof Error ? error.message : '';
       publish({
         notice: /^[A-Z][^<>{}]{0,160}$/.test(message)
@@ -448,6 +683,7 @@ export function createCalls(options: {
       });
       // The view may have changed even though the action failed.
       void run(contactID, () => bridge.get(contactID), true);
+      return null;
     }
   }
 
@@ -486,13 +722,35 @@ export function createCalls(options: {
       });
     },
     refresh,
-    start: (contactID: string) => act(contactID, () => bridge.start(contactID)),
-    answer(view: CallView) {
+    /** Place a voice call, or a video call when video is true. */
+    start: (contactID: string, video = false) =>
+      act(contactID, () => bridge.start(contactID, video)),
+    /** Accept the ringing call, with video only if asked and offered. */
+    answer(view: CallView, video = false) {
       if (view.state !== 'incoming') return Promise.resolve();
       return act(view.contactID, () =>
-        bridge.answer(view.contactID, view.callID),
+        bridge.answer(view.contactID, view.callID, video && view.video),
       );
     },
+    /**
+     * Switch this device's camera on or off in the answered video call.
+     * overRelay is the person's explicit choice to send video over a relay.
+     */
+    toggleCamera(view: CallView, overRelay = false) {
+      if (!answered(view) || !view.video || media?.callID !== view.callID)
+        return Promise.resolve();
+      // The person has decided: no automatic retry stands behind this.
+      cameraOnFocus = '';
+      if (media.video && media.video.camera() !== 'off')
+        return cameraOff(view.contactID, view.callID);
+      return cameraOn(view.contactID, view.callID, overRelay);
+    },
+    /** Where the other person's picture is painted; null detaches. */
+    setVideoCanvas(canvas: HTMLCanvasElement | null) {
+      media?.video?.setCanvas(canvas);
+    },
+    /** This device's live camera stream for the local preview, or null. */
+    localStream: (): MediaStream | null => media?.video?.localStream() ?? null,
     end(view: CallView) {
       if (view.state === 'idle') return Promise.resolve();
       return end(view.contactID, view.callID);
@@ -502,6 +760,29 @@ export function createCalls(options: {
       return run(view.contactID, () =>
         bridge.setMuted(view.contactID, view.callID, !view.micMuted),
       );
+    },
+    /**
+     * The connection to a contact changed between direct and relayed.
+     *
+     * Video that was held back only because of a relay starts by itself once
+     * the connection is direct; the person never had to decide anything. And
+     * video that started on a direct connection stops when the connection
+     * falls back to a relay, unless the person already chose to send this
+     * call's video that way: the camera is released and the choice is offered
+     * again. This follows the same sampled reading as the label on screen.
+     */
+    pathChanged(contactID: string) {
+      if (!media || media.contactID !== contactID || !media.video) return;
+      const callID = media.callID;
+      if (relayed(contactID)) {
+        if (media.relayChosen || media.video.camera() === 'off') return;
+        cameraOnFocus = '';
+        publish({ cameraHeld: true });
+        void cameraOff(contactID, callID);
+        return;
+      }
+      if (!current.cameraHeld || media.video.camera() !== 'off') return;
+      void cameraOn(contactID, callID, false);
     },
     dismissNotice: () => publish({ notice: '' }),
     /**
@@ -519,11 +800,15 @@ export function createCalls(options: {
      * Counters for the answered call's audio, or null when no call is
      * answered. Read on demand by the call details readout.
      */
-    stats: (): (AudioStats & { link: MediaLinkState | 'unknown' }) | null => {
+    stats: (): CallStats | null => {
       if (!media) return null;
       const audio = media.engine.stats?.();
       return audio
-        ? { ...audio, link: media.link.state?.() ?? 'unknown' }
+        ? {
+            ...audio,
+            link: media.link.state?.() ?? 'unknown',
+            video: media.video?.stats() ?? null,
+          }
         : null;
     },
     /** Storage locked or the app is closing: release everything at once. */
@@ -535,11 +820,18 @@ export function createCalls(options: {
       ringer.stop();
       stopMedia();
       endedHere.length = 0;
-      publish({ views: {}, current: null, notice: '', busy: false });
+      publish({
+        views: {},
+        current: null,
+        notice: '',
+        busy: false,
+        ...noVideo,
+      });
     },
     destroy() {
       unsubscribe?.();
       unsubscribe = null;
+      stopFocus();
       if (noticeTimer) clearTimeout(noticeTimer);
       noticeTimer = null;
       generation += 1;

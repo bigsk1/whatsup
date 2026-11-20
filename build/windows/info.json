@@ -1,17 +1,17 @@
 {
   "fixed": {
-    "file_version": "0.1.2",
-    "product_version": "0.1.2"
+    "file_version": "0.2.0",
+    "product_version": "0.2.0"
   },
   "info": {
     "0409": {
-      "FileVersion": "0.1.2",
-      "ProductVersion": "0.1.2",
+      "FileVersion": "0.2.0",
+      "ProductVersion": "0.2.0",
       "CompanyName": "bigsk1",
       "FileDescription": "Private one-to-one desktop messenger",
       "LegalCopyright": "Copyright (c) 2026 bigsk1",
       "ProductName": "WhatsUp",
-      "Comments": "Unsigned preview"
+      "Comments": "Not code-signed"
     }
   }
 }

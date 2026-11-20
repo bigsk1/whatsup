@@ -1,17 +1,17 @@
 # Versions and compatibility
 
-WhatsUp's current preview is **0.1.2**. A version
+WhatsUp's current version is **0.2.0**. A version
 identifies an application revision; it does not certify security, completeness
 or release approval.
 
 ## Application version and build identifier
 
 The application version appears in Settings. A separate build identifier
-distinguishes an exact rebuild of the same version. Preview bundles may also
+distinguishes an exact rebuild of the same version. Release bundles may also
 include checksums and a build manifest.
 
 Rebuilding an application or updating documentation does not require a new
-application version. Distinct delivered preview revisions can advance the patch
+application version. Distinct delivered revisions can advance the patch
 number, such as 0.0.6 to 0.0.7. Minor and major versions mark deliberate product
 milestones rather than individual edits.
 
@@ -20,7 +20,8 @@ release signature.
 
 ## Device and data compatibility
 
-Use compatible builds on both devices. The current preview supports text with
+Use compatible builds on both devices. Voice and video calls need 0.2.0 or
+newer on both devices. The current version supports text with
 the previous messaging protocol; attachment and contact-control features need
 compatible current builds. Older incompatible peers receive an authenticated
 update notice instead of silently changing identity pins. Refresh both builds
@@ -41,11 +42,10 @@ Reconnecting or changing a display name does not change a device's identity.
 Forgetting a contact preserves that device identity but removes its saved
 association and conversation. Creating a new identity produces a new fingerprint.
 
-## Preview status
+## Release status
 
-Windows NSIS and Ubuntu DEB packages are unsigned previews. Release titles use
-**vX.Y.Z (unsigned preview)**. SHA-256 checksums identify file bytes, while GitHub
+Windows NSIS and Ubuntu DEB packages are unsigned. Release titles use
+**vX.Y.Z (unsigned)**. SHA-256 checksums identify file bytes, while GitHub
 build attestations identify the source and workflow. Neither is Authenticode
-signing or a security certification. Signing is the next Windows release gate;
-SignPath Foundation is a candidate once the repository is public. Automatic
-updates remain disabled.
+signing or a security certification. Automatic updates remain disabled.
+Releases up to 0.1.2 were labelled previews.

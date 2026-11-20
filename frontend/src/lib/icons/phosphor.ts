@@ -30,6 +30,8 @@ import MagnifyingGlass from 'phosphor-svelte/lib/MagnifyingGlass';
 import MagnifyingGlassMinus from 'phosphor-svelte/lib/MagnifyingGlassMinus';
 import MagnifyingGlassPlus from 'phosphor-svelte/lib/MagnifyingGlassPlus';
 import Microphone from 'phosphor-svelte/lib/Microphone';
+import VideoCamera from 'phosphor-svelte/lib/VideoCamera';
+import VideoCameraSlash from 'phosphor-svelte/lib/VideoCameraSlash';
 import MicrophoneSlash from 'phosphor-svelte/lib/MicrophoneSlash';
 import Palette from 'phosphor-svelte/lib/Palette';
 import PaperPlaneRight from 'phosphor-svelte/lib/PaperPlaneRight';
@@ -113,4 +115,6 @@ export const phosphorIcons = {
   phoneEnd: PhoneDisconnect,
   mic: Microphone,
   micOff: MicrophoneSlash,
+  video: VideoCamera,
+  videoOff: VideoCameraSlash,
 } satisfies Record<IconName, unknown>;

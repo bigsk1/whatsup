@@ -399,7 +399,7 @@ test('version opens the fixed repository through the native browser only when cl
     name: 'Open WhatsUp on GitHub',
     exact: true,
   });
-  await expect(version).toContainText(`v${appVersion} preview`);
+  await expect(version).toHaveText(`v${appVersion}`);
   expect(openedURLs).toEqual([]);
   await version.click();
   await expect
@@ -739,7 +739,7 @@ for (const state of ['authentication-failed', 'update-required'] as const) {
     const warning = page.getByRole('alert');
     await expect(warning).toContainText(
       state === 'update-required'
-        ? 'Update required: update both devices to the latest WhatsUp preview'
+        ? 'Update required: update both devices to the latest WhatsUp version'
         : 'The saved contact could not authenticate.',
     );
     await expect(page.getByRole('log', { name: 'Messages' })).toContainText(
@@ -782,7 +782,7 @@ for (const state of ['capacity-reached', 'peer-capacity-reached'] as const) {
     const warning = page.getByRole('alert');
     await expect(warning).toContainText(
       state === 'capacity-reached'
-        ? "This preview's local message storage is full."
+        ? "This device's local message storage is full."
         : "Your contact's message storage is full.",
     );
     await expect(page.getByRole('log', { name: 'Messages' })).toContainText(

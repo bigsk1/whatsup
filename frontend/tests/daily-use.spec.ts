@@ -185,8 +185,15 @@ for (const viewport of [
       exact: true,
     });
     const rows = card.locator('label');
-    await expect(rows).toHaveCount(7);
-    // Voice calls are off until switched on, and the ring option waits for them.
+    await expect(rows).toHaveCount(8);
+    // Voice calls are off until switched on, and the ring and video options
+    // wait for them.
+    await expect(
+      card.getByRole('checkbox', { name: 'Allow video calls', exact: true }),
+    ).not.toBeChecked();
+    await expect(
+      card.getByRole('checkbox', { name: 'Allow video calls', exact: true }),
+    ).toBeDisabled();
     await expect(
       card.getByRole('checkbox', { name: 'Allow voice calls', exact: true }),
     ).not.toBeChecked();

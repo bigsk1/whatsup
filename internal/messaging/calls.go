@@ -84,7 +84,8 @@ const (
 	callStart callRequestKind = iota + 1
 	callAnswer
 	callEnd
-	callSetMedia
+	callSetMuted
+	callSetCamera
 	callEnforce
 )
 
@@ -224,9 +225,18 @@ func (m *Manager) CallSettingsChanged(ctx context.Context) {
 	_, _ = m.callDo(ctx, &callRequest{kind: callEnforce})
 }
 
-// SetCallMedia records and announces this side's mute and camera state.
-func (m *Manager) SetCallMedia(ctx context.Context, id call.ID, micMuted, cameraOn bool) (call.Snapshot, error) {
-	return m.callDo(ctx, &callRequest{kind: callSetMedia, id: id, micMuted: micMuted, cameraOn: cameraOn})
+// SetCallMuted records and announces this side's mute state, and nothing
+// else. The session loop owns the call's state: each control changes its own
+// setting there, so two controls used at the same moment cannot overwrite one
+// another with what they last saw.
+func (m *Manager) SetCallMuted(ctx context.Context, id call.ID, muted bool) (call.Snapshot, error) {
+	return m.callDo(ctx, &callRequest{kind: callSetMuted, id: id, micMuted: muted})
+}
+
+// SetCallCamera records and announces this side's camera state, and nothing
+// else.
+func (m *Manager) SetCallCamera(ctx context.Context, id call.ID, on bool) (call.Snapshot, error) {
+	return m.callDo(ctx, &callRequest{kind: callSetCamera, id: id, cameraOn: on})
 }
 
 func (m *Manager) callMedia(id call.ID) *callMediaRun {
@@ -420,8 +430,10 @@ func (r *callRuntime) request(request *callRequest) error {
 		effects, err = r.machine.Accept(now, request.id, media, request.codecs, r.env(false))
 	case callEnd:
 		effects, err = r.machine.Hangup(now, request.id, call.EndHungUp)
-	case callSetMedia:
-		effects, err = r.machine.SetMedia(request.id, request.micMuted, request.cameraOn)
+	case callSetMuted:
+		effects, err = r.machine.SetMuted(request.id, request.micMuted)
+	case callSetCamera:
+		effects, err = r.machine.SetCamera(request.id, request.cameraOn)
 	case callEnforce:
 		effects = r.machine.Enforce(now, r.env(false))
 	default:
@@ -540,12 +552,20 @@ func (r *Registry) CallSettingsChanged(ctx context.Context) {
 	}
 }
 
-func (r *Registry) SetCallMedia(ctx context.Context, id string, callID call.ID, micMuted, cameraOn bool) (call.Snapshot, error) {
+func (r *Registry) SetCallMuted(ctx context.Context, id string, callID call.ID, muted bool) (call.Snapshot, error) {
 	m, err := r.manager(id)
 	if err != nil {
 		return call.Snapshot{}, err
 	}
-	return m.SetCallMedia(ctx, callID, micMuted, cameraOn)
+	return m.SetCallMuted(ctx, callID, muted)
+}
+
+func (r *Registry) SetCallCamera(ctx context.Context, id string, callID call.ID, on bool) (call.Snapshot, error) {
+	m, err := r.manager(id)
+	if err != nil {
+		return call.Snapshot{}, err
+	}
+	return m.SetCallCamera(ctx, callID, on)
 }
 
 func (r *Registry) SendCallAudio(id string, callID call.ID, frame []byte, timestamp uint32) error {

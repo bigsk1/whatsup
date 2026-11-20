@@ -285,7 +285,10 @@ func (m *Machine) answered(now time.Time, media Media, codec Codec, answer ID, e
 	m.deadline = now.Add(m.cfg.ConnectTimeout)
 	m.mediaOpen = true
 	m.micMuted, m.peerMicMuted = false, false
-	m.cameraOn, m.peerCameraOn = media == Video, media == Video
+	// A camera is on only once its owner has said so. Answering a video call
+	// agrees that video may be sent; it does not switch a camera on, and the
+	// capture gate follows this state.
+	m.cameraOn, m.peerCameraOn = false, false
 	effects.OpenMedia = &Plan{Call: m.id, Answer: answer, Video: media == Video, Codec: codec}
 	effects.Changed = true
 }
@@ -408,6 +411,18 @@ func (m *Machine) SetMedia(id ID, micMuted, cameraOn bool) (Effects, error) {
 	}
 	m.micMuted, m.cameraOn = micMuted, cameraOn
 	return Effects{Send: []Frame{{Kind: KindMediaState, Call: id, MicMuted: micMuted, CameraOn: cameraOn}}, Changed: true}, nil
+}
+
+// SetMuted changes only this side's microphone state. The camera stays as the
+// machine has it, so a mute cannot carry an out-of-date camera state with it.
+func (m *Machine) SetMuted(id ID, muted bool) (Effects, error) {
+	return m.SetMedia(id, muted, m.cameraOn)
+}
+
+// SetCamera changes only this side's camera state. The microphone stays as
+// the machine has it, so switching the camera can never undo a mute.
+func (m *Machine) SetCamera(id ID, on bool) (Effects, error) {
+	return m.SetMedia(id, m.micMuted, on)
 }
 
 // RequestKeyframe asks the peer's video encoder for a fresh keyframe.

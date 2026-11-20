@@ -2,14 +2,17 @@
 
 WhatsUp is a private desktop messenger for Windows and Linux. You pair with each
 person once, using an invitation that works a single time, and from then on your
-two computers talk over an encrypted connection: messages, files and voice calls.
+two computers talk over an encrypted connection: messages, files, voice calls
+and video calls.
 There is no account to create and no server that stores your messages. Every
 conversation is between exactly two devices; there are no group chats.
 
-![Stick figure animation introducing WhatsUp, a private desktop messenger](docs/images/whatsup-stick.webp)
 
-> WhatsUp **0.1.2** is a preview release. Windows installers are not yet
-> code-signed and automatic updates are off. The [security information](SECURITY.md)
+![The Appearance page in Settings](docs/images/appearance-settings.png)
+
+
+> Current version: **0.2.0**. The Windows installer is not code-signed and
+> updates are installed by hand. The [security information](SECURITY.md)
 > describes the design in detail, including its current limits.
 
 ## Private by design
@@ -30,20 +33,21 @@ conversation is between exactly two devices; there are no group chats.
 
 ## Getting started
 
-Install the preview on both computers, pair once, then start chatting. Use the
-same preview version on both devices when possible. Download packages only from
-this repository's Releases page when a preview is provided.
+Install WhatsUp on both computers, pair once, then start chatting. Use the same
+version on both devices when possible. Download packages only from this
+repository's Releases page.
 
 ### Windows
 
-Run `WhatsUp-0.1.2-windows-x64-setup.exe`. It installs for your Windows account
+Run `WhatsUp-0.2.0-windows-x64-setup.exe`. It installs for your Windows account
 without changing your existing identity, contacts or history. Quit WhatsUp from
 its tray before upgrading. Windows 10 or later on x64 is required, along with
 Microsoft's [WebView2 Evergreen Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/).
 The installer checks for the runtime; it does not download it automatically.
 
-An unsigned preview may show a SmartScreen warning. Verify the download first.
-If you trust its source and accept the preview, choose **More info → Run anyway**.
+The installer is not code-signed, so Windows may show a SmartScreen warning.
+Verify the download first. If you trust its source, choose **More info → Run
+anyway**.
 Do not disable SmartScreen globally. A managed computer may block unsigned apps.
 
 ### Ubuntu
@@ -51,7 +55,7 @@ Do not disable SmartScreen globally. A managed computer may block unsigned apps.
 On Ubuntu 24.04 x64, install the downloaded package in a terminal:
 
 ```bash
-sudo apt install ./whatsup_0.1.2_amd64.deb
+sudo apt install ./whatsup_0.2.0_amd64.deb
 ```
 
 The package installs the launcher, runtime dependencies and the scoped AppArmor
@@ -66,10 +70,10 @@ For installation on Arch Linux or Omarchy, follow the
 
 ### Verify a download
 
-Each preview includes `SHA256SUMS` and a dependency SBOM. On Windows:
+Each release includes `SHA256SUMS` and a dependency SBOM. On Windows:
 
 ```powershell
-Get-FileHash .\WhatsUp-0.1.2-windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\WhatsUp-0.2.0-windows-x64-setup.exe -Algorithm SHA256
 ```
 
 Compare the entire hash with that file's line in `SHA256SUMS`. On Ubuntu, with
@@ -79,22 +83,21 @@ the downloaded package and checksum file in the same folder:
 sha256sum --ignore-missing --check SHA256SUMS
 ```
 
-A checksum detects changed bytes; it does not authenticate the publisher. Once
-a preview has been built by GitHub release CI, verify its build attestation with
-GitHub CLI:
+A checksum detects changed bytes; it does not authenticate the publisher.
+Releases are built by GitHub release CI. Verify a package's build attestation
+with GitHub CLI:
 
 ```text
-gh attestation verify WhatsUp-0.1.2-windows-x64-setup.exe --repo bigsk1/whatsup --signer-workflow bigsk1/whatsup/.github/workflows/release.yml
-gh attestation verify whatsup_0.1.2_amd64.deb --repo bigsk1/whatsup --signer-workflow bigsk1/whatsup/.github/workflows/release.yml
+gh attestation verify WhatsUp-0.2.0-windows-x64-setup.exe --repo bigsk1/whatsup --signer-workflow bigsk1/whatsup/.github/workflows/release.yml
+gh attestation verify whatsup_0.2.0_amd64.deb --repo bigsk1/whatsup --signer-workflow bigsk1/whatsup/.github/workflows/release.yml
 ```
 
 An attestation links a package to its source and workflow. It is not Windows
-code signing or a security audit. Releases are labelled **vX.Y.Z (unsigned
-preview)** until Authenticode signing is available. SignPath Foundation is a
-candidate after the repository is public. In-app updates stay disabled.
+code signing or a security audit. Releases are labelled **vX.Y.Z (unsigned)**:
+the packages are not Authenticode-signed. In-app updates stay disabled.
 
 Next, follow [Pair with someone](#pair-with-someone) and choose a relay service
-you trust. Before depending on a preview, use **Settings → Security & recovery →
+you trust. Before depending on WhatsUp, use **Settings → Security & recovery →
 Export recovery copy…** and keep the export and its recovery passphrase safe.
 
 ## What it does
@@ -105,8 +108,8 @@ Export recovery copy…** and keep the export and its recovery passphrase safe.
   what you wrote once your contact's app is running again.
 - Photos, videos and files up to 2 GiB each. The receiver approves every
   transfer, and transfers can be paused, resumed or cancelled.
-- Voice calls with a connected contact, encrypted between your two devices.
-  Calls stay off until you turn them on.
+- Voice and video calls with a connected contact, encrypted between your two
+  devices. Calls stay off until you turn them on.
 - Optional shared display names, and private nicknames that never leave your
   device.
 - Optional profile pictures with separate controls for sharing your photo and
@@ -140,7 +143,7 @@ dark mode, pick a text size and turn animations and effects off. Animations stop
 on their own when the system asks for reduced motion. Every font and icon ships
 inside the app, so nothing loads from the network.
 
-![The Appearance page in Settings](docs/images/appearance-settings.png)
+![Stick figure animation introducing WhatsUp, a private desktop messenger](docs/images/whatsup-stick.webp)
 
 ## Start and stop
 
@@ -198,7 +201,7 @@ original identity stays pinned.
 
 If the other device runs an old, incompatible version, WhatsUp sends it an update
 notice once it has authenticated. Current and previous protocol versions can still exchange text, but some
-newer features need both devices on the current version. Use the same preview on
+newer features need both devices on the current version. Use the same version on
 both devices when you can.
 
 ## Messages
@@ -281,11 +284,11 @@ Both devices need **0.0.13 or later** for acknowledged cancellation. Versions
 0.0.11 and 0.0.12 can't confirm a remote cancellation, so the pending notice can
 stay until both devices are updated.
 
-## Voice calls
+## Voice and video calls
 
 Voice calls are off until you turn on **Settings → App behavior → Allow voice
-calls**. Both people need a WhatsUp version with voice calls, which arrives in
-the preview after 0.1.2, and both need to be connected.
+calls**. Both people need WhatsUp 0.2.0 or newer, and both need to be
+connected.
 
 To call, open the conversation, click the phone button and confirm. The other
 person sees an incoming call and chooses **Accept** or **Decline**. Calls ring on
@@ -309,6 +312,35 @@ messages: as encrypted packets it can't read.
 For the best sound, use headphones on both ends. Without them, the other person
 may hear an echo of themselves. If your voice is too loud or too quiet for them,
 adjust your microphone level in your system's sound settings.
+
+### Video
+
+Video is a separate switch: **Settings → App behavior → Allow video calls**. It
+needs voice calls on, and like voice it works between two people who both have
+a version with video.
+
+Click the video button in a conversation to place a video call. The person you
+call can **Accept with video**, **Accept without video** or **Decline**, so
+nobody appears on camera by surprise. During the call you see their picture
+large and your own small in the corner. The camera button turns your camera off
+and on without ending the call. While their camera is off you see their profile
+picture, or their initial, in its place.
+
+Your camera is used only while your video is on in a call you placed or
+answered. It is released when you turn it off, when the call ends, when you
+switch video calls off or when you go offline. The first time, your system may
+ask whether WhatsUp may use the camera.
+
+Video is encrypted the same way as call audio. If the connection is going
+through a relay, WhatsUp holds your video back and offers **Send video over the
+relay**; once the connection is direct your video starts on its own. The same
+happens if a call falls back to a relay part-way through. Video you receive is
+always shown.
+
+On Linux, sending video depends on your system's web engine. See
+[Linux support](docs/linux-support.md#calls) for what it needs. If your camera
+can't deliver a live picture, WhatsUp says so and the call carries on with
+voice; you still see the other person.
 
 ## Settings and privacy
 
@@ -397,7 +429,7 @@ available yet.
 ## Current limits
 
 WhatsUp has no group chat, offline mailbox, conversation search or public contact
-directory. Voice calls are one-to-one, and video calls are not available yet. Support for older protocol versions is limited, and
+directory. Voice and video calls are one-to-one. Support for older protocol versions is limited, and
 an older version of the app may not be able to read local data written by a newer
 one. Native video playback hasn't been checked on every desktop environment, and
 the app hasn't been tested under every network condition. There is no signed

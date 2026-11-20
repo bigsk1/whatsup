@@ -91,4 +91,8 @@ export const pixelPaths = {
   mic: 'M10 2h4v2h-4zM8 4h2v8H8zm6 0h2v8h-2zm-4 8h4v2h-4zM5 10h2v4H5zm12 0h2v4h-2zM7 14h2v2H7zm8 0h2v2h-2zm-6 2h6v2H9zm2 2h2v2h-2zm-3 2h8v2H8z',
   micOff:
     'M2 2h2v2H2zm2 2h2v2H4zm2 2h2v2H6zm2 2h2v2H8zm2 2h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2zM10 2h4v2h-4zm4 2h2v6h-2zM5 10h2v4H5zm2 4h2v2H7zm2 2h4v2H9zm2 2h2v2h-2zm-3 2h8v2H8z',
+  video:
+    'M2 6h14v2H2zm0 2h2v8H2zm12 0h2v8h-2zM2 16h14v2H2zm14-6h2v4h-2zm2-2h2v8h-2zm2-2h2v12h-2z',
+  videoOff:
+    'M2 2h2v2H2zm2 2h2v2H4zm2 2h2v2H6zm2 2h2v2H8zm2 2h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2zM8 6h8v2H8zm6 2h2v2h-2zM2 8h2v8H2zm0 8h10v2H2zm14-6h2v2h-2zm2-2h2v6h-2zm2-2h2v10h-2z',
 } as const;

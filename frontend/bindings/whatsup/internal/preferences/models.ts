@@ -18,4 +18,10 @@ export interface Values {
      * CallRingMuted silences the ring sound; an incoming call still shows.
      */
     "callRingMuted": boolean;
+
+    /**
+     * VideoCalls allows video in calls, which uses the camera. It has no
+     * effect unless VoiceCalls is on too, and is off unless switched on.
+     */
+    "videoCalls": boolean;
 }

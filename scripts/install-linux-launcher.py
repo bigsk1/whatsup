@@ -139,6 +139,15 @@ def install_icon(data_directory: Path) -> tuple[Path, dict]:
                     "size": len(content), "width": width, "height": height}
 
 
+# The application-menu entry is named after the application ID. A desktop looks
+# the entry up by that name when the app asks for the camera, and GNOME only
+# asks when the application in front is the entry so named.
+LAUNCHER = "io.github.bigsk1.whatsup.desktop"
+# Names earlier installers used for the same entry. Left in place, they would
+# claim the running window instead of the entry above.
+LEGACY_LAUNCHERS = ("whatsup.desktop", "whatsup-development.desktop", "org.wails.whatsup.desktop")
+
+
 def desktop_entry(software: bool, icon: Path, *, hidden: bool = False) -> str:
     options = " --software-rendering" if software else ""
     icon_value = str(icon).replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
@@ -148,7 +157,7 @@ def desktop_entry(software: bool, icon: Path, *, hidden: bool = False) -> str:
         f"Exec=/opt/whatsup-development/whatsup{options}\n"
         f"TryExec=/opt/whatsup-development/whatsup\nIcon={icon_value}\n"
         "Terminal=false\nType=Application\nCategories=Network;InstantMessaging;\n"
-        "StartupWMClass=org.wails.whatsup\nX-WhatsUp-Package-Launcher=true\n"
+        "StartupWMClass=io.github.bigsk1.whatsup\nX-WhatsUp-Package-Launcher=true\n"
         + ("NoDisplay=true\n" if hidden else "")
     )
 
@@ -192,11 +201,11 @@ def pin_to_dock(result: dict) -> None:
         raise LauncherError("GNOME dock preferences are not a bounded string array")
     updated = []
     for value in favorites:
-        value = "whatsup.desktop" if value == "whatsup-development.desktop" else value
-        if value != "whatsup.desktop" or value not in updated:
+        value = LAUNCHER if value in LEGACY_LAUNCHERS else value
+        if value != LAUNCHER or value not in updated:
             updated.append(value)
-    if "whatsup.desktop" not in updated:
-        updated.append("whatsup.desktop")
+    if LAUNCHER not in updated:
+        updated.append(LAUNCHER)
     if updated != favorites:
         changed = command([*base, "set", "org.gnome.shell", "favorite-apps", repr(updated)])
         if changed.returncode:
@@ -229,11 +238,12 @@ def main() -> int:
               "dockPinned": False, "appLaunched": False, "rootChanged": False, "warnings": []}
     icon, result["icon"] = install_icon(data)
     content = desktop_entry(options.software_rendering, icon)
-    install_entry(applications / "whatsup.desktop", content, 0o644)
+    install_entry(applications / LAUNCHER, content, 0o644)
     result["menuLauncherInstalled"] = True
-    legacy = applications / "whatsup-development.desktop"
-    regular_target(legacy)
-    legacy.unlink(missing_ok=True)
+    for name in LEGACY_LAUNCHERS:
+        legacy = applications / name
+        regular_target(legacy)
+        legacy.unlink(missing_ok=True)
     result["compatibilityAliasRemoved"] = True
     for enabled, operation in [(options.desktop_shortcut, lambda: install_desktop_shortcut(content, result)),
                                (options.pin_to_dock, lambda: pin_to_dock(result))]:

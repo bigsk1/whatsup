@@ -63,18 +63,27 @@ Saved relay services cannot be changed silently by a peer. A service migration
 requires both users' authenticated approval. The operator can update its server
 list under the same service URL.
 
-## Voice calls
+## Voice and video calls
 
 Voice calls start off. **Allow voice calls** under **Settings → App behavior**
 turns them on for this device. WhatsUp uses your default microphone only during
 a call you placed or answered. A ringing call does not turn it on, and it is
 released when the call ends, when you switch voice calls off or when you go
 offline. Your operating system may show its own microphone indicator while a
-call is in progress. The camera is never used.
+call is in progress.
 
-Calls are not recorded. Audio is encrypted with fresh keys for each call, sent
-to the approved contact inside the encrypted connection, and played; nothing is
-saved to disk and no call history is kept beyond a notice on screen. The
+Video calls are a separate switch, **Allow video calls**, and also start off.
+WhatsUp uses your default camera only while your video is on in a call you
+placed or answered. Answering a video call does not have to turn it on: you can
+accept without video. The camera is released when you turn it off, when the
+call ends, when you switch video calls off or when you go offline. Your system
+may ask once whether WhatsUp may use the camera, and may show its own camera
+indicator. While a call is going through a relay, your video is held back until
+you choose to send it.
+
+Calls are not recorded. Audio and video are encrypted with fresh keys for each
+call, sent to the approved contact inside the encrypted connection, and played;
+nothing is saved to disk and no call history is kept beyond a notice on screen. The
 **Details** readout during a call shows counters and levels only. It stays on
 the device and is gone when the call ends.
 
@@ -171,7 +180,7 @@ Linux start at login uses `$XDG_CONFIG_HOME/autostart/whatsup.desktop`, normally
 Installation may also create a menu/desktop launcher and optional dock entry.
 Notifications use the desktop notification service over the user's session bus.
 
-The Windows preview installer adds files under `%LOCALAPPDATA%\Programs\WhatsUp`,
+The Windows installer adds files under `%LOCALAPPDATA%\Programs\WhatsUp`,
 a Start Menu shortcut and its own per-user uninstall registration. Uninstall
 removes those files and the matching start-at-login value, preserving local data
 and OS credentials. Notification registration/history artifacts can remain under

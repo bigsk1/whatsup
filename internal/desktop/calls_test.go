@@ -334,10 +334,10 @@ func TestVoiceCallsAreOffUntilSwitchedOnAndNeverRingADeviceThatHasThemOff(t *tes
 	if view, _ := b.service.GetCall(contact); view.Availability != "calls-off" {
 		t.Fatalf("a fresh device reports call availability %q", view.Availability)
 	}
-	if _, err := b.service.StartCall(contact); err == nil || !strings.Contains(err.Error(), "switched off") {
+	if _, err := b.service.StartCall(contact, false); err == nil || !strings.Contains(err.Error(), "switched off") {
 		t.Fatalf("a call was placed with voice calls off: %v", err)
 	}
-	if _, err := a.service.StartCall(contact); err != nil {
+	if _, err := a.service.StartCall(contact, false); err != nil {
 		t.Fatalf("a call could not be placed with voice calls on: %v", err)
 	}
 	callWait(t, "the caller to learn the contact is unavailable", func() bool {
@@ -356,7 +356,7 @@ func TestVoiceCallsAreOffUntilSwitchedOnAndNeverRingADeviceThatHasThemOff(t *tes
 // microphone gate and cannot be given a media stream, on either side.
 func TestARingingCallNeverOpensCaptureAndAnAnsweredCallDoesBeforeTheInterfaceKnows(t *testing.T) {
 	a, b, contact, network := callTestPair(t, true, true)
-	placed, err := a.service.StartCall(contact)
+	placed, err := a.service.StartCall(contact, false)
 	if err != nil || placed.State != "outgoing" || placed.CallID == "" {
 		t.Fatalf("call was not placed: %+v %v", placed, err)
 	}
@@ -377,7 +377,7 @@ func TestARingingCallNeverOpensCaptureAndAnAnsweredCallDoesBeforeTheInterfaceKno
 	}
 
 	// Answering: the gate is open by the time AnswerCall has returned the view.
-	answered, err := b.service.AnswerCall(contact, ringing.CallID)
+	answered, err := b.service.AnswerCall(contact, ringing.CallID, false)
 	if err != nil || (answered.State != "connecting" && answered.State != "active") {
 		t.Fatalf("answer failed: %+v %v", answered, err)
 	}
@@ -455,12 +455,12 @@ func TestARingingCallNeverOpensCaptureAndAnAnsweredCallDoesBeforeTheInterfaceKno
 func TestCallsOffAndLockEachEndTheCallAndCloseCapture(t *testing.T) {
 	for _, how := range []string{"calls off", "lock"} {
 		a, b, contact, _ := callTestPair(t, true, true)
-		placed, err := a.service.StartCall(contact)
+		placed, err := a.service.StartCall(contact, false)
 		if err != nil {
 			t.Fatal(err)
 		}
 		ringing := callState(t, b, contact, "incoming")
-		if _, err := b.service.AnswerCall(contact, ringing.CallID); err != nil {
+		if _, err := b.service.AnswerCall(contact, ringing.CallID, false); err != nil {
 			t.Fatal(err)
 		}
 		callState(t, a, contact, "active")
@@ -503,13 +503,13 @@ func TestCallsOffAndLockEachEndTheCallAndCloseCapture(t *testing.T) {
 
 func TestCallActionsRejectStaleOrMalformedHandles(t *testing.T) {
 	a, b, contact, _ := callTestPair(t, true, true)
-	placed, err := a.service.StartCall(contact)
+	placed, err := a.service.StartCall(contact, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	callState(t, b, contact, "incoming")
 	for _, handle := range []string{"", "not-a-call-id", "AAAAAAAAAAAAAAAAAAAAAA", strings.Repeat("A", 21) + "Q"} {
-		if _, err := b.service.AnswerCall(contact, handle); err == nil {
+		if _, err := b.service.AnswerCall(contact, handle, false); err == nil {
 			t.Errorf("answer accepted handle %q", handle)
 		}
 		if _, err := b.service.EndCall(contact, handle); err == nil {
@@ -519,7 +519,7 @@ func TestCallActionsRejectStaleOrMalformedHandles(t *testing.T) {
 	if view, _ := b.service.GetCall(contact); view.State != "incoming" || view.CallID != placed.CallID {
 		t.Fatal("a bad handle disturbed the ringing call")
 	}
-	if _, err := a.service.StartCall(contact); err == nil {
+	if _, err := a.service.StartCall(contact, false); err == nil {
 		t.Fatal("a second call was placed over the first")
 	}
 	if _, err := b.service.EndCall(contact, placed.CallID); err != nil {
@@ -530,7 +530,7 @@ func TestCallActionsRejectStaleOrMalformedHandles(t *testing.T) {
 	if _, err := a.service.GetCall(contact); err == nil {
 		t.Fatal("call state was readable while storage is locked")
 	}
-	if _, err := a.service.StartCall(contact); err == nil {
+	if _, err := a.service.StartCall(contact, false); err == nil {
 		t.Fatal("a call was placed while storage is locked")
 	}
 }
@@ -548,14 +548,14 @@ func TestRepeatedCallsFromTheSameSideEachCarryAudioBothWays(t *testing.T) {
 		var placed CallView
 		callWait(t, "the next call to be placed", func() bool {
 			var err error
-			placed, err = caller.service.StartCall(contact)
+			placed, err = caller.service.StartCall(contact, false)
 			return err == nil && placed.State == "outgoing"
 		})
 		ringing := callState(t, callee, contact, "incoming")
 		if ringing.CallID != placed.CallID {
 			t.Fatalf("call %d rang with a different ID", round)
 		}
-		view, err := callee.service.AnswerCall(contact, ringing.CallID)
+		view, err := callee.service.AnswerCall(contact, ringing.CallID, false)
 		if err != nil || !answered(view) {
 			t.Fatalf("call %d: answer failed: %+v %v", round, view, err)
 		}
@@ -627,12 +627,12 @@ func TestAudioSentBeforeTheMediaFlowOpensDoesNotEndTheStream(t *testing.T) {
 			caller, callee = b, a
 		}
 		network.openDelay.Store(int64(400 * time.Millisecond))
-		placed, err := caller.service.StartCall(contact)
+		placed, err := caller.service.StartCall(contact, false)
 		if err != nil {
 			t.Fatal(err)
 		}
 		ringing := callState(t, callee, contact, "incoming")
-		if _, err := callee.service.AnswerCall(contact, ringing.CallID); err != nil {
+		if _, err := callee.service.AnswerCall(contact, ringing.CallID, false); err != nil {
 			t.Fatal(err)
 		}
 		fromCallee, err := AttachCallMedia(callee.service, placed.CallID)
@@ -694,12 +694,12 @@ func TestAudioSentBeforeTheMediaFlowOpensDoesNotEndTheStream(t *testing.T) {
 // side, as the interface would.
 func activeTestCall(t *testing.T, a, b *callTestHost, contact string) (id string, fromA, fromB *CallMediaSession) {
 	t.Helper()
-	placed, err := a.service.StartCall(contact)
+	placed, err := a.service.StartCall(contact, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ringing := callState(t, b, contact, "incoming")
-	if _, err := b.service.AnswerCall(contact, ringing.CallID); err != nil {
+	if _, err := b.service.AnswerCall(contact, ringing.CallID, false); err != nil {
 		t.Fatal(err)
 	}
 	callState(t, a, contact, "active")
@@ -861,7 +861,7 @@ func TestBlockedCaptureMakesCallsUnavailableAndEndsACallInProgress(t *testing.T)
 	if err != nil || view.Availability != "blocked" {
 		t.Fatalf("a blocked device reports %+v (%v), want availability blocked", view, err)
 	}
-	if _, err := a.service.StartCall(contact); err == nil || !strings.Contains(err.Error(), "restarts") {
+	if _, err := a.service.StartCall(contact, false); err == nil || !strings.Contains(err.Error(), "restarts") {
 		t.Fatalf("a blocked device could place a call: %v", err)
 	}
 	// The setting cannot lift the block, and an incoming call does not ring.
@@ -875,7 +875,7 @@ func TestBlockedCaptureMakesCallsUnavailableAndEndsACallInProgress(t *testing.T)
 	}
 	rings := a.ringCount()
 	time.Sleep(call.DefaultMinOfferGap)
-	if _, err := b.service.StartCall(contact); err != nil {
+	if _, err := b.service.StartCall(contact, false); err != nil {
 		t.Fatal(err)
 	}
 	callWait(t, "the caller to learn the blocked device is unavailable", func() bool {
@@ -911,5 +911,480 @@ func TestLockingEndsTheBackgroundEffortToFinishAHangUp(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if now := attempts.Load(); now > settled+1 {
 		t.Fatalf("the background effort kept going after lock: %d attempts became %d", settled, now)
+	}
+}
+
+// allowVideo switches video calls on for a host that already allows voice.
+func allowVideo(t *testing.T, hosts ...*callTestHost) {
+	t.Helper()
+	for _, host := range hosts {
+		values, err := host.service.GetAppPreferences()
+		if err != nil {
+			t.Fatal(err)
+		}
+		values.VideoCalls = true
+		if _, err := host.service.SetAppPreferences(values); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// drained empties a media session's pending keyframe signal and frames.
+func drained(session *CallMediaSession) {
+	for {
+		select {
+		case <-session.KeyframeNeeded():
+		case <-session.Frames():
+		default:
+			return
+		}
+	}
+}
+
+func wantsKeyframe(session *CallMediaSession, within time.Duration) bool {
+	select {
+	case <-session.KeyframeNeeded():
+		return true
+	case <-time.After(within):
+		return false
+	}
+}
+
+// videoTestCall places and answers a video call and attaches a media stream on
+// each side as soon as that side learns of the answer, as the interface does.
+func videoTestCall(t *testing.T, caller, callee *callTestHost, contact string) (id string, fromCaller, fromCallee *CallMediaSession) {
+	t.Helper()
+	var placed CallView
+	callWait(t, "the video call to be placed", func() bool {
+		var err error
+		placed, err = caller.service.StartCall(contact, true)
+		return err == nil && placed.State == "outgoing"
+	})
+	if !placed.Video || placed.CameraOn {
+		t.Fatalf("a placed video call is shown as %+v", placed)
+	}
+	ringing := callState(t, callee, contact, "incoming")
+	if !ringing.Video {
+		t.Fatal("a video offer did not ring as a video call")
+	}
+	answered, err := callee.service.AnswerCall(contact, ringing.CallID, true)
+	if err != nil || !answered.Video {
+		t.Fatalf("the video call was not answered with video: %+v %v", answered, err)
+	}
+	if fromCallee, err = AttachCallMedia(callee.service, placed.CallID); err != nil {
+		t.Fatal(err)
+	}
+	callWait(t, "the caller to see the answer", func() bool {
+		v, _ := caller.service.GetCall(contact)
+		return v.State == "connecting" || v.State == "active"
+	})
+	if fromCaller, err = AttachCallMedia(caller.service, placed.CallID); err != nil {
+		t.Fatal(err)
+	}
+	return placed.CallID, fromCaller, fromCallee
+}
+
+func TestVideoCallsNeedBothSettingsAndFallBackToVoiceWithoutTakingTheCamera(t *testing.T) {
+	a, b, contact, _ := callTestPair(t, true, true)
+	// Video off on the caller: no video call can be placed, voice still can.
+	if _, err := a.service.StartCall(contact, true); err == nil || !strings.Contains(err.Error(), "Video calls are switched off") {
+		t.Fatalf("a video call was placed with video calls off: %v", err)
+	}
+	if view, _ := a.service.GetCall(contact); view.State != "idle" {
+		t.Fatalf("a refused video call left %+v", view)
+	}
+	// Video on for the caller only: the other device rings as a voice call,
+	// and asking for video when answering still answers with voice.
+	allowVideo(t, a)
+	placed, err := a.service.StartCall(contact, true)
+	if err != nil || !placed.Video {
+		t.Fatalf("video call not placed: %+v %v", placed, err)
+	}
+	ringing := callState(t, b, contact, "incoming")
+	if ringing.Video {
+		t.Fatal("a device with video calls off rang for a video call")
+	}
+	answered, err := b.service.AnswerCall(contact, ringing.CallID, true)
+	if err != nil || answered.Video {
+		t.Fatalf("answer with video calls off: %+v %v", answered, err)
+	}
+	callWait(t, "the caller to see a voice call", func() bool {
+		v, _ := a.service.GetCall(contact)
+		return v.State == "active" && !v.Video
+	})
+	for name, host := range map[string]*callTestHost{"caller": a, "callee": b} {
+		if !CallCaptureAllowed(host.service) || CallCameraAllowed(host.service) {
+			t.Fatalf("%s: a voice call left microphone=%v camera=%v", name, CallCaptureAllowed(host.service), CallCameraAllowed(host.service))
+		}
+		if _, err := host.service.SetCallCamera(contact, placed.CallID, true, false); err == nil {
+			t.Fatalf("%s switched its camera on in a voice call", name)
+		}
+		if CallCameraAllowed(host.service) {
+			t.Fatalf("%s: the camera gate opened in a voice call", name)
+		}
+	}
+	// Video without voice is nothing: the setting alone allows no camera.
+	c, d, other, _ := callTestPair(t, false, false)
+	allowVideo(t, c, d)
+	if _, err := c.service.StartCall(other, true); err == nil {
+		t.Fatal("a video call was placed with voice calls off")
+	}
+}
+
+func TestVideoCallOpensTheCameraOnlyWhileItIsSwitchedOnAndCarriesFrames(t *testing.T) {
+	a, b, contact, _ := callTestPair(t, true, true)
+	allowVideo(t, a, b)
+	id, fromA, fromB := videoTestCall(t, a, b, contact)
+	callState(t, a, contact, "active")
+	callState(t, b, contact, "active")
+	// Answered, but nobody has switched a camera on: microphone only.
+	for name, host := range map[string]*callTestHost{"caller": a, "callee": b} {
+		if !CallCaptureAllowed(host.service) || CallCameraAllowed(host.service) {
+			t.Fatalf("%s before any camera: microphone=%v camera=%v", name, CallCaptureAllowed(host.service), CallCameraAllowed(host.service))
+		}
+	}
+	// Video sent with the camera recorded as off goes nowhere, without error.
+	drained(fromB)
+	if err := fromA.SendVideo(1, true, []byte{1, 2, 3}); err != nil {
+		t.Fatalf("video with the camera off ended the stream: %v", err)
+	}
+	select {
+	case frame := <-fromB.Frames():
+		t.Fatalf("a frame arrived while the sender's camera was off: %+v", frame)
+	case <-time.After(150 * time.Millisecond):
+	}
+	// The caller switches its camera on: its gate opens, the other's does not,
+	// and the other device is told.
+	view, err := a.service.SetCallCamera(contact, id, true, false)
+	if err != nil || !view.CameraOn {
+		t.Fatalf("camera not switched on: %+v %v", view, err)
+	}
+	if !CallCameraAllowed(a.service) || CallCameraAllowed(b.service) {
+		t.Fatalf("after the caller switched its camera on: caller=%v callee=%v", CallCameraAllowed(a.service), CallCameraAllowed(b.service))
+	}
+	callWait(t, "the callee to learn the caller's camera is on", func() bool {
+		v, _ := b.service.GetCall(contact)
+		return v.PeerCameraOn && !v.CameraOn
+	})
+	// Frames flow, keyframe flag and data intact, in order.
+	key := bytes.Repeat([]byte{0xAB}, 5000)
+	delta := bytes.Repeat([]byte{0xCD}, 700)
+	if err := fromA.SendVideo(3000, true, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := fromA.SendVideo(6000, false, delta); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []CallMediaFrame{{Video: true, Key: true, Timestamp: 3000, Data: key}, {Video: true, Timestamp: 6000, Data: delta}} {
+		select {
+		case got := <-fromB.Frames():
+			if got.Video != want.Video || got.Key != want.Key || got.Timestamp != want.Timestamp || !bytes.Equal(got.Data, want.Data) {
+				t.Fatalf("video frame %d arrived as kind video=%v key=%v ts=%d len=%d", i, got.Video, got.Key, got.Timestamp, len(got.Data))
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("video frame %d never arrived", i)
+		}
+	}
+	// Audio still flows beside it and is not marked as video.
+	if err := fromB.SendAudio(960, []byte{9, 9}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-fromA.Frames():
+		if got.Video || !bytes.Equal(got.Data, []byte{9, 9}) {
+			t.Fatalf("audio arrived as %+v", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("audio never arrived during a video call")
+	}
+	// Camera off again closes the gate; muting does not switch it back on or off.
+	if _, err := a.service.SetCallCamera(contact, id, false, false); err != nil || CallCameraAllowed(a.service) {
+		t.Fatalf("camera off left the gate open: %v", err)
+	}
+	if _, err := a.service.SetCallCamera(contact, id, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if view, err := a.service.SetCallMuted(contact, id, true); err != nil || !view.CameraOn || !view.MicMuted || !CallCameraAllowed(a.service) {
+		t.Fatalf("muting changed the camera: %+v %v", view, err)
+	}
+	// Hang-up closes both gates at once.
+	if _, err := a.service.EndCall(contact, id); err != nil {
+		t.Fatal(err)
+	}
+	if CallCaptureAllowed(a.service) || CallCameraAllowed(a.service) {
+		t.Fatal("a gate stayed open after hang-up")
+	}
+	callState(t, b, contact, "idle")
+	if CallCameraAllowed(b.service) || fromA.SendVideo(1, true, []byte{1}) == nil {
+		t.Fatal("video was still possible after the call ended")
+	}
+}
+
+// The acceptance check for video start-up, on the Go side: whatever video is
+// sent before the media flow is ready is dropped without ending the stream,
+// and each device's encoder is asked for a fresh keyframe the moment the flow
+// is ready. On a second call too.
+func TestVideoSentBeforeTheFlowIsReadyIsDroppedAndAFreshKeyframeIsAskedForOnEveryCall(t *testing.T) {
+	a, b, contact, network := callTestPair(t, true, true)
+	allowVideo(t, a, b)
+	network.openDelay.Store(int64(400 * time.Millisecond))
+	for round := 1; round <= 3; round++ {
+		caller, callee := a, b
+		if round == 3 {
+			caller, callee = b, a
+		}
+		id, fromCaller, fromCallee := videoTestCall(t, caller, callee, contact)
+		for name, item := range map[string]struct {
+			host    *callTestHost
+			session *CallMediaSession
+		}{"caller": {caller, fromCaller}, "callee": {callee, fromCallee}} {
+			if _, err := item.host.service.SetCallCamera(contact, id, true, false); err != nil {
+				t.Fatalf("call %d: %s camera: %v", round, name, err)
+			}
+			// The first keyframe, sent at once, before the flow can be open.
+			if err := item.session.SendVideo(1, true, []byte{1, 1, 1}); err != nil {
+				t.Fatalf("call %d: early video from the %s ended its stream: %v", round, name, err)
+			}
+			select {
+			case <-item.session.Done():
+				t.Fatalf("call %d: the %s's stream closed while connecting", round, name)
+			default:
+			}
+		}
+		callState(t, caller, contact, "active")
+		callState(t, callee, contact, "active")
+		for name, session := range map[string]*CallMediaSession{"caller": fromCaller, "callee": fromCallee} {
+			if !wantsKeyframe(session, 2*time.Second) {
+				t.Fatalf("call %d: the %s's encoder was not asked for a keyframe when the flow became ready", round, name)
+			}
+		}
+		// The fresh keyframe then arrives.
+		fresh := []byte{byte(round), 7, 7, 7}
+		drained(fromCallee)
+		if err := fromCaller.SendVideo(9000, true, fresh); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case got := <-fromCallee.Frames():
+			if !got.Video || !got.Key || !bytes.Equal(got.Data, fresh) {
+				t.Fatalf("call %d: the fresh keyframe arrived as %+v", round, got)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("call %d: the fresh keyframe never arrived", round)
+		}
+		// A stream attached after the flow is up starts with a fresh picture too.
+		late, err := AttachCallMedia(caller.service, id)
+		if err != nil || !wantsKeyframe(late, time.Second) {
+			t.Fatalf("call %d: a stream attached to an active video call was not asked for a keyframe (%v)", round, err)
+		}
+		if _, err := caller.service.EndCall(contact, id); err != nil {
+			t.Fatal(err)
+		}
+		callState(t, caller, contact, "idle")
+		callState(t, callee, contact, "idle")
+		time.Sleep(call.DefaultMinOfferGap)
+	}
+}
+
+func TestTheOtherDevicesKeyframeRequestReachesThisDevicesEncoder(t *testing.T) {
+	a, b, contact, _ := callTestPair(t, true, true)
+	allowVideo(t, a, b)
+	id, fromA, fromB := videoTestCall(t, a, b, contact)
+	callState(t, a, contact, "active")
+	callState(t, b, contact, "active")
+	if _, err := a.service.SetCallCamera(contact, id, true, false); err != nil {
+		t.Fatal(err)
+	}
+	drained(fromA)
+	drained(fromB)
+	// The receiver gets video it cannot decode: no keyframe came first. It asks
+	// the sender, and the request must surface at the sender's stream.
+	for i := 1; i <= 3; i++ {
+		if err := fromA.SendVideo(uint32(i)*3000, false, []byte{byte(i), 2, 3}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !wantsKeyframe(fromA, 3*time.Second) {
+		t.Fatal("the receiver's keyframe request did not reach the sender's encoder")
+	}
+}
+
+func TestMuteAndCameraChangedAtTheSameMomentEachKeepTheirOwnSetting(t *testing.T) {
+	a, b, contact, _ := callTestPair(t, true, true)
+	allowVideo(t, a, b)
+	id, _, _ := videoTestCall(t, a, b, contact)
+	callState(t, a, contact, "active")
+	// The other device accepts only so many call frames a second, as it would
+	// from anyone, so the rounds are paced like a person pressing buttons.
+	for round := 0; round < 12; round++ {
+		time.Sleep(250 * time.Millisecond)
+		muted, camera := round%2 == 0, round%3 != 0
+		// Begin from the opposite of both, so each request has work to do.
+		if _, err := a.service.SetCallMuted(contact, id, !muted); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.service.SetCallCamera(contact, id, !camera, false); err != nil {
+			t.Fatal(err)
+		}
+		var both sync.WaitGroup
+		both.Add(2)
+		go func() {
+			defer both.Done()
+			_, _ = a.service.SetCallMuted(contact, id, muted)
+		}()
+		go func() {
+			defer both.Done()
+			_, _ = a.service.SetCallCamera(contact, id, camera, false)
+		}()
+		both.Wait()
+		view, err := a.service.GetCall(contact)
+		if err != nil || view.MicMuted != muted || view.CameraOn != camera {
+			t.Fatalf("round %d: asked for muted=%v camera=%v, the call has muted=%v camera=%v (%v)",
+				round, muted, camera, view.MicMuted, view.CameraOn, err)
+		}
+		if CallCameraAllowed(a.service) != camera {
+			t.Fatalf("round %d: camera gate %v with the camera %v", round, CallCameraAllowed(a.service), camera)
+		}
+	}
+	// A camera change never unmutes: mute, then toggle the camera many times.
+	if _, err := a.service.SetCallMuted(contact, id, true); err != nil {
+		t.Fatal(err)
+	}
+	for round := 0; round < 4; round++ {
+		time.Sleep(120 * time.Millisecond)
+		if view, err := a.service.SetCallCamera(contact, id, round%2 == 0, false); err != nil || !view.MicMuted {
+			t.Fatalf("a camera change unmuted the microphone: %+v %v", view, err)
+		}
+	}
+	callWait(t, "the other device to see the microphone still muted", func() bool {
+		view, _ := b.service.GetCall(contact)
+		return view.PeerMicMuted
+	})
+}
+
+func TestASlowRefreshCannotReopenCaptureAfterTheCallIsOver(t *testing.T) {
+	for _, how := range []string{"hang-up", "the other side hanging up", "lock"} {
+		a, b, contact, _ := callTestPair(t, true, true)
+		id, _, _ := activeTestCall(t, a, b, contact)
+		// One refresh on b has read the answered call and is held before it
+		// records what it read.
+		entered, release := make(chan struct{}), make(chan struct{})
+		// Only the first refresh is held. Later ones pass straight through:
+		// a sync.Once would make them wait and hide what is being tested.
+		var held atomic.Bool
+		hook := func() {
+			if held.CompareAndSwap(false, true) {
+				close(entered)
+				<-release
+			}
+		}
+		b.service.callRefreshForTest.Store(&hook)
+		refreshed := make(chan struct{})
+		go func() {
+			_, _ = b.service.GetCall(contact)
+			close(refreshed)
+		}()
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: no refresh reached the hold", how)
+		}
+		// Meanwhile the call ends.
+		over := make(chan struct{})
+		go func() {
+			switch how {
+			case "hang-up":
+				_, _ = b.service.EndCall(contact, id)
+			case "the other side hanging up":
+				_, _ = a.service.EndCall(contact, id)
+				// Give b's session time to hear it and queue its own refresh.
+				time.Sleep(300 * time.Millisecond)
+			case "lock":
+				b.service.LockStorage()
+			}
+			close(over)
+		}()
+		if how != "the other side hanging up" {
+			// The end cannot be recorded ahead of the refresh that read first.
+			select {
+			case <-over:
+				t.Fatalf("%s was recorded while an earlier refresh was still unrecorded", how)
+			case <-time.After(200 * time.Millisecond):
+			}
+		} else {
+			<-over
+		}
+		close(release)
+		for name, done := range map[string]chan struct{}{"the held refresh": refreshed, how: over} {
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("%s: %s never finished", how, name)
+			}
+		}
+		b.service.callRefreshForTest.Store(nil)
+		if how != "lock" {
+			callWait(t, how+": the call to be idle", func() bool {
+				view, err := b.service.GetCall(contact)
+				return err == nil && view.State == "idle"
+			})
+		}
+		// Closed, and it stays closed: nothing writes the answered call back.
+		for check := 0; check < 4; check++ {
+			if CallCaptureAllowed(b.service) || CallCameraAllowed(b.service) || b.capOpen.Load() {
+				t.Fatalf("%s: capture is allowed after the call was over (check %d)", how, check)
+			}
+			time.Sleep(60 * time.Millisecond)
+		}
+	}
+}
+
+func TestVideoOverARelayNeedsAnExplicitChoiceAndVideoOffEndsAVideoCallLocally(t *testing.T) {
+	a, b, contact, _ := callTestPair(t, true, true)
+	allowVideo(t, a, b)
+	a.service.calls.retryGap.Store(int64(40 * time.Millisecond))
+	relayed := true
+	a.service.callPathForTest = func(string) string {
+		if relayed {
+			return "Relayed"
+		}
+		return "Direct"
+	}
+	id, fromA, _ := videoTestCall(t, a, b, contact)
+	callState(t, a, contact, "active")
+	if _, err := a.service.SetCallCamera(contact, id, true, false); err == nil || !strings.Contains(err.Error(), "relay") {
+		t.Fatalf("the camera went on over a relay without the choice: %v", err)
+	}
+	if CallCameraAllowed(a.service) {
+		t.Fatal("the camera gate opened although video over the relay was not chosen")
+	}
+	if view, err := a.service.SetCallCamera(contact, id, true, true); err != nil || !view.CameraOn || !CallCameraAllowed(a.service) {
+		t.Fatalf("choosing video over the relay did not switch the camera on: %+v %v", view, err)
+	}
+	// Switching the camera off never needs the choice.
+	if _, err := a.service.SetCallCamera(contact, id, false, false); err != nil || CallCameraAllowed(a.service) {
+		t.Fatalf("camera off over a relay: %v", err)
+	}
+	relayed = false
+	if _, err := a.service.SetCallCamera(contact, id, true, false); err != nil {
+		t.Fatalf("camera on over a direct path: %v", err)
+	}
+
+	// Video calls switched off mid-call: this device's video call is over at
+	// once, before the session enforces anything, and stays over.
+	a.service.callEnforceForTest = func(context.Context, *messaging.Registry) {
+		endedLocally(t, a, contact, id, fromA, "before the session was asked to enforce video off")
+		if CallCameraAllowed(a.service) {
+			t.Fatal("the camera gate was open when the session was asked to enforce video off")
+		}
+	}
+	values, _ := a.service.GetAppPreferences()
+	values.VideoCalls = false
+	if _, err := a.service.SetAppPreferences(values); err != nil {
+		t.Fatal(err)
+	}
+	endedLocally(t, a, contact, id, fromA, "after video calls were switched off")
+	if view, _ := a.service.GetCall(contact); view.Availability == "calls-off" {
+		t.Fatal("switching only video off reported voice calls as off")
 	}
 }

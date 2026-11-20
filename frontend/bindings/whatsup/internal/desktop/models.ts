@@ -103,6 +103,15 @@ export interface CallView {
     "lastEnd": string;
     "lastOutgoing": boolean;
     "lastConnected": boolean;
+
+    /**
+     * Video says the call in progress is a video call. CameraOn is this
+     * device's camera state as Go last recorded it, and PeerCameraOn the other
+     * device's as it last announced it. All three are false when idle.
+     */
+    "video": boolean;
+    "cameraOn": boolean;
+    "peerCameraOn": boolean;
 }
 
 /**

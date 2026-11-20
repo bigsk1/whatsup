@@ -49,7 +49,10 @@ const avatarStateID = Number(
 );
 // A narrowly scoped default for fixtures whose subject is preferences, relay
 // consent or recovery. Do not intercept any operation those fixtures exercise.
-export async function serveDefaultAvatars(route: Route): Promise<boolean> {
+export async function serveDefaultAvatars(
+  route: Route,
+  contacts: { contactID: string; url: string }[] = [],
+): Promise<boolean> {
   if (route.request().postDataJSON().args?.methodID !== avatarStateID)
     return false;
   await route.fulfill({
@@ -58,7 +61,7 @@ export async function serveDefaultAvatars(route: Route): Promise<boolean> {
       ownURL: '',
       shareAvatar: false,
       showContactPhotos: true,
-      contacts: [],
+      contacts,
     },
   });
   return true;

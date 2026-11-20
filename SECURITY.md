@@ -1,8 +1,8 @@
 # Security information
 
-WhatsUp 0.1.2 is unsigned preview software, not a stable release.
-It has not undergone an independent security audit or certification. Do not
-rely on the preview for sensitive communication.
+WhatsUp 0.2.0 is distributed unsigned. It has not undergone an independent
+security audit or certification; weigh that before relying on it for sensitive
+communication.
 
 ## Identity, pairing and connections
 
@@ -37,15 +37,19 @@ The approved service is saved with each contact. Relay migration requires
 explicit authenticated consent on both sides, retaining identity pins. An
 operator may update its map; this is not permanent operator certificate pinning.
 
-## Voice calls
+## Voice and video calls
 
 Voice calls are off until enabled and exist only between two approved, connected
-contacts whose builds both support them. Ring, accept, decline, hang-up and mute
-signals travel as frames on the same mutually authenticated TLS 1.3 session as
-messages. A device rings only for the pinned identity, takes one call at a time,
-and limits how fast call frames may arrive.
+contacts whose builds both support them. Video is a second switch, also off
+until enabled, and requires voice calls. A device with video switched off rings
+for a video offer as a voice call, and the person answering always chooses
+whether to answer with video. Ring, accept, decline, hang-up, mute and
+camera-state signals travel as frames on the same mutually authenticated TLS 1.3
+session as messages. A device rings only for the pinned identity, takes one call
+at a time, and limits how fast call frames may arrive.
 
-Call audio is sealed with SRTP using AES-256-GCM, with replay protection on.
+Call audio and video are sealed with SRTP using AES-256-GCM, with replay
+protection on.
 Each call's keys come from the session's TLS 1.3 exporter, bound to a random
 call identifier chosen by the caller and a random value chosen by the answering
 device. Both devices contribute fresh randomness to every call, each direction
@@ -59,33 +63,68 @@ encoder falls back to a variable bitrate. Either way the content is encrypted,
 but packet sizes and timing are visible on the network and can still reveal
 patterns such as when someone is speaking.
 
+Video is VP8 at 640 by 360, up to 20 pictures a second, sealed in the same SRTP
+context as the audio and sent on the same flow. A camera starts off on both
+sides of a video call and is on only after the person at that device chooses
+it. Video frames sent before the flow is open, or while the camera is recorded
+as off, are dropped. While the connection's sampled path is **Relayed**, the
+device does not start sending video until the person chooses to, once per
+call. If a call that began direct falls back to a relay, the device stops its
+video when the reading changes and offers the choice again. Received video is
+shown either way.
+
 The webview's microphone permission is denied except between an answer and the
-end of that call, and the camera is always denied. A ringing call cannot open
-the microphone or attach an audio stream. On Windows each request is answered
+end of that call. Its camera permission is denied except while an answered
+video call's camera is switched on at this device. A ringing call cannot open
+the microphone or the camera, or attach a media stream. On Windows each request is answered
 at the moment it is made, the answer is not saved in the WebView2 profile, and
 answers saved by earlier preview builds are erased at start. The page is not
 loaded until the runtime confirms that erasure; if it cannot, or the runtime is
 too old to leave an answer unsaved (before version 111), voice calls are
 unavailable for that run and the page is served with capture refused. On
-Linux, WebKitGTK requests are answered from the same table. Hanging up, switching voice calls off and going offline each end the
-call and close capture on this device first, without waiting for the other
-device or the network. Calls are not recorded and audio is never written to
-disk. The call details readout shows counters only and stays on the device.
+Linux, WebKitGTK requests are answered from the same table, and the desktop's
+own camera permission applies on top of it. Hanging up, switching calls off and
+going offline each end the call and close capture on this device first, without
+waiting for the other device or the network; turning the camera off stops the
+camera before the other device is told. Calls are not recorded, and audio and
+video are never written to disk. The call details readout shows counters only
+and stays on the device.
 
 Limits to keep in mind:
 
-- Capture, Opus encoding and decoding, and playback run in the system webview
-  (WebView2 or WebKitGTK). Audio packets from an approved contact are parsed by
-  that engine's decoder, as their videos already are.
+- Capture, Opus and VP8 encoding and decoding, and playback run in the system
+  webview (WebView2 or WebKitGTK). Audio and video packets from an approved
+  contact are parsed by that engine's decoders, as their video files already
+  are.
 - A relay, or anyone watching the network, cannot read a call but can see that
   packets are flowing, their sizes and timing, and for how long. That is enough
   to infer that a call is taking place, its duration and possibly its rhythm.
 - The **Direct** / **Relayed** label on a call is the same sampled reading as
-  elsewhere, not packet-boundary enforcement.
+  elsewhere, not packet-boundary enforcement. Holding video back on a relayed
+  connection relies on that reading. It is checked when the camera starts and
+  each time the reading changes, not for every packet, so video sent between a
+  path change and the next reading can travel through the relay. It is
+  encrypted like everything else there.
+- Video has one fixed quality and does not adapt to a slow connection.
+- A hidden or minimized window does not stop the camera. The system may slow
+  the page while its window is out of sight, which slows or stalls the picture
+  being sent, but that is a side effect and not a privacy control. The camera
+  runs until it is switched off or the call ends.
+- On Linux the camera is reached through the desktop's camera portal, which
+  identifies WhatsUp by its application ID and may ask once for permission.
+  Sending live video needs WebKitGTK 2.54.3 or newer where GStreamer is 1.28 or
+  newer: earlier versions repeat the camera's first picture for a time that
+  grows with how long the computer has been on. WhatsUp detects a camera whose
+  picture is not updating, switches that video off and says so, rather than
+  sending a frozen picture as if it were live.
 - WebKitGTK has no echo cancellation, noise suppression or automatic gain.
   Headphones avoid echo; microphone level is set in the system's sound settings.
 - Bringing the window forward for an incoming call depends on the desktop. Some
   only flash or notify.
+- On Linux WhatsUp sets WebKitGTK's autoplay policy so that its own page may
+  start sound without a click first. That is what lets an incoming call ring
+  after WhatsUp started at login. The page is the bundled interface and loads
+  no remote content; the microphone and camera rules above are unaffected.
 
 ## Local encryption and access
 
@@ -203,13 +242,12 @@ Notification names/previews are opt-in and may persist in OS notification histor
 WebView2 has vendor diagnostics outside this policy. See [privacy](docs/privacy.md)
 for data paths, registry/autostart artifacts and notification behavior.
 
-Preview packages include checksums and an SBOM. Pushing a version tag runs GitHub
+Release packages include checksums and an SBOM. Pushing a version tag runs GitHub
 release CI, which repeats the checks, generates build-provenance attestations and
 publishes the release. It never replaces an existing release.
 An attestation identifies the source/workflow; it is not Authenticode signing,
-a security audit or a guarantee that a package is safe. Windows previews remain
-unsigned. Authenticode is the next Windows release gate; SignPath Foundation is
-a candidate after this repository becomes public, subject to its acceptance.
+a security audit or a guarantee that a package is safe. Windows packages are
+not Authenticode-signed, and in-app updates stay disabled.
 In-app updates remain disabled. Version numbers, passing tests and successful
 connections do not certify security.
 Older executables cannot necessarily read upgraded storage.
@@ -236,7 +274,7 @@ The repository administrator must enable private vulnerability reporting before
 sharing downloads. If the private button is unavailable, do not post details in
 a public issue; wait for the private route to be enabled.
 
-Only the current preview series receives fixes; there is no support or response
+Only the current release series receives fixes; there is no support or response
 time guarantee. Describe the version, platform, affected action and a synthetic
 or redacted reproduction. Never attach live invitations, keys, fingerprints,
 message history, vaults, recovery exports, contact photos, credentials or personal

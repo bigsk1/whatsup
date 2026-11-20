@@ -83,7 +83,7 @@ test('the advisory exception covers only the reviewed frontend tooling graph and
     assert.throws(() => evaluateNpmAudit(audit(), { ...options, lock: wrongLock }));
   }
   const versionBump = structuredClone(lock);
-  versionBump.version = versionBump.packages[''].version = '0.1.2';
+  versionBump.version = versionBump.packages[''].version = '0.2.1';
   assert.equal(evaluateNpmAudit(audit(), { ...options, lock: versionBump }).passed, true);
   const clean = audit();
   clean.vulnerabilities = {};
@@ -171,7 +171,7 @@ test('native uninstall recipes preserve profile data and retain scoped Linux san
   assert.match(nsis, /Quit WhatsUp from its tray menu/);
   assert.match(nfpm, /dst: \/opt\/whatsup-development\/whatsup\n/);
   assert.match(nfpm, /dst: \/etc\/apparmor.d\/whatsup-development/);
-  assert.match(nfpm, /dst: \/usr\/share\/applications\/whatsup.desktop/);
+  assert.match(nfpm, /dst: \/usr\/share\/applications\/io\.github\.bigsk1\.whatsup\.desktop/);
   const post = await read('build/linux/nfpm/scripts/postinstall.sh');
   const remove = await read('build/linux/nfpm/scripts/postremove.sh');
   assert.match(post, /apparmor_parser -r \/etc\/apparmor.d\/whatsup-development/);

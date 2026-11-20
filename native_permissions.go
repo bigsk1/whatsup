@@ -13,9 +13,10 @@ import (
 // where WebKitGTK has no prompt of its own. Only bundled script can ask, so
 // this is defence in depth, not the only barrier.
 //
-// The microphone is denied here too. Voice calls need it, so setCallCapture
-// switches this table's microphone entry to allow between an answer and the
-// end of that call, and back. The table is read at each request on both
+// The microphone and camera are denied here too. Calls need them, so
+// setCallCapture switches this table's microphone entry to allow between an
+// answer and the end of that call, and the camera entry while this device's
+// camera is on in an answered video call, and back. The table is read at each request on both
 // platforms: Wails answers WebKitGTK requests from it directly, and the
 // reviewed Wails patch does the same for WebView2, where it also keeps every
 // answer out of the profile and erases answers an earlier build saved. So no
@@ -48,20 +49,27 @@ func windowsWebviewPermissions() map[application.CoreWebView2PermissionKind]appl
 // thread. It carries no answer of its own: allowed is asked when the work
 // runs. Updates can run late and out of order; each one then writes the same
 // present truth, so the last word is never a stale one.
-func captureGateUpdate(table map[application.PermissionType]application.Permission, allowed func() bool) func() {
-	return func() { setCapturePermission(table, allowed != nil && allowed()) }
+func captureGateUpdate(table map[application.PermissionType]application.Permission, microphone, camera func() bool) func() {
+	return func() {
+		setCapturePermission(table, microphone != nil && microphone(), camera != nil && camera())
+	}
 }
 
 // setCapturePermission is the whole of the capture gate: the microphone entry
-// is allow while a call is answered and deny otherwise. Nothing else in the
-// table changes. It must run on the main thread, where requests are answered.
-func setCapturePermission(table map[application.PermissionType]application.Permission, allowed bool) {
+// is allow while a call is answered, the camera entry while this device's
+// camera is on in an answered video call, and both are deny otherwise. Nothing
+// else in the table changes. It must run on the main thread, where requests
+// are answered.
+func setCapturePermission(table map[application.PermissionType]application.Permission, microphone, camera bool) {
 	if table == nil {
 		return
 	}
-	state := application.PermissionDeny
-	if allowed {
-		state = application.PermissionAllow
+	state := func(allowed bool) application.Permission {
+		if allowed {
+			return application.PermissionAllow
+		}
+		return application.PermissionDeny
 	}
-	table[application.PermissionMicrophone] = state
+	table[application.PermissionMicrophone] = state(microphone)
+	table[application.PermissionCamera] = state(camera)
 }

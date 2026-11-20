@@ -23,9 +23,23 @@ func TestNativeLinuxProfileHeadless(t *testing.T) {
 			}
 			return
 		}
+		if scenario == "invalid-identity" {
+			if _, err := linuxRuntimeProfileAs("whatsup"); err == nil {
+				t.Fatal("inspected the session under a name that is not an application ID")
+			}
+			if linuxDefaultApplicationPresent() {
+				t.Fatal("a refused identity left a default application behind")
+			}
+			return
+		}
 		profile, err := PrepareLinuxWebviewProfile(dataDirectory)
 		if err != nil {
 			t.Fatal(err)
+		}
+		// The identity stood only for the inspection. Wails's GtkApplication
+		// has to become the default when it is built.
+		if linuxDefaultApplicationPresent() {
+			t.Fatal("profile preparation left a default application behind")
 		}
 		actual, err := linuxRuntimeProfile()
 		if err != nil || actual != profile {
@@ -42,7 +56,7 @@ func TestNativeLinuxProfileHeadless(t *testing.T) {
 		}
 		return
 	}
-	for _, scenario := range []string{"isolated", "cached-other-program"} {
+	for _, scenario := range []string{"isolated", "cached-other-program", "invalid-identity"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			command := exec.Command(os.Args[0], "-test.run=^TestNativeLinuxProfileHeadless$")

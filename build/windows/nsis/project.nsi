@@ -20,7 +20,7 @@ Unicode true
   !define APP_REG "Software\Microsoft\Windows\CurrentVersion\Uninstall\WhatsUp"
   !define SHORTCUT_NAME "WhatsUp"
 !endif
-Name "WhatsUp ${APP_VERSION} (unsigned preview)"
+Name "WhatsUp ${APP_VERSION}"
 OutFile "${OUTPUT_FILE}"
 InstallDir "$LOCALAPPDATA\Programs\WhatsUp"
 InstallDirRegKey HKCU "${APP_REG}" "InstallLocation"
@@ -29,7 +29,7 @@ ManifestDPIAware true
 SetCompressor /SOLID lzma
 VIProductVersion "${APP_VERSION}.0"
 VIAddVersionKey "ProductName" "WhatsUp"
-VIAddVersionKey "FileDescription" "WhatsUp unsigned preview installer"
+VIAddVersionKey "FileDescription" "WhatsUp installer (not code-signed)"
 VIAddVersionKey "FileVersion" "${APP_VERSION}"
 VIAddVersionKey "LegalCopyright" "Copyright (c) 2026 bigsk1"
 !define MUI_ICON "..\icon.ico"
@@ -131,7 +131,7 @@ Section "WhatsUp" Main
   Delete "$SMPROGRAMS\WhatsUp (Development).lnk"
   Delete "$DESKTOP\WhatsUp (Development).lnk"
   !endif
-  WriteRegStr HKCU "${APP_REG}" "DisplayName" "WhatsUp (unsigned preview)"
+  WriteRegStr HKCU "${APP_REG}" "DisplayName" "WhatsUp"
   WriteRegStr HKCU "${APP_REG}" "DisplayVersion" "${APP_VERSION}"
   WriteRegStr HKCU "${APP_REG}" "Publisher" "bigsk1"
   WriteRegStr HKCU "${APP_REG}" "InstallLocation" "$INSTDIR"

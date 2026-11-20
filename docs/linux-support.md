@@ -16,14 +16,41 @@ On Ubuntu, the runtime library packages include libgtk-4-1 and
 libwebkitgtk-6.0-4. Installing WebKit libraries alone does not provide an unlocked
 Secret Service session.
 
-Running a supplied preview executable does not require Go, Node.js, a development
+Running a supplied executable does not require Go, Node.js, a development
 server or a separate browser.
 
-## Install the Ubuntu preview
+## Calls
 
-Install the downloaded unsigned preview package with the system package manager:
+Voice and video calls use your system's WebKitGTK and GStreamer for the
+microphone, camera and codecs:
 
-    sudo apt install ./whatsup_0.1.2_amd64.deb
+- **Voice** needs the GStreamer Opus plugin. Ubuntu installs it with WebKitGTK.
+  On Arch it is in `gst-plugins-base`.
+- **Video** needs the VP8 and JPEG plugins (`gst-plugins-good` on Arch;
+  installed with WebKitGTK on Ubuntu) and the PipeWire plugin for the camera
+  (`gstreamer1.0-pipewire` on Ubuntu, which the package installs;
+  `gst-plugin-pipewire` on Arch), plus a running desktop portal.
+- **Sending video** needs WebKitGTK 2.54.3 or newer on systems with GStreamer
+  1.28 or newer. Earlier WebKitGTK versions keep repeating the camera's first
+  picture for a while after the camera starts, longer the longer the computer
+  has been on. WhatsUp notices, switches your video off and tells you, and the
+  call carries on with voice. Receiving video works on the earlier versions.
+  You can check your version with `apt policy libwebkitgtk-6.0-4` or
+  `pacman -Q webkitgtk-6.0`.
+
+The first time your camera is used, your desktop may ask whether WhatsUp may
+use it. On GNOME that question appears only for the app in front, so answer the
+call with the WhatsUp window in front. An incoming call rings even if WhatsUp
+started at login and its window has not been touched since.
+
+WebKitGTK has no echo cancellation. Headphones avoid echo, and the microphone
+level is set in your system's sound settings.
+
+## Install on Ubuntu
+
+Install the downloaded package with the system package manager:
+
+    sudo apt install ./whatsup_0.2.0_amd64.deb
 
 The package installs runtime dependencies, one application-menu entry and the
 scoped AppArmor compatibility profile. Quit WhatsUp from its tray before an
@@ -34,8 +61,11 @@ data. Removing the package keeps personal data and Secret Service credentials:
 
 The existing /opt/whatsup-development executable path and AppArmor attachment
 name are retained for compatibility; neither is the displayed application name.
-Known older review launchers are migrated to **WhatsUp**, retaining the canonical
-desktop ID and existing software-rendering choice. The app's data/profile
+Known older review launchers are migrated to the current **WhatsUp** menu entry,
+`io.github.bigsk1.whatsup.desktop`, keeping an existing software-rendering choice. The
+entry is named after the application so that your desktop can show WhatsUp by
+name when it asks whether the app may use the camera. If you pinned WhatsUp to
+a dock before this change, pin it again once after upgrading. The app's data/profile
 directories do not move. Uninstall removes managed launchers and start-at-login
 integration without deleting those directories.
 
@@ -55,8 +85,8 @@ The optional setup flags **--desktop-shortcut** and **--pin-to-dock** create a
 desktop shortcut and a GNOME dock entry. Other dock entries are preserved. Other
 desktop environments can use the standard application-menu entry.
 
-Launch **WhatsUp** from the menu or installed shortcut. The About page identifies
-the version as a preview. Closing the window keeps the app in
+Launch **WhatsUp** from the menu or installed shortcut. The About page shows
+the version. Closing the window keeps the app in
 the tray by default when a tray is available; without one, closing quits the app.
 Choose Quit from its tray menu to exit; no terminal needs to remain open. Start
 at login is optional under Settings → App behavior. If a tray icon cannot be
@@ -70,7 +100,7 @@ late tray startup is allowed a grace period. Startup without a compatible host
 shows a window rather than relying on an unreachable tray. Support for a
 graphical desktop does not guarantee that every tray implementation is available.
 
-The Ubuntu DEB is unsigned preview software. No universal Linux package, RPM or
+The Ubuntu DEB is unsigned. No universal Linux package, RPM or
 Flatpak release is provided.
 
 ## WebKit sandbox compatibility
@@ -91,7 +121,7 @@ a complete confinement policy for the Go application or a guarantee of isolation
 from the desktop account.
 
 If setup or its renderer check fails, keep the output for troubleshooting. Avoid
-changing global sandbox policy to make an individual preview executable start.
+changing global sandbox policy to make an individual executable start.
 
 ## Graphics
 

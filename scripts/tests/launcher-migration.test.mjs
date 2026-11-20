@@ -36,6 +36,9 @@ targets=[(apps/'whatsup.desktop',0o644),(desktop/'whatsup.desktop',0o755)]
 for target,mode in targets:
  target.write_text(legacy); target.chmod(mode)
 assert m.migrate_home(home,uid)==2
+# The application-menu entry now carries the application ID as its name.
+assert not (apps/'whatsup.desktop').exists()
+targets=[(apps/'io.github.bigsk1.whatsup.desktop',0o644),(desktop/'whatsup.desktop',0o755)]
 for target,mode in targets:
  lines=target.read_text().splitlines()
  assert [line for line in lines if line.startswith('Exec=')]==['Exec=/opt/whatsup-development/whatsup --software-rendering']
@@ -52,6 +55,9 @@ targets=[(apps/'whatsup.desktop',0o644),(desktop/'whatsup.desktop',0o755)]
 for target,mode in targets:
  target.write_text(broken); target.chmod(mode)
 assert m.migrate_home(home,uid)==2
+# The application-menu entry now carries the application ID as its name.
+assert not (apps/'whatsup.desktop').exists()
+targets=[(apps/'io.github.bigsk1.whatsup.desktop',0o644),(desktop/'whatsup.desktop',0o755)]
 for target,mode in targets:
  lines=target.read_text().splitlines()
  assert 'X-WhatsUp-Package-Launcher=true' in lines
@@ -85,8 +91,12 @@ profile=home/'.local/share/whatsup'; profile.mkdir(mode=0o700); vault=profile/'s
 autostart=startup/'whatsup.desktop'; autostart.write_text('[Desktop Entry]\nX-WhatsUp-Managed=true\nExec="/opt/whatsup-development/whatsup" --autostart\n'.replace('\\n','\n'))
 assert m.migrate_home(home,uid)==3
 assert not (apps/'whatsup-development.desktop').exists()
-assert 'Name=WhatsUp\n'.replace('\\n','\n') in (apps/'whatsup.desktop').read_text()
-assert '--software-rendering' in (apps/'whatsup.desktop').read_text()
+# The menu entry is renamed to the application ID; its content is kept.
+renamed=apps/'io.github.bigsk1.whatsup.desktop'
+assert not (apps/'whatsup.desktop').exists()
+assert 'Name=WhatsUp\n'.replace('\\n','\n') in renamed.read_text()
+assert '--software-rendering' in renamed.read_text()
+assert renamed.stat().st_nlink==1 and renamed.stat().st_uid==uid
 assert m.migrate_home(home,uid+1)==0
 # Replace a checked file just before the final inode comparison.
 target=apps/'whatsup.desktop'; target.write_text(old)
@@ -113,9 +123,25 @@ apps.unlink(); moved.rename(apps)
 target.write_text(old); hard=apps/'hardlink.desktop'; os.link(target,hard)
 parent=m.open_directory(apps,uid); assert not m.mutate_entry(parent,'whatsup.desktop',uid,remove=False); os.close(parent)
 hard.unlink(); target.write_text(old)
+# An entry under the new name is already there: it is kept, not replaced, and
+# the old name beside it is retired.
+renamed.write_text('[Desktop Entry]\nName=WhatsUp\nExec=/opt/whatsup-development/whatsup\nX-WhatsUp-Package-Launcher=true\n'.replace('\\n','\n'))
+assert m.migrate_home(home,uid)==3
+assert not target.exists() and '--software-rendering' not in renamed.read_text()
+# An entry of that name that is not WhatsUp's own is left alone, and the old
+# name is still retired without replacing it.
+renamed.write_text('unrelated entry'); target.write_text(old)
 assert m.migrate_home(home,uid)==2
+assert not target.exists() and renamed.read_text()=='unrelated entry'
+renamed.unlink(); target.write_text(old)
+assert m.migrate_home(home,uid)==2
+# The entry name used briefly under the framework's namespace is moved too.
+interim=apps/'org.wails.whatsup.desktop'
+renamed.rename(interim)
+assert m.migrate_home(home,uid)==2
+assert not interim.exists() and 'X-WhatsUp-Package-Launcher=true' in renamed.read_text()
 assert m.migrate_home(home,uid,uninstall=True)==3
-assert not target.exists() and not autostart.exists() and not (desktop/'whatsup.desktop').exists()
+assert not target.exists() and not renamed.exists() and not autostart.exists() and not (desktop/'whatsup.desktop').exists()
 assert vault.read_bytes()==b'synthetic encrypted-profile sentinel'
 print('launcher migration and uninstall isolation passed')
 `;

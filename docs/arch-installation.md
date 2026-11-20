@@ -6,20 +6,33 @@ keyring, such as GNOME Keyring.
 
 ## 1. Install the runtime
 
-Install WebKitGTK 6 and the archive tools:
+Install WebKitGTK 6, the archive tools and the media plugins calls use:
 
 ```bash
-sudo pacman -Syu --needed webkitgtk-6.0 libarchive
+sudo pacman -Syu --needed webkitgtk-6.0 libarchive gst-plugins-base gst-plugins-good gst-plugin-pipewire
+```
+
+On Omarchy, use its own tools instead; a direct system upgrade with pacman is
+blocked there:
+
+```bash
+omarchy update
+omarchy pkg add webkitgtk-6.0 libarchive gst-plugins-base gst-plugins-good gst-plugin-pipewire
 ```
 
 WebKitGTK brings in GTK 4 and JavaScriptCore. Go and Node.js are not needed.
+`gst-plugins-base` provides the audio codec for voice calls; without it WhatsUp
+cannot run call audio. Sending video in a call needs WebKitGTK 2.54.3 or newer:
+check with `pacman -Q webkitgtk-6.0`. Omarchy's stable channel may carry an
+earlier version for a while; see [Linux support](linux-support.md#calls) for
+what happens then.
 If your desktop needs a keyring setup, follow the
 [GNOME Keyring instructions](https://wiki.archlinux.org/title/GNOME/Keyring).
 
 ## 2. Download WhatsUp
 
-Download `whatsup_0.1.2_amd64.deb` and `SHA256SUMS` from the
-[v0.1.2 release](https://github.com/bigsk1/whatsup/releases/tag/v0.1.2).
+Download `whatsup_0.2.0_amd64.deb` and `SHA256SUMS` from the
+[v0.2.0 release](https://github.com/bigsk1/whatsup/releases/tag/v0.2.0).
 Save both files in `~/Downloads`, then check the download:
 
 ```bash
@@ -27,7 +40,7 @@ cd "$HOME/Downloads"
 sha256sum --ignore-missing --check SHA256SUMS
 ```
 
-Confirm that `whatsup_0.1.2_amd64.deb` reports `OK`.
+Confirm that `whatsup_0.2.0_amd64.deb` reports `OK`.
 
 ## 3. Install the app and menu entry
 
@@ -39,7 +52,7 @@ and creates the menu entry.
 ```bash
 (
   set -euo pipefail
-  package="$HOME/Downloads/whatsup_0.1.2_amd64.deb"
+  package="$HOME/Downloads/whatsup_0.2.0_amd64.deb"
   appdir="$HOME/.local/opt/whatsup"
   data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
   applications="$data_home/applications"
@@ -63,21 +76,40 @@ and creates the menu entry.
   chmod 755 "$appdir/whatsup" "$appdir/whatsup-webview-check"
   chmod 644 "$icons/whatsup.svg"
 
-  cat > "$applications/whatsup.desktop" <<EOF
+  # Keep a software-rendering choice saved in an earlier menu entry, then
+  # retire the names earlier versions used so only one entry remains.
+  entry="$applications/io.github.bigsk1.whatsup.desktop"
+  rendering=""
+  for earlier in "$entry" "$applications/org.wails.whatsup.desktop" \
+    "$applications/whatsup.desktop" "$applications/whatsup-development.desktop"; do
+    if [ -f "$earlier" ] && grep -q '^Exec=.*--software-rendering' "$earlier"; then
+      rendering=" --software-rendering"
+    fi
+  done
+  rm -f "$applications/org.wails.whatsup.desktop" \
+    "$applications/whatsup.desktop" "$applications/whatsup-development.desktop"
+
+  cat > "$entry" <<EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
 Name=WhatsUp
 Comment=Private one-to-one desktop messenger
-Exec="$appdir/whatsup"
+Exec="$appdir/whatsup"$rendering
 Icon=whatsup
 Terminal=false
 Categories=Network;InstantMessaging;
-StartupWMClass=org.wails.whatsup
+StartupWMClass=io.github.bigsk1.whatsup
 EOF
-  chmod 644 "$applications/whatsup.desktop"
+  chmod 644 "$entry"
 )
 ```
+
+The block looks for earlier WhatsUp menu entries only in your user data
+directory (`$XDG_DATA_HOME/applications`, normally
+`~/.local/share/applications`). If you keep launchers somewhere else, remove an
+old `whatsup.desktop` or `org.wails.whatsup.desktop` there by hand, or the
+desktop may show two WhatsUp entries.
 
 Open your application menu and launch **WhatsUp**. No terminal needs to remain
 open. Follow [Pair with someone](../README.md#pair-with-someone) to connect.
@@ -91,13 +123,16 @@ If the window renders incorrectly, quit WhatsUp and try software rendering:
 ```
 
 To keep that setting for menu launches, add `--software-rendering` after the
-quoted executable path on the `Exec=` line in your `whatsup.desktop` file.
+quoted executable path on the `Exec=` line in your
+`io.github.bigsk1.whatsup.desktop` file.
 
-For additional video codecs, install:
+For more video file formats in conversations, install:
 
 ```bash
-sudo pacman -Syu --needed gst-plugins-good gst-plugins-bad gst-libav
+sudo pacman -Syu --needed gst-plugins-bad gst-libav
 ```
+
+On Omarchy: `omarchy pkg add gst-plugins-bad gst-libav`.
 
 ## Updating or removing WhatsUp
 
@@ -106,7 +141,7 @@ installation block with its filename. Keep the same installation directory.
 Your identity, contacts and conversations are stored separately from the program.
 
 To remove the app, turn off **Start at login** if enabled, quit WhatsUp, and
-remove `~/.local/opt/whatsup`, the `whatsup.desktop` menu entry, the installed
+remove `~/.local/opt/whatsup`, the `io.github.bigsk1.whatsup.desktop` menu entry, the installed
 `whatsup.svg` icon and `doc/whatsup` notices from your user data directory.
 The default user data directory is `~/.local/share`.
 

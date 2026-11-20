@@ -19,7 +19,7 @@ import (
 	"whatsup/internal/storage"
 )
 
-const Version = "0.1.2"
+const Version = "0.2.0"
 
 type Status struct {
 	Version              string `json:"version"`
@@ -63,6 +63,10 @@ type Service struct {
 	// the application.
 	callEndForTest     func(context.Context, *messaging.Registry, string, call.ID) (call.Snapshot, error)
 	callEnforceForTest func(context.Context, *messaging.Registry)
+	callPathForTest    func(contactID string) string
+	// callRefreshForTest runs between a refresh reading a call's state and
+	// recording it, which is where a slow refresh used to be overtaken.
+	callRefreshForTest atomic.Pointer[func()]
 }
 
 func New(directory string, keys storage.KeyStore, listeners ...func(diagnostics.Event)) *Service {

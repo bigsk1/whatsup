@@ -3157,3 +3157,27 @@
 +		t.Fatalf("%d permission kinds are erased at start, want all 6", len(whatsupPermissionKinds))
 +	}
 +}
+--- a/pkg/application/linux_cgo.c
++++ b/pkg/application/linux_cgo.c
+@@ -198,9 +198,20 @@
+ // WebKitGTK 6.0: webkit_web_view_new_with_user_content_manager() was removed
+ // Use g_object_new() with the "user-content-manager" property instead
+ GtkWidget* create_webview_with_user_content_manager(WebKitUserContentManager *manager) {
+-    return GTK_WIDGET(g_object_new(WEBKIT_TYPE_WEB_VIEW,
++    // WhatsUp: the page shown here is the application's own bundled interface.
++    // WebKitGTK by default lets only silent media start without a click, which
++    // keeps an incoming call from ringing while the window has not been
++    // touched since the application started. Allow the page to start sound.
++    // The property can only be given when the view is made.
++    WebKitWebsitePolicies *policies = webkit_website_policies_new_with_policies(
++        "autoplay", WEBKIT_AUTOPLAY_ALLOW,
++        NULL);
++    GtkWidget *view = GTK_WIDGET(g_object_new(WEBKIT_TYPE_WEB_VIEW,
+                                    "user-content-manager", manager,
++                                   "website-policies", policies,
+                                    NULL));
++    g_object_unref(policies);
++    return view;
+ }
+ 
+ // ============================================================================

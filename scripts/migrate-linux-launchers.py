@@ -9,6 +9,12 @@ import pwd
 import stat
 import sys
 
+# The application-menu entry is named after the application ID: a desktop looks
+# it up by that name when the app asks for the camera, and GNOME only asks when
+# the application in front is the entry so named.
+LAUNCHER = "io.github.bigsk1.whatsup.desktop"
+LEGACY = ("whatsup.desktop", "whatsup-development.desktop", "org.wails.whatsup.desktop")
+
 ENTRY = """[Desktop Entry]
 Version=1.0
 Name=WhatsUp
@@ -19,7 +25,7 @@ Terminal=false
 Type=Application
 Icon=whatsup
 Categories=Network;InstantMessaging;
-StartupWMClass=org.wails.whatsup
+StartupWMClass=io.github.bigsk1.whatsup
 X-WhatsUp-Package-Launcher=true
 """
 
@@ -48,9 +54,10 @@ def open_directory(directory: Path, uid: int) -> int:
         raise
 
 
-def mutate_entry(parent: int, name: str, uid: int, *, remove: bool, autostart: bool = False) -> bool:
-    if name not in ("whatsup.desktop", "whatsup-development.desktop"):
-        raise ValueError("Only explicit legacy launcher names are allowed")
+def mutate_entry(parent: int, name: str, uid: int, *, remove: bool, autostart: bool = False,
+                 rename_to: str | None = None) -> bool:
+    if name not in (LAUNCHER, *LEGACY) or rename_to not in (None, LAUNCHER):
+        raise ValueError("Only explicit WhatsUp launcher names are allowed")
     try:
         descriptor = os.open(name, (os.O_RDONLY if remove else os.O_RDWR) | os.O_NOFOLLOW, dir_fd=parent)
         with os.fdopen(descriptor, "r" if remove else "r+", encoding="utf-8", newline="\n") as stream:
@@ -95,6 +102,14 @@ def mutate_entry(parent: int, name: str, uid: int, *, remove: bool, autostart: b
                 stream.write(replacement)
                 stream.flush()
                 os.fsync(stream.fileno())
+                if rename_to:
+                    # Give the entry its new name without replacing one that
+                    # is already there, then retire the old name.
+                    try:
+                        os.link(name, rename_to, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+                    except FileExistsError:
+                        pass
+                    os.unlink(name, dir_fd=parent)
             os.fsync(parent)
             return True
     except (OSError, UnicodeError):
@@ -120,10 +135,18 @@ def migrate_home(home: Path, uid: int, *, uninstall: bool = False) -> int:
                     child = checked_directory(descriptor, part, uid)
                     os.close(descriptor)
                     descriptor = child
-                names = ("whatsup.desktop", "whatsup-development.desktop") if parts[-1] == "applications" else ("whatsup.desktop",)
-                for name in names:
+                if parts[-1] == "applications":
+                    # The current name first, so an entry already there is kept
+                    # and the old name beside it is simply retired.
+                    plan = ((LAUNCHER, uninstall, None),
+                            ("whatsup.desktop", uninstall, None if uninstall else LAUNCHER),
+                            ("org.wails.whatsup.desktop", uninstall, None if uninstall else LAUNCHER),
+                            ("whatsup-development.desktop", True, None))
+                else:
+                    plan = (("whatsup.desktop", uninstall, None),)
+                for name, remove, rename_to in plan:
                     changed += int(mutate_entry(descriptor, name, uid,
-                        remove=uninstall or name == "whatsup-development.desktop", autostart=autostart))
+                        remove=remove, autostart=autostart, rename_to=rename_to))
             except OSError:
                 pass
             finally:
