@@ -148,7 +148,7 @@ def desktop_entry(software: bool, icon: Path, *, hidden: bool = False) -> str:
         f"Exec=/opt/whatsup-development/whatsup{options}\n"
         f"TryExec=/opt/whatsup-development/whatsup\nIcon={icon_value}\n"
         "Terminal=false\nType=Application\nCategories=Network;InstantMessaging;\n"
-        "StartupWMClass=whatsup\nX-WhatsUp-Package-Launcher=true\n"
+        "StartupWMClass=org.wails.whatsup\nX-WhatsUp-Package-Launcher=true\n"
         + ("NoDisplay=true\n" if hidden else "")
     )
 

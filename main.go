@@ -69,7 +69,7 @@ func main() {
 		Name: "WhatsUp", Description: "Private one-to-one desktop messenger",
 		Icon:    trayIcon,
 		Windows: windows,
-		Linux:   application.LinuxOptions{ProgramName: desktop.LinuxProgramName, DisableQuitOnLastWindowClosed: true},
+		Linux:   application.LinuxOptions{ProgramName: desktop.LinuxProgramName, ApplicationID: desktop.LinuxApplicationID, DisableQuitOnLastWindowClosed: true},
 		SingleInstance: &application.SingleInstanceOptions{UniqueID: "org.whatsup.desktop", ExitCode: 0, OnSecondInstanceLaunch: func(_ application.SecondInstanceData) {
 			// Second-launch data is never interpreted as an invite, path, URL or
 			// command. A launch can request only that the existing window be shown.

@@ -73,7 +73,7 @@ Exec="$appdir/whatsup"
 Icon=whatsup
 Terminal=false
 Categories=Network;InstantMessaging;
-StartupWMClass=whatsup
+StartupWMClass=org.wails.whatsup
 EOF
   chmod 644 "$applications/whatsup.desktop"
 )

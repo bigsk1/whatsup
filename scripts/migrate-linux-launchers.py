@@ -19,7 +19,7 @@ Terminal=false
 Type=Application
 Icon=whatsup
 Categories=Network;InstantMessaging;
-StartupWMClass=whatsup
+StartupWMClass=org.wails.whatsup
 X-WhatsUp-Package-Launcher=true
 """
 

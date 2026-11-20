@@ -11,6 +11,17 @@ import (
 // filename. It must also be supplied as Wails LinuxOptions.ProgramName.
 const LinuxProgramName = "whatsup"
 
+// LinuxApplicationID is the GTK application ID. With GTK 4 it is also the
+// Wayland app ID of the window, which is how a desktop decides which launcher
+// a running window belongs to. Every desktop entry WhatsUp installs or
+// documents names it as StartupWMClass; without that the desktop shows the
+// window as a second, unnamed application and labels it with this raw ID.
+//
+// It is the ID the pinned Wails derives from the application name, set
+// explicitly so that it cannot drift from the desktop entries. Changing it
+// needs every entry changed with it.
+const LinuxApplicationID = "org.wails.whatsup"
+
 // LinuxWebviewProfile describes backend-only paths. It is never a bridge DTO.
 type LinuxWebviewProfile struct {
 	DataDirectory  string

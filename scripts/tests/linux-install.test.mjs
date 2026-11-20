@@ -136,7 +136,7 @@ for relative in ['applications/whatsup.desktop']:
  entry=(data/relative).read_text()
  assert 'Icon='+str(installed)+'\\n' in entry and 'internet-chat' not in entry
  assert 'Exec=/opt/whatsup-development/whatsup --software-rendering\\n' in entry
- assert 'StartupWMClass=whatsup\\n' in entry
+ assert 'StartupWMClass=org.wails.whatsup\\n' in entry
 assert not (data/'applications/whatsup-development.desktop').exists()
 assert 'Name=WhatsUp\\n' in (data/'applications/whatsup.desktop').read_text()
 assert (desktop/'whatsup.desktop').read_text()==(data/'applications/whatsup.desktop').read_text()
@@ -189,4 +189,21 @@ assert not list((data/'icons').glob('.whatsup-icon-*'))
 `;
   const result = checkLauncher(code, directory);
   assert.equal(result.status, 0, result.stderr);
+});
+
+test('every desktop entry names the application ID the window really has', async () => {
+  // With GTK 4 the window's Wayland app ID is the GTK application ID. A desktop
+  // matches a running window to its launcher through StartupWMClass, so each
+  // entry WhatsUp installs or documents must carry exactly that ID.
+  const profile = await readFile(path.join(root, 'internal/desktop/profile.go'), 'utf8');
+  const id = /const LinuxApplicationID = "([^"]+)"/.exec(profile)?.[1];
+  assert.match(id ?? '', /^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z][A-Za-z0-9_-]*)+$/);
+  const main = await readFile(path.join(root, 'main.go'), 'utf8');
+  assert.ok(main.includes('ApplicationID: desktop.LinuxApplicationID'), 'main.go does not set the application ID from the shared constant');
+  for (const name of ['build/linux/desktop', 'scripts/install-linux-launcher.py', 'scripts/migrate-linux-launchers.py', 'docs/arch-installation.md']) {
+    const text = await readFile(path.join(root, name), 'utf8');
+    const classes = [...text.matchAll(/StartupWMClass=([^\s\\"]+)/g)].map((match) => match[1]);
+    assert.ok(classes.length > 0, `${name} has no StartupWMClass`);
+    for (const value of classes) assert.equal(value, id, `${name} names StartupWMClass=${value}`);
+  }
 });

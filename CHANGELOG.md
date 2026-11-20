@@ -14,6 +14,10 @@
 - On Linux desktops that don't let an app raise its own window, the tray's
   **Show WhatsUp**, launching WhatsUp again and an incoming call now bring a
   minimized or covered window to the front.
+- On GNOME and other Wayland desktops the running WhatsUp window now belongs
+  to its launcher: one dock icon instead of two, and the desktop names the app
+  **WhatsUp**. If you created the menu entry by hand from the Arch guide, change
+  its `StartupWMClass` line to `StartupWMClass=org.wails.whatsup`.
 - The sidebar tagline is now **Private & encrypted**.
 
 ## 0.1.2 (unsigned preview)
