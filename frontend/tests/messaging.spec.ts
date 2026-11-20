@@ -400,6 +400,17 @@ test('version opens the fixed repository through the native browser only when cl
     exact: true,
   });
   await expect(version).toHaveText(`v${appVersion}`);
+  // The About dialog names the same version, and nowhere calls it a preview.
+  await page
+    .getByRole('button', { name: 'About this build', exact: true })
+    .click();
+  const about = page.getByRole('dialog', { name: 'About WhatsUp' });
+  await expect(about.locator('.dialog-footer .muted')).toHaveText(
+    `v${appVersion}`,
+  );
+  await expect(about).not.toContainText(/preview/i);
+  await about.getByRole('button', { name: 'Got it', exact: true }).click();
+  await expect(about).toBeHidden();
   expect(openedURLs).toEqual([]);
   await version.click();
   await expect

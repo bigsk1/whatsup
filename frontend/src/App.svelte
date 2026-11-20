@@ -1685,7 +1685,7 @@
     >
   </div>
   <div class="dialog-footer">
-    <span class="muted small">v{status.version} preview</span><button
+    <span class="muted small">v{status.version}</span><button
       class="primary-button compact"
       onclick={() => aboutDialog.close()}>Got it</button
     >
