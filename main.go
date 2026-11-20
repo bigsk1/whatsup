@@ -61,6 +61,10 @@ func main() {
 	var native atomic.Pointer[nativeHost]
 	var backend atomic.Pointer[desktop.Service]
 	var focusPending atomic.Bool
+	// captureBlocked is set, for the rest of the run, when the webview could
+	// not confirm that it holds no saved device permission. A saved grant is
+	// honoured without asking, so the per-call gate cannot be trusted then.
+	var captureBlocked atomic.Bool
 	app := application.New(application.Options{
 		Name: "WhatsUp", Description: "Private one-to-one desktop messenger",
 		Icon:    trayIcon,
@@ -94,6 +98,11 @@ func main() {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("X-Content-Type-Options", "nosniff")
 					w.Header().Set("Referrer-Policy", "no-referrer")
+					if captureBlocked.Load() {
+						// The engine refuses capture in a document served
+						// with this policy, saved grant or not.
+						w.Header().Set("Permissions-Policy", blockedCapturePolicy)
+					}
 					if desktop.ServeAttachment(backend.Load(), w, r) {
 						return
 					}
@@ -170,8 +179,17 @@ func main() {
 		NativeFileDropHandler: host.nativeFileDrop,
 		NativeFileDragHandler: host.nativeFileDrag,
 		Permissions:           host.permissions,
-		Windows:               application.WindowsWindow{Permissions: windowsWebviewPermissions()},
-		Linux:                 linuxWindow,
+		Windows: application.WindowsWindow{Permissions: windowsWebviewPermissions(), PermissionsSecured: func(secured bool) {
+			// Runs on the main thread before the page is loaded. The flag is
+			// set first so the page is served with capture refused.
+			if secured {
+				return
+			}
+			captureBlocked.Store(true)
+			record(diagnostics.RuntimeWarning)
+			go desktop.BlockCallCapture(service)
+		}},
+		Linux: linuxWindow,
 	})
 	host.attachWindow(window)
 	if err := app.Run(); err != nil {

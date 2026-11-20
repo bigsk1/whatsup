@@ -689,3 +689,227 @@ func TestAudioSentBeforeTheMediaFlowOpensDoesNotEndTheStream(t *testing.T) {
 		}
 	}
 }
+
+// activeTestCall places and answers a call and attaches a media stream on each
+// side, as the interface would.
+func activeTestCall(t *testing.T, a, b *callTestHost, contact string) (id string, fromA, fromB *CallMediaSession) {
+	t.Helper()
+	placed, err := a.service.StartCall(contact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ringing := callState(t, b, contact, "incoming")
+	if _, err := b.service.AnswerCall(contact, ringing.CallID); err != nil {
+		t.Fatal(err)
+	}
+	callState(t, a, contact, "active")
+	callState(t, b, contact, "active")
+	if fromA, err = AttachCallMedia(a.service, placed.CallID); err != nil {
+		t.Fatal(err)
+	}
+	if fromB, err = AttachCallMedia(b.service, placed.CallID); err != nil {
+		t.Fatal(err)
+	}
+	if !CallCaptureAllowed(a.service) || !CallCaptureAllowed(b.service) {
+		t.Fatal("capture was not allowed during an answered call")
+	}
+	return placed.CallID, fromA, fromB
+}
+
+// endedLocally checks everything that must be true the moment a device has
+// ended a call on its own side, whatever the session still believes.
+func endedLocally(t *testing.T, host *callTestHost, contact, id string, session *CallMediaSession, when string) {
+	t.Helper()
+	if CallCaptureAllowed(host.service) {
+		t.Fatalf("%s: the capture gate still reads allowed", when)
+	}
+	if host.capOpen.Load() {
+		t.Fatalf("%s: the native host was not told to close capture", when)
+	}
+	select {
+	case <-session.Done():
+	default:
+		t.Fatalf("%s: the media stream is still attached", when)
+	}
+	if session.SendAudio(1, []byte{1}) == nil {
+		t.Fatalf("%s: audio was still accepted", when)
+	}
+	if again, err := AttachCallMedia(host.service, id); again != nil || err == nil {
+		t.Fatalf("%s: a new media stream could be attached to the ended call", when)
+	}
+	view, err := host.service.GetCall(contact)
+	if err != nil || view.State != "idle" || view.CallID != "" {
+		t.Fatalf("%s: the interface is shown %+v (%v), want an idle view", when, view, err)
+	}
+}
+
+// The review's third gap, hang-up half: the local side ends at once and stays
+// ended when the session cannot be told, and a later refresh cannot bring the
+// call, or capture, back.
+func TestHangUpEndsCaptureLocallyEvenWhenTheSessionCannotBeTold(t *testing.T) {
+	a, b, contact, _ := callTestPair(t, true, true)
+	a.service.calls.retryGap.Store(int64(40 * time.Millisecond))
+	id, fromA, _ := activeTestCall(t, a, b, contact)
+
+	var stalled atomic.Bool
+	stalled.Store(true)
+	var attempts atomic.Int32
+	a.service.callEndForTest = func(ctx context.Context, messages *messaging.Registry, contactID string, call call.ID) (call.Snapshot, error) {
+		attempts.Add(1)
+		if stalled.Load() {
+			// The session loop never takes the request.
+			return messages.Call(contactID), context.DeadlineExceeded
+		}
+		return messages.EndCall(ctx, contactID, call)
+	}
+	view, err := a.service.EndCall(contact, id)
+	if err != nil || view.State != "idle" {
+		t.Fatalf("hang-up with a stalled session returned %+v, %v; want an idle view and no error", view, err)
+	}
+	endedLocally(t, a, contact, id, fromA, "right after hang-up")
+	// The session, and so the other device, still has the call.
+	if snapshot := a.service.messages.Call(contact); snapshot.State != call.Active {
+		t.Fatalf("the test did not stall the session: state %d", snapshot.State)
+	}
+	if view, _ := b.service.GetCall(contact); view.State != "active" {
+		t.Fatalf("the other device was told although the session was stalled: %+v", view)
+	}
+	// Refreshes and notifications while it lingers change nothing.
+	for i := 0; i < 5; i++ {
+		a.service.observeCall(a.service.messages, contact)
+		endedLocally(t, a, contact, id, fromA, "while the session still holds the call")
+	}
+	if view, _ := a.service.GetCall(contact); view.Availability != "busy" {
+		t.Fatalf("a lingering call left availability %q, want busy", view.Availability)
+	}
+	// A second hang-up of the same call is not an error and does nothing new.
+	if _, err := a.service.EndCall(contact, id); err != nil {
+		t.Fatalf("repeating the hang-up failed: %v", err)
+	}
+
+	// The background effort tells the session once it can.
+	stalled.Store(false)
+	callWait(t, "the other device to learn the call ended", func() bool {
+		view, _ := b.service.GetCall(contact)
+		return view.State == "idle" && view.LastEnd == "peer-hung-up"
+	})
+	callWait(t, "the call slot to be released", func() bool {
+		view, _ := a.service.GetCall(contact)
+		return view.State == "idle" && view.Availability == "ready"
+	})
+	if attempts.Load() < 2 {
+		t.Fatalf("the session was asked %d times, want a retry after the stall", attempts.Load())
+	}
+}
+
+// The review's third gap, Calls Off half: switching calls off revokes capture
+// before, and independently of, the session enforcing the setting.
+func TestCallsOffRevokesCaptureEvenWhenTheSessionDoesNotEnforceIt(t *testing.T) {
+	a, b, contact, _ := callTestPair(t, true, true)
+	// No background attempt during this test; shutdown ends the wait.
+	a.service.calls.retryGap.Store(int64(time.Hour))
+	id, fromA, _ := activeTestCall(t, a, b, contact)
+	enforced := 0
+	a.service.callEnforceForTest = func(context.Context, *messaging.Registry) {
+		// The session loop never takes the request. At this point capture
+		// must already be revoked.
+		enforced++
+		endedLocally(t, a, contact, id, fromA, "before the session was asked to enforce the setting")
+	}
+	a.service.callEndForTest = func(_ context.Context, messages *messaging.Registry, contactID string, _ call.ID) (call.Snapshot, error) {
+		return messages.Call(contactID), context.DeadlineExceeded
+	}
+	values, err := a.service.GetAppPreferences()
+	if err != nil {
+		t.Fatal(err)
+	}
+	values.VoiceCalls = false
+	if _, err := a.service.SetAppPreferences(values); err != nil {
+		t.Fatal(err)
+	}
+	if enforced != 1 {
+		t.Fatalf("the session was asked to enforce the setting %d times, want once", enforced)
+	}
+	endedLocally(t, a, contact, id, fromA, "after Calls Off returned")
+	if snapshot := a.service.messages.Call(contact); snapshot.State != call.Active {
+		t.Fatalf("the test did not stall the session: state %d", snapshot.State)
+	}
+	if view, _ := a.service.GetCall(contact); view.Availability != "calls-off" {
+		t.Fatalf("availability is %q after Calls Off, want calls-off", view.Availability)
+	}
+	// Switching calls back on does not revive the revoked call.
+	values.VoiceCalls = true
+	if _, err := a.service.SetAppPreferences(values); err != nil {
+		t.Fatal(err)
+	}
+	endedLocally(t, a, contact, id, fromA, "after calls were switched on again")
+}
+
+// The review's first gap, application half: when the native host could not
+// secure the webview's capture permission, calls are unavailable for the run.
+func TestBlockedCaptureMakesCallsUnavailableAndEndsACallInProgress(t *testing.T) {
+	a, b, contact, _ := callTestPair(t, true, true)
+	a.service.calls.retryGap.Store(int64(40 * time.Millisecond))
+	id, fromA, _ := activeTestCall(t, a, b, contact)
+	BlockCallCapture(a.service)
+	endedLocally(t, a, contact, id, fromA, "after capture was blocked")
+	callWait(t, "the other device to learn the call ended", func() bool {
+		view, _ := b.service.GetCall(contact)
+		return view.State == "idle"
+	})
+	view, err := a.service.GetCall(contact)
+	if err != nil || view.Availability != "blocked" {
+		t.Fatalf("a blocked device reports %+v (%v), want availability blocked", view, err)
+	}
+	if _, err := a.service.StartCall(contact); err == nil || !strings.Contains(err.Error(), "restarts") {
+		t.Fatalf("a blocked device could place a call: %v", err)
+	}
+	// The setting cannot lift the block, and an incoming call does not ring.
+	values, _ := a.service.GetAppPreferences()
+	values.VoiceCalls = true
+	if _, err := a.service.SetAppPreferences(values); err != nil {
+		t.Fatal(err)
+	}
+	if view, _ := a.service.GetCall(contact); view.Availability != "blocked" || CallCaptureAllowed(a.service) {
+		t.Fatal("saving the voice-call setting lifted the capture block")
+	}
+	rings := a.ringCount()
+	time.Sleep(call.DefaultMinOfferGap)
+	if _, err := b.service.StartCall(contact); err != nil {
+		t.Fatal(err)
+	}
+	callWait(t, "the caller to learn the blocked device is unavailable", func() bool {
+		view, _ := b.service.GetCall(contact)
+		return view.State == "idle" && view.LastEnd == "peer-unavailable"
+	})
+	if a.ringCount() != rings || CallCaptureAllowed(a.service) {
+		t.Fatal("a blocked device rang or allowed capture for an incoming call")
+	}
+	BlockCallCapture(nil) // must not panic
+	if CallCaptureAllowed(nil) {
+		t.Fatal("a missing service allowed capture")
+	}
+}
+
+// The background effort to tell a stalled session about a hang-up belongs to
+// the unlocked period it started in. Locking storage ends it.
+func TestLockingEndsTheBackgroundEffortToFinishAHangUp(t *testing.T) {
+	a, b, contact, _ := callTestPair(t, true, true)
+	a.service.calls.retryGap.Store(int64(30 * time.Millisecond))
+	id, _, _ := activeTestCall(t, a, b, contact)
+	var attempts atomic.Int32
+	a.service.callEndForTest = func(_ context.Context, messages *messaging.Registry, contactID string, _ call.ID) (call.Snapshot, error) {
+		attempts.Add(1)
+		return messages.Call(contactID), context.DeadlineExceeded
+	}
+	if _, err := a.service.EndCall(contact, id); err != nil {
+		t.Fatal(err)
+	}
+	callWait(t, "a background attempt", func() bool { return attempts.Load() >= 2 })
+	a.service.LockStorage()
+	settled := attempts.Load()
+	time.Sleep(200 * time.Millisecond)
+	if now := attempts.Load(); now > settled+1 {
+		t.Fatalf("the background effort kept going after lock: %d attempts became %d", settled, now)
+	}
+}

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "module": "github.com/wailsapp/wails/v3",
   "version": "v3.1.0",
-  "patchVersion": 5,
+  "patchVersion": 6,
   "replacement": "./.local/modules/wails-v3",
   "upstreamSum": "h1:ld0AXSicXiTTsIvmTq3qNn9FzCP8vIHRSJdkRLgaAo8=",
   "upstreamGoModSum": "h1:tzDY3W1jzN3ksSqfGalTt7K3PwnGfIqtl+IgIXlXz0I=",
@@ -11,7 +11,8 @@
     "completed_reader_response",
     "minimal_notification_activation",
     "native_only_drag_state",
-    "clipboard_write_failure"
+    "clipboard_write_failure",
+    "live_unsaved_permissions"
   ],
   "upstreamTree": {
     "sha256": "031658ed3d2445aea47806f219cb50187eb495404a7cee9d9d06a01a1b1ba420",
@@ -19,14 +20,14 @@
     "size": 41908357
   },
   "patchedTree": {
-    "sha256": "6586428005a6ce6c26a27359c6877e67abd99a27aff0aab8880ebd2bfd69b96c",
-    "count": 4560,
-    "size": 41977994
+    "sha256": "e5a778c136340d73108c0706f52d147309f834f951e34a69b6db336b45fff15d",
+    "count": 4564,
+    "size": 42007923
   },
   "patch": {
     "path": "third_party/patches/wails-v3-native.patch",
-    "sha256": "a7e4ec5de5eb381f4c69a6590a80ae63a22fe3fea8541a7bc57baf9838e87a7f",
-    "size": 81491
+    "sha256": "40a2dfae84f4c5c7dbb2fd11ef259d7ad40b32e8d3e194cb8e6c14353c0b72f4",
+    "size": 113692
   },
   "files": [
     {
@@ -44,8 +45,20 @@
     {
       "path": "internal/webview2/pkg/edge/chromium.go",
       "upstreamSHA256": "888e9594492b0cb9655bdb3d206d8504943ab3546a6dd6ca4dbe2a2b6140d431",
-      "sha256": "11d4b147b6124a99ca4709799a4b5eee740689e2165b69081587440fffeaf480",
-      "size": 42651
+      "sha256": "03bf51a8ad91bb873f318aa587da729964bd1d9d6c4d9f280c6537b34ac01477",
+      "size": 43320
+    },
+    {
+      "path": "internal/webview2/pkg/edge/whatsup_permissions_windows.go",
+      "upstreamSHA256": null,
+      "sha256": "80e296f581ac90dde2fcbaab483d9c6abb6ee312540ff59a943c9822fef7e90f",
+      "size": 8567
+    },
+    {
+      "path": "internal/webview2/pkg/edge/whatsup_permissions_windows_test.go",
+      "upstreamSHA256": null,
+      "sha256": "36f963ae2013548e07527f17a5884232c51309a5a63d6f14457f1a2393a19c2b",
+      "size": 12866
     },
     {
       "path": "internal/webview2/pkg/edge/whatsup_reader_stream_windows.go",
@@ -128,14 +141,14 @@
     {
       "path": "pkg/application/webview_window_options.go",
       "upstreamSHA256": "153b19915e180d6f4d664539e76ef3e52e64a0995bd33d09919e5a3bc62a4eb6",
-      "sha256": "f57209858c89f8f8ef1e298929814304895d5d0af9f3a75da09c78ab723a1d38",
-      "size": 36743
+      "sha256": "533c264288de39dd41b7db104af8a7eadf352f4bcb27db4bf7aad66dcd361684",
+      "size": 37258
     },
     {
       "path": "pkg/application/webview_window_windows.go",
       "upstreamSHA256": "0d4bf4d74f720c45e2630a9fe249eaf3a27c5428b18568201ead5a4d612eca05",
-      "sha256": "5fb20dee0380bc5a877ef9636f5eb7e806372dc780cc54c65edc09bbc3d8e722",
-      "size": 121862
+      "sha256": "8993ac13a2155a7b38d68af92080b098beb155e55f90b1fb0028c8c20b80c7d9",
+      "size": 122350
     },
     {
       "path": "pkg/application/whatsup_clipboard_test.go",
@@ -198,6 +211,18 @@
       "size": 1687
     },
     {
+      "path": "pkg/application/whatsup_permissions_windows.go",
+      "upstreamSHA256": null,
+      "sha256": "04d6c651c39fc01cbb098511b3b805e40978079f7406e2dd0db4e217ae8bf04a",
+      "size": 4163
+    },
+    {
+      "path": "pkg/application/whatsup_permissions_windows_test.go",
+      "upstreamSHA256": null,
+      "sha256": "eff86022f021a17eacdc26baf093285e9f0808b0e8f827fef2159d45e2a1ef78",
+      "size": 2661
+    },
+    {
       "path": "pkg/services/notifications/notifications_windows.go",
       "upstreamSHA256": "e0530a13810bacdcb63c7bafc721dfde19b4bcca9bfca337c38e0195ac39a70a",
       "sha256": "a9b16c533ed9d3c0a92e2f47a9268f1061959c5c014afb67cc0a48b81dc64bba",
@@ -234,6 +259,12 @@
       "sha256": "dce0d16f4d04a759405a19f3af4909fe50a917e8bfe08351eb3dc28563069975",
       "count": 4559,
       "size": 41975244
+    },
+    {
+      "patchVersion": 5,
+      "sha256": "6586428005a6ce6c26a27359c6877e67abd99a27aff0aab8880ebd2bfd69b96c",
+      "count": 4560,
+      "size": 41977994
     }
   ]
 }

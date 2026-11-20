@@ -3,12 +3,14 @@
 package desktop
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 
+	"whatsup/internal/call"
 	"whatsup/internal/chat"
 	"whatsup/internal/diagnostics"
 	"whatsup/internal/identity"
@@ -57,6 +59,10 @@ type Service struct {
 	calls              callControl
 	callOptionsMu      sync.Mutex
 	callRuntimeOptions RuntimeOptions
+	// Test seams for the two requests that reach the session loop. Nil in
+	// the application.
+	callEndForTest     func(context.Context, *messaging.Registry, string, call.ID) (call.Snapshot, error)
+	callEnforceForTest func(context.Context, *messaging.Registry)
 }
 
 func New(directory string, keys storage.KeyStore, listeners ...func(diagnostics.Event)) *Service {

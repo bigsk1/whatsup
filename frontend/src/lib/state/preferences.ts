@@ -48,6 +48,8 @@ export function createAppPreferences(
     set: async (value: AppPreferences): Promise<unknown> =>
       (await service()).SetAppPreferences(value),
   },
+  /** Runs with the values about to be saved, before the desktop is asked. */
+  beforeSave: (next: AppPreferences) => void = () => {},
 ) {
   let current = {
     value: { ...defaultAppPreferences },
@@ -83,9 +85,9 @@ export function createAppPreferences(
     const epoch = ++generation;
     publish({ busy: true, notice: '' });
     try {
-      const value = validateAppPreferences(
-        await bridge.set(validateAppPreferences(input)),
-      );
+      const next = validateAppPreferences(input);
+      beforeSave(next);
+      const value = validateAppPreferences(await bridge.set(next));
       if (epoch === generation)
         publish({ value, notice: 'App preferences saved on this device.' });
     } catch {

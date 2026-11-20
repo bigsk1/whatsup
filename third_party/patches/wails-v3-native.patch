@@ -99,7 +99,7 @@
  }
 --- a/internal/webview2/pkg/edge/chromium.go
 +++ b/internal/webview2/pkg/edge/chromium.go
-@@ -86,6 +86,7 @@
+@@ -86,10 +86,21 @@
  	AdditionalBrowserArgs         []string
  	NonClientRegionSupportEnabled bool
  	CompositionControllerEnabled  bool
@@ -107,7 +107,21 @@
  
  	// permissions
  	permissions      map[CoreWebView2PermissionKind]CoreWebView2PermissionState
-@@ -568,6 +569,9 @@
+ 	globalPermission *CoreWebView2PermissionState
++	// PermissionSource, when set, answers every permission request at the
++	// moment it is made and keeps the answer out of the profile. See
++	// whatsup_permissions_windows.go.
++	PermissionSource func(CoreWebView2PermissionKind) (CoreWebView2PermissionState, bool)
++	// PermissionsSecured is set once the runtime has confirmed that no saved
++	// answer remains for the application's origin. Until then a
++	// PermissionSource is not consulted and every request is denied.
++	// PermissionsSettled records that the question was answered either way.
++	PermissionsSecured bool
++	PermissionsSettled bool
+ 
+ 	// Callbacks
+ 	MessageCallback                          func(message string, sender *ICoreWebView2, args *ICoreWebView2WebMessageReceivedEventArgs)
+@@ -568,6 +579,9 @@
  }
  
  func (e *Chromium) fallbackToCoreWebView2Controller(reason error) error {
@@ -117,6 +131,16 @@
  	log.Printf("[WebView2] Composition hosting unavailable, falling back to HWND controller: %v\n", reason)
  
  	e.releaseCompositionController()
+@@ -826,6 +840,9 @@
+ }
+ 
+ func (e *Chromium) PermissionRequested(_ *ICoreWebView2, args *iCoreWebView2PermissionRequestedEventArgs) uintptr {
++	if e.PermissionSource != nil {
++		return e.whatsupPermissionRequested(args)
++	}
+ 	var result CoreWebView2PermissionState
+ 	kind, err := args.GetPermissionKind()
+ 	if err != nil {
 --- /dev/null
 +++ b/internal/webview2/pkg/edge/whatsup_reader_stream_windows.go
 @@ -0,0 +1,340 @@
@@ -1061,11 +1085,10 @@
  		w.disableDND()
 --- a/pkg/application/webview_window_options.go
 +++ b/pkg/application/webview_window_options.go
-@@ -187,6 +187,15 @@
- 	// When enabled, files dragged from the OS onto elements with the
+@@ -188,6 +188,15 @@
  	// `data-file-drop-target` attribute will trigger a FilesDropped event.
  	EnableFileDrop bool
-+
+ 
 +	// NativeFileDropHandler selects application-private native-only file drops.
 +	// It is mutually exclusive with EnableFileDrop. The callback runs on the UI
 +	// thread and must only enqueue work. Paths never enter browser DOM objects.
@@ -1074,9 +1097,26 @@
 +	// per-window serial. It never receives or reads file names or contents.
 +	// NativeFileDropHandler is required; this callback grants no drop authority.
 +	NativeFileDragHandler func(active bool, serial uint64) `json:"-"`
- 
++
  	// Permissions controls how capability requests (camera, microphone, …)
  	// from the web content are handled, per PermissionType. Unset entries use
+ 	// PermissionDefault. Cross-platform; see the Permission constants for the
+@@ -425,6 +434,15 @@
+ 
+ 	// Permissions map for WebView2. If empty, default permissions will be granted.
+ 	Permissions map[CoreWebView2PermissionKind]CoreWebView2PermissionState
++
++	// PermissionsSecured is called once, on the main thread and before the
++	// first page is loaded, when a permission policy is configured. It reports
++	// whether the runtime confirmed that no saved permission answer remains
++	// for the application. With false, a grant saved earlier may still be
++	// honoured by WebView2 without asking: every request that reaches the
++	// window is denied, and the application must keep capture unavailable by
++	// its own means for this run.
++	PermissionsSecured func(secured bool)
+ 
+ 	// ExStyle is the extended window style
+ 	ExStyle int
 --- a/pkg/application/webview_window_windows.go
 +++ b/pkg/application/webview_window_windows.go
 @@ -39,6 +39,7 @@
@@ -1112,7 +1152,20 @@
  	w.requestCancellation.close()
  	// Re-enable parent window if this was a modal window
  	if w.parentHWND != 0 {
-@@ -2639,6 +2645,17 @@
+@@ -2622,6 +2628,12 @@
+ 		}
+ 	}
+ 
++	if hasPermissionPolicy {
++		// WhatsUp: a configured policy is read at each request, not copied
++		// once, and no answer is saved in the profile.
++		chromium.PermissionSource = w.whatsupPermissionSource(opts.Permissions)
++	}
++
+ 	chromium.MessageCallback = w.processMessage
+ 	chromium.MessageWithAdditionalObjectsCallback = w.processMessageWithAdditionalObjects
+ 	chromium.WebResourceRequestedCallback = w.processRequest
+@@ -2639,6 +2651,17 @@
  		}
  	} else if !chromium.Embed(w.hwnd) {
  		return false
@@ -1130,7 +1183,21 @@
  	}
  
  	// Configure who owns the WebView2 rasterization scale on a monitor-DPI
-@@ -3023,6 +3040,9 @@
+@@ -2825,6 +2848,13 @@
+ func (w *windowsWebviewWindow) navigateInitialPage() {
+ 	chromium := w.chromium
+ 
++	// WhatsUp: with a permission policy, no page is loaded, first or restored,
++	// until the runtime has said whether saved permission answers were erased.
++	// This function runs again once that is known.
++	if w.whatsupSecurePermissionsFirst(chromium) {
++		return
++	}
++
+ 	// Restore the last URL directly after a rebuild. Reset navigation state in
+ 	// every branch so the replacement receives the visibility workaround.
+ 	switch {
+@@ -3023,6 +3053,9 @@
  	args *edge.ICoreWebView2WebMessageReceivedEventArgs,
  ) {
  	if strings.HasPrefix(message, "file:drop:") {
@@ -2393,4 +2460,700 @@
 +			t.Fatal("missing text touched the clipboard or was accepted")
 +		}
 +	})
++}
+--- /dev/null
++++ b/internal/webview2/pkg/edge/whatsup_permissions_windows.go
+@@ -0,0 +1,246 @@
++//go:build windows
++
++package edge
++
++import (
++	"errors"
++	"runtime"
++	"sync"
++	"unsafe"
++
++	"golang.org/x/sys/windows"
++)
++
++// WhatsUp: permission decisions that last exactly as long as the reason for
++// them.
++//
++// WebView2 saves the answer to a permission request in the profile by default.
++// After one Allow it stops raising PermissionRequested for that origin and
++// kind, in this session and later ones, so the page could open the microphone
++// whenever it liked. A messenger must allow capture only during an answered
++// call. With a PermissionSource set, every request is therefore:
++//
++//   - answered from the source at that moment, Allow or Deny, never WebView2's
++//     own prompt;
++//   - marked not to be saved (ICoreWebView2PermissionRequestedEventArgs3), so
++//     the next request raises the event again;
++//   - denied outright when the runtime is too old to keep an answer out of the
++//     profile, because an Allow that cannot be kept temporary is not given.
++//
++// ForgetSavedPermissions erases answers a previous build or an older runtime
++// already saved (ICoreWebView2Profile4). A saved Allow is honoured by WebView2
++// without raising the request event at all, so until the runtime has confirmed
++// that erasure nothing here can refuse it. PermissionsSecured records that
++// confirmation: without it every request that does arrive is denied, and the
++// window does not load the page before the answer is known.
++
++// Vtable slots of the interface methods used here. Each count starts after
++// IUnknown's three and includes every inherited interface.
++const (
++	whatsupArgs3PutSavesInProfile  = 12  // EventArgs 3..8, EventArgs2 9..10, EventArgs3 11..12
++	whatsupWebView13GetProfile     = 105 // ICoreWebView2 through ICoreWebView2_12 end at 104
++	whatsupProfile4SetPermission   = 15  // Profile 3..9, Profile2 10..12, Profile3 13..14
++	whatsupUnknownQueryInterface   = 0
++	whatsupUnknownRelease          = 2
++	whatsupIIDPermissionArgs3      = "{e61670bc-3dce-4177-86d2-c629ae3cb6ac}"
++	whatsupIIDWebView13            = "{f75f09a8-667e-4983-88d6-c8773f315e84}"
++	whatsupIIDProfile4             = "{8f4ae680-192e-4ec8-833a-21cfadaef628}"
++	whatsupHRESULTNoInterface      = 0x80004002
++	whatsupPermissionVtableCeiling = 128
++)
++
++// whatsupCOM is any COM object, addressed by vtable slot.
++type whatsupCOM struct {
++	vtbl *[whatsupPermissionVtableCeiling]ComProc
++}
++
++func whatsupQuery(object unsafe.Pointer, iid string) *whatsupCOM {
++	if object == nil {
++		return nil
++	}
++	source := (*whatsupCOM)(object)
++	if source.vtbl == nil || source.vtbl[whatsupUnknownQueryInterface] == 0 {
++		return nil
++	}
++	var result *whatsupCOM
++	hr, _, _ := source.vtbl[whatsupUnknownQueryInterface].Call(
++		uintptr(object),
++		uintptr(unsafe.Pointer(NewGUID(iid))),
++		uintptr(unsafe.Pointer(&result)),
++	)
++	if int32(hr) < 0 {
++		return nil
++	}
++	return result
++}
++
++func (c *whatsupCOM) release() {
++	if c != nil && c.vtbl != nil && c.vtbl[whatsupUnknownRelease] != 0 {
++		_, _, _ = c.vtbl[whatsupUnknownRelease].Call(uintptr(unsafe.Pointer(c)))
++	}
++}
++
++// whatsupKeepOutOfProfile asks WebView2 not to save this request's answer. It
++// reports whether the runtime accepted that.
++func (i *iCoreWebView2PermissionRequestedEventArgs) whatsupKeepOutOfProfile() bool {
++	args3 := whatsupQuery(unsafe.Pointer(i), whatsupIIDPermissionArgs3)
++	if args3 == nil {
++		return false
++	}
++	defer args3.release()
++	hr, _, _ := args3.vtbl[whatsupArgs3PutSavesInProfile].Call(uintptr(unsafe.Pointer(args3)), 0)
++	return int32(hr) >= 0
++}
++
++func (e *Chromium) whatsupPermissionRequested(args *iCoreWebView2PermissionRequestedEventArgs) uintptr {
++	result := CoreWebView2PermissionStateDeny
++	if kind, err := args.GetPermissionKind(); err == nil && e.PermissionsSecured {
++		if state, ok := e.PermissionSource(kind); ok && state == CoreWebView2PermissionStateAllow {
++			result = CoreWebView2PermissionStateAllow
++		}
++	}
++	// Even a Deny is kept out of the profile where possible: a saved Deny
++	// would silence the event and refuse the next answered call.
++	if !args.whatsupKeepOutOfProfile() {
++		result = CoreWebView2PermissionStateDeny
++	}
++	// On failure WebView2 applies its default handling to this one request.
++	_ = args.PutState(result)
++	return 0
++}
++
++// whatsupPermissionReset is one ForgetSavedPermissions request: a COM
++// completion handler shared by every kind it erases. It reports once, when
++// the runtime has answered for all of them.
++type whatsupPermissionReset struct {
++	vtbl      *whatsupPermissionResetVtbl
++	remaining int
++	failed    bool
++	done      func(erased bool)
++}
++
++type whatsupPermissionResetVtbl struct {
++	_IUnknownVtbl
++	Invoke ComProc
++}
++
++// Requests still waiting for the runtime. The map keeps each handler reachable
++// while only WebView2 holds a pointer to it.
++var whatsupPermissionResets = struct {
++	sync.Mutex
++	pending map[*whatsupPermissionReset]struct{}
++}{pending: map[*whatsupPermissionReset]struct{}{}}
++
++func whatsupPermissionResetQueryInterface(this *whatsupPermissionReset, _ uintptr, object *unsafe.Pointer) uintptr {
++	if object == nil {
++		return whatsupHRESULTNoInterface
++	}
++	// One interface besides IUnknown: either is this object.
++	*object = unsafe.Pointer(this)
++	return 0
++}
++
++// The pending map, not a COM count, decides the handler's lifetime.
++func whatsupPermissionResetAddRef(*whatsupPermissionReset) uintptr  { return 2 }
++func whatsupPermissionResetRelease(*whatsupPermissionReset) uintptr { return 1 }
++
++func whatsupPermissionResetInvoke(this *whatsupPermissionReset, errorCode uintptr) uintptr {
++	this.settle(int32(errorCode) >= 0)
++	return 0
++}
++
++// settle records one kind's result. WebView2 calls back on the thread that
++// made the request, which is also where ForgetSavedPermissions runs.
++func (r *whatsupPermissionReset) settle(ok bool) {
++	if r.remaining <= 0 {
++		return
++	}
++	if !ok {
++		r.failed = true
++	}
++	r.remaining--
++	if r.remaining > 0 {
++		return
++	}
++	whatsupPermissionResets.Lock()
++	delete(whatsupPermissionResets.pending, r)
++	whatsupPermissionResets.Unlock()
++	if done := r.done; done != nil {
++		r.done = nil
++		done(!r.failed)
++	}
++}
++
++var whatsupPermissionResetFn = whatsupPermissionResetVtbl{
++	_IUnknownVtbl{
++		NewComProc(whatsupPermissionResetQueryInterface),
++		NewComProc(whatsupPermissionResetAddRef),
++		NewComProc(whatsupPermissionResetRelease),
++	},
++	NewComProc(whatsupPermissionResetInvoke),
++}
++
++// ForgetSavedPermissions erases any answer saved in this webview's profile for
++// the origin and each kind, restoring the default so that the next request
++// raises PermissionRequested again.
++//
++// The erasure is asynchronous. done is called exactly once, on this thread,
++// when the runtime has answered for every kind: true only if every erasure
++// succeeded. When an error is returned nothing was requested and done is never
++// called; UnsupportedCapabilityError means the runtime has no permission
++// management. Either way the caller must treat saved answers as still present.
++func (e *Chromium) ForgetSavedPermissions(origin string, done func(erased bool), kinds ...CoreWebView2PermissionKind) error {
++	if e.webview == nil {
++		return errors.New("webview2 is not initialized")
++	}
++	if done == nil || len(kinds) == 0 {
++		return errors.New("a completion callback and at least one permission kind are required")
++	}
++	text, err := windows.UTF16PtrFromString(origin)
++	if err != nil {
++		return err
++	}
++	webview13 := whatsupQuery(unsafe.Pointer(e.webview), whatsupIIDWebView13)
++	if webview13 == nil {
++		return UnsupportedCapabilityError
++	}
++	defer webview13.release()
++	var profile *whatsupCOM
++	hr, _, _ := webview13.vtbl[whatsupWebView13GetProfile].Call(
++		uintptr(unsafe.Pointer(webview13)),
++		uintptr(unsafe.Pointer(&profile)),
++	)
++	if int32(hr) < 0 || profile == nil {
++		return UnsupportedCapabilityError
++	}
++	defer profile.release()
++	profile4 := whatsupQuery(unsafe.Pointer(profile), whatsupIIDProfile4)
++	if profile4 == nil {
++		return UnsupportedCapabilityError
++	}
++	defer profile4.release()
++
++	reset := &whatsupPermissionReset{vtbl: &whatsupPermissionResetFn, remaining: len(kinds), done: done}
++	whatsupPermissionResets.Lock()
++	whatsupPermissionResets.pending[reset] = struct{}{}
++	whatsupPermissionResets.Unlock()
++	refused := 0
++	for _, kind := range kinds {
++		hr, _, _ := profile4.vtbl[whatsupProfile4SetPermission].Call(
++			uintptr(unsafe.Pointer(profile4)),
++			uintptr(kind),
++			uintptr(unsafe.Pointer(text)),
++			uintptr(CoreWebView2PermissionStateDefault),
++			uintptr(unsafe.Pointer(reset)),
++		)
++		if int32(hr) < 0 {
++			// No completion will arrive for a request the runtime refused.
++			refused++
++		}
++	}
++	runtime.KeepAlive(text)
++	for ; refused > 0; refused-- {
++		reset.settle(false)
++	}
++	return nil
++}
+--- /dev/null
++++ b/internal/webview2/pkg/edge/whatsup_permissions_windows_test.go
+@@ -0,0 +1,291 @@
++//go:build windows
++
++package edge
++
++import (
++	"errors"
++	"testing"
++	"unsafe"
++
++	"golang.org/x/sys/windows"
++)
++
++// Fake COM objects, addressed by slot exactly as the code under test does.
++// No WebView2 runtime is involved.
++
++type whatsupFakeCOM struct {
++	vtbl *[whatsupPermissionVtableCeiling]ComProc
++}
++
++func whatsupFake(slots map[int]ComProc) *whatsupFakeCOM {
++	table := &[whatsupPermissionVtableCeiling]ComProc{}
++	table[whatsupUnknownRelease] = NewComProc(func(uintptr) uintptr { return 0 })
++	for slot, proc := range slots {
++		table[slot] = proc
++	}
++	return &whatsupFakeCOM{vtbl: table}
++}
++
++// whatsupFakeArgs builds permission request arguments. savesHR is what
++// put_SavesInProfile returns; args3 false means the runtime has no
++// ICoreWebView2PermissionRequestedEventArgs3.
++func whatsupFakeArgs(t *testing.T, kind CoreWebView2PermissionKind, kindHR uintptr, args3 bool, savesHR uintptr) (args *iCoreWebView2PermissionRequestedEventArgs, put *[]CoreWebView2PermissionState, saves *[]uintptr) {
++	t.Helper()
++	put, saves = &[]CoreWebView2PermissionState{}, &[]uintptr{}
++	third := whatsupFake(map[int]ComProc{
++		whatsupArgs3PutSavesInProfile: NewComProc(func(_ uintptr, value uintptr) uintptr {
++			*saves = append(*saves, value)
++			return savesHR
++		}),
++	})
++	args = &iCoreWebView2PermissionRequestedEventArgs{vtbl: &iCoreWebView2PermissionRequestedEventArgsVtbl{
++		_IUnknownVtbl: _IUnknownVtbl{
++			QueryInterface: NewComProc(func(_ uintptr, iid *GUID, object *unsafe.Pointer) uintptr {
++				if !args3 || *iid != *NewGUID(whatsupIIDPermissionArgs3) {
++					return whatsupHRESULTNoInterface
++				}
++				*object = unsafe.Pointer(third)
++				return 0
++			}),
++		},
++		GetPermissionKind: NewComProc(func(_ uintptr, out *CoreWebView2PermissionKind) uintptr {
++			*out = kind
++			return kindHR
++		}),
++		PutState: NewComProc(func(_ uintptr, state uintptr) uintptr {
++			*put = append(*put, CoreWebView2PermissionState(state))
++			return 0
++		}),
++	}}
++	return args, put, saves
++}
++
++func TestWhatsUpPermissionRequestsAreAnsweredLiveAndNeverSaved(t *testing.T) {
++	const microphone, camera = CoreWebView2PermissionKind(1), CoreWebView2PermissionKind(2)
++	const failure = uintptr(0x80004005)
++	table := map[CoreWebView2PermissionKind]CoreWebView2PermissionState{microphone: CoreWebView2PermissionStateDeny}
++	asked := 0
++	e := &Chromium{PermissionsSecured: true, PermissionSource: func(kind CoreWebView2PermissionKind) (CoreWebView2PermissionState, bool) {
++		asked++
++		state, ok := table[kind]
++		return state, ok
++	}}
++	request := func(kind CoreWebView2PermissionKind, kindHR uintptr, args3 bool, savesHR uintptr) (CoreWebView2PermissionState, []uintptr) {
++		t.Helper()
++		args, put, saves := whatsupFakeArgs(t, kind, kindHR, args3, savesHR)
++		if e.PermissionRequested(nil, args) != 0 {
++			t.Fatal("the handler reported a failure to WebView2")
++		}
++		if len(*put) != 1 {
++			t.Fatalf("PutState was called %d times, want once", len(*put))
++		}
++		return (*put)[0], *saves
++	}
++
++	// Outside a call the table says deny.
++	if state, saves := request(microphone, 0, true, 0); state != CoreWebView2PermissionStateDeny || len(saves) != 1 || saves[0] != 0 {
++		t.Fatalf("idle microphone request: state %v, SavesInProfile calls %v; want Deny and one FALSE", state, saves)
++	}
++	// The application flips the entry for an answered call. The very next
++	// request sees it: the table is read at request time, not copied.
++	table[microphone] = CoreWebView2PermissionStateAllow
++	if state, saves := request(microphone, 0, true, 0); state != CoreWebView2PermissionStateAllow || len(saves) != 1 || saves[0] != 0 {
++		t.Fatalf("in-call microphone request: state %v, SavesInProfile calls %v; want Allow and one FALSE", state, saves)
++	}
++	// And the call ends.
++	table[microphone] = CoreWebView2PermissionStateDeny
++	if state, _ := request(microphone, 0, true, 0); state != CoreWebView2PermissionStateDeny {
++		t.Fatalf("microphone request after the call: state %v, want Deny", state)
++	}
++	if asked != 3 {
++		t.Fatalf("the source was consulted %d times for 3 requests", asked)
++	}
++
++	// A kind the table does not mention, and one marked default, are denied:
++	// the runtime prompt, whose answer it would save, is never shown.
++	if state, _ := request(camera, 0, true, 0); state != CoreWebView2PermissionStateDeny {
++		t.Fatalf("unlisted kind: state %v, want Deny", state)
++	}
++	table[camera] = CoreWebView2PermissionStateDefault
++	if state, _ := request(camera, 0, true, 0); state != CoreWebView2PermissionStateDeny {
++		t.Fatalf("default kind: state %v, want Deny", state)
++	}
++
++	// An Allow that cannot be kept out of the profile is not given.
++	table[microphone] = CoreWebView2PermissionStateAllow
++	if state, saves := request(microphone, 0, false, 0); state != CoreWebView2PermissionStateDeny || len(saves) != 0 {
++		t.Fatalf("runtime without EventArgs3: state %v, SavesInProfile calls %v; want Deny and none", state, saves)
++	}
++	if state, _ := request(microphone, 0, true, failure); state != CoreWebView2PermissionStateDeny {
++		t.Fatalf("put_SavesInProfile failed: state %v, want Deny", state)
++	}
++	// A request whose kind cannot be read is denied.
++	if state, _ := request(microphone, failure, true, 0); state != CoreWebView2PermissionStateDeny {
++		t.Fatalf("unreadable kind: state %v, want Deny", state)
++	}
++
++	// Until the runtime has confirmed that saved answers are erased, the
++	// source is not even consulted: the table saying allow is not enough.
++	e.PermissionsSecured = false
++	before := asked
++	if state, saves := request(microphone, 0, true, 0); state != CoreWebView2PermissionStateDeny || len(saves) != 1 || saves[0] != 0 {
++		t.Fatalf("unsecured profile: state %v, SavesInProfile calls %v; want Deny and one FALSE", state, saves)
++	}
++	if asked != before {
++		t.Fatal("the source was consulted before saved answers were confirmed erased")
++	}
++}
++
++func TestWhatsUpWithoutAPermissionSourceTheOriginalHandlerIsUnchanged(t *testing.T) {
++	// No QueryInterface on these arguments: the original path must not need it.
++	var got []CoreWebView2PermissionState
++	args := &iCoreWebView2PermissionRequestedEventArgs{vtbl: &iCoreWebView2PermissionRequestedEventArgsVtbl{
++		GetPermissionKind: NewComProc(func(_ uintptr, out *CoreWebView2PermissionKind) uintptr { *out = 1; return 0 }),
++		PutState: NewComProc(func(_ uintptr, state uintptr) uintptr {
++			got = append(got, CoreWebView2PermissionState(state))
++			return 0
++		}),
++	}}
++	e := &Chromium{permissions: map[CoreWebView2PermissionKind]CoreWebView2PermissionState{1: CoreWebView2PermissionStateAllow}}
++	e.PermissionRequested(nil, args)
++	if len(got) != 1 || got[0] != CoreWebView2PermissionStateAllow {
++		t.Fatalf("original handler answered %v, want one Allow from the copied table", got)
++	}
++}
++
++func TestWhatsUpForgetSavedPermissionsReportsOnceWhenTheRuntimeHasAnsweredForEveryKind(t *testing.T) {
++	type erased struct {
++		kind   CoreWebView2PermissionKind
++		origin string
++		state  CoreWebView2PermissionState
++	}
++	var calls []erased
++	var handlers []*whatsupPermissionReset
++	// refuse lists the kinds whose request the runtime rejects at once.
++	build := func(webview13, profile4 bool, refuse map[CoreWebView2PermissionKind]bool) *Chromium {
++		fourth := whatsupFake(map[int]ComProc{
++			whatsupProfile4SetPermission: NewComProc(func(_ uintptr, kind uintptr, origin *uint16, state uintptr, handler *whatsupPermissionReset) uintptr {
++				calls = append(calls, erased{CoreWebView2PermissionKind(kind), windows.UTF16PtrToString(origin), CoreWebView2PermissionState(state)})
++				if refuse[CoreWebView2PermissionKind(kind)] {
++					return 0x80070057
++				}
++				handlers = append(handlers, handler)
++				return 0
++			}),
++		})
++		profile := whatsupFake(map[int]ComProc{
++			whatsupUnknownQueryInterface: NewComProc(func(_ uintptr, iid *GUID, object *unsafe.Pointer) uintptr {
++				if !profile4 || *iid != *NewGUID(whatsupIIDProfile4) {
++					return whatsupHRESULTNoInterface
++				}
++				*object = unsafe.Pointer(fourth)
++				return 0
++			}),
++		})
++		thirteenth := whatsupFake(map[int]ComProc{
++			whatsupWebView13GetProfile: NewComProc(func(_ uintptr, out *unsafe.Pointer) uintptr {
++				*out = unsafe.Pointer(profile)
++				return 0
++			}),
++		})
++		return &Chromium{webview: &ICoreWebView2{vtbl: &iCoreWebView2Vtbl{_IUnknownVtbl: _IUnknownVtbl{
++			QueryInterface: NewComProc(func(_ uintptr, iid *GUID, object *unsafe.Pointer) uintptr {
++				if !webview13 || *iid != *NewGUID(whatsupIIDWebView13) {
++					return whatsupHRESULTNoInterface
++				}
++				*object = unsafe.Pointer(thirteenth)
++				return 0
++			}),
++		}}}}
++	}
++	// complete delivers the asynchronous answer for one request, through the
++	// COM vtable exactly as WebView2 would.
++	complete := func(handler *whatsupPermissionReset, hr uintptr) {
++		handler.vtbl.Invoke.Call(uintptr(unsafe.Pointer(handler)), hr)
++	}
++	pending := func() int {
++		whatsupPermissionResets.Lock()
++		defer whatsupPermissionResets.Unlock()
++		return len(whatsupPermissionResets.pending)
++	}
++	const origin = "http://wails.localhost"
++
++	// Every kind erased: nothing is reported until the last answer arrives.
++	var reports []bool
++	report := func(erased bool) { reports = append(reports, erased) }
++	if err := build(true, true, nil).ForgetSavedPermissions(origin, report, 1, 2); err != nil {
++		t.Fatalf("erasing saved permissions failed: %v", err)
++	}
++	want := []erased{{1, origin, CoreWebView2PermissionStateDefault}, {2, origin, CoreWebView2PermissionStateDefault}}
++	if len(calls) != 2 || calls[0] != want[0] || calls[1] != want[1] {
++		t.Fatalf("SetPermissionState calls %+v, want %+v", calls, want)
++	}
++	if len(reports) != 0 || pending() != 1 {
++		t.Fatalf("reported %v with %d requests pending before the runtime answered", reports, pending())
++	}
++	complete(handlers[0], 0)
++	if len(reports) != 0 {
++		t.Fatal("erasure was reported after only one of two kinds was answered")
++	}
++	complete(handlers[1], 0)
++	if len(reports) != 1 || !reports[0] || pending() != 0 {
++		t.Fatalf("after both answers: reports %v, pending %d; want one true and none pending", reports, pending())
++	}
++	// A late or repeated answer changes nothing.
++	complete(handlers[1], 0x80004005)
++	if len(reports) != 1 {
++		t.Fatalf("a repeated completion was reported again: %v", reports)
++	}
++	var same unsafe.Pointer
++	if hr, _, _ := handlers[0].vtbl.QueryInterface.Call(uintptr(unsafe.Pointer(handlers[0])), 0, uintptr(unsafe.Pointer(&same))); hr != 0 || same != unsafe.Pointer(handlers[0]) {
++		t.Fatal("the completion handler did not answer QueryInterface with itself")
++	}
++
++	// One kind fails asynchronously: the whole erasure is reported as failed.
++	calls, handlers, reports = nil, nil, nil
++	if err := build(true, true, nil).ForgetSavedPermissions(origin, report, 1, 2); err != nil {
++		t.Fatal(err)
++	}
++	complete(handlers[0], 0x80004005)
++	complete(handlers[1], 0)
++	if len(reports) != 1 || reports[0] {
++		t.Fatalf("an asynchronous failure was reported as %v, want one false", reports)
++	}
++
++	// One kind is refused at once and never calls back; the other succeeds.
++	calls, handlers, reports = nil, nil, nil
++	if err := build(true, true, map[CoreWebView2PermissionKind]bool{1: true}).ForgetSavedPermissions(origin, report, 1, 2); err != nil {
++		t.Fatal(err)
++	}
++	if len(calls) != 2 || len(handlers) != 1 || len(reports) != 0 {
++		t.Fatalf("after one refused request: calls %d, handlers %d, reports %v", len(calls), len(handlers), reports)
++	}
++	complete(handlers[0], 0)
++	if len(reports) != 1 || reports[0] || pending() != 0 {
++		t.Fatalf("a refused request was reported as %v with %d pending, want one false and none", reports, pending())
++	}
++
++	// Every kind refused at once: reported before the call returns.
++	calls, handlers, reports = nil, nil, nil
++	if err := build(true, true, map[CoreWebView2PermissionKind]bool{1: true, 2: true}).ForgetSavedPermissions(origin, report, 1, 2); err != nil || len(reports) != 1 || reports[0] || pending() != 0 {
++		t.Fatalf("all requests refused: error %v, reports %v, pending %d; want nil, one false, none", err, reports, pending())
++	}
++
++	// Runtimes without permission management request nothing, report nothing
++	// and say so; the caller must then treat saved answers as still present.
++	for name, e := range map[string]*Chromium{"no ICoreWebView2_13": build(false, true, nil), "no ICoreWebView2Profile4": build(true, false, nil)} {
++		calls, reports = nil, nil
++		if err := e.ForgetSavedPermissions(origin, report, 1); !errors.Is(err, UnsupportedCapabilityError) || len(calls) != 0 || len(reports) != 0 {
++			t.Fatalf("%s: error %v, calls %d, reports %v; want unsupported, none, none", name, err, len(calls), reports)
++		}
++	}
++	if err := (&Chromium{}).ForgetSavedPermissions(origin, report, 1); err == nil {
++		t.Fatal("erasing before the webview exists did not fail")
++	}
++	if err := build(true, true, nil).ForgetSavedPermissions(origin, nil, 1); err == nil {
++		t.Fatal("erasing without a completion callback did not fail")
++	}
++	if err := build(true, true, nil).ForgetSavedPermissions(origin, report); err == nil {
++		t.Fatal("erasing no kinds did not fail")
++	}
++}
+--- /dev/null
++++ b/pkg/application/whatsup_permissions_windows.go
+@@ -0,0 +1,93 @@
++//go:build windows
++
++package application
++
++import (
++	"time"
++
++	"github.com/wailsapp/wails/v3/internal/assetserver"
++	"github.com/wailsapp/wails/v3/internal/webview2/pkg/edge"
++)
++
++// whatsupPermissionKinds are the kinds whose saved answers are erased when a
++// window with a permission policy starts.
++var whatsupPermissionKinds = []edge.CoreWebView2PermissionKind{
++	edge.CoreWebView2PermissionKind(CoreWebView2PermissionKindMicrophone),
++	edge.CoreWebView2PermissionKind(CoreWebView2PermissionKindCamera),
++	edge.CoreWebView2PermissionKind(CoreWebView2PermissionKindGeolocation),
++	edge.CoreWebView2PermissionKind(CoreWebView2PermissionKindNotifications),
++	edge.CoreWebView2PermissionKind(CoreWebView2PermissionKindOtherSensors),
++	edge.CoreWebView2PermissionKind(CoreWebView2PermissionKindClipboardRead),
++}
++
++// whatsupPermissionAnswer looks one kind up in the two permission tables as
++// they are now. The Windows-specific table wins, as it does when a window is
++// created. The cross-platform table is the map the application passed in, not
++// a copy, so an application that changes an entry on the main thread changes
++// the answer to the next request. Requests are raised on that same thread.
++func whatsupPermissionAnswer(kind edge.CoreWebView2PermissionKind, specific map[CoreWebView2PermissionKind]CoreWebView2PermissionState, general map[PermissionType]Permission) (edge.CoreWebView2PermissionState, bool) {
++	if state, ok := specific[CoreWebView2PermissionKind(kind)]; ok {
++		return edge.CoreWebView2PermissionState(state), true
++	}
++	for permission, state := range general {
++		if crossPermissionToWebView2Kind(permission) == kind && kind != edge.CoreWebView2PermissionKind(CoreWebView2PermissionKindUnknownPermission) {
++			return edge.CoreWebView2PermissionState(state), true
++		}
++	}
++	return edge.CoreWebView2PermissionStateDefault, false
++}
++
++func (w *windowsWebviewWindow) whatsupPermissionSource(specific map[CoreWebView2PermissionKind]CoreWebView2PermissionState) func(edge.CoreWebView2PermissionKind) (edge.CoreWebView2PermissionState, bool) {
++	return func(kind edge.CoreWebView2PermissionKind) (edge.CoreWebView2PermissionState, bool) {
++		return whatsupPermissionAnswer(kind, specific, w.parent.options.Permissions)
++	}
++}
++
++// whatsupPermissionResetTimeout bounds the wait for the runtime to confirm the
++// erasure. It normally answers within milliseconds.
++const whatsupPermissionResetTimeout = 5 * time.Second
++
++// whatsupSecurePermissionsFirst erases answers an earlier build left in the
++// profile for the application's own origin before any page is loaded in this
++// webview. A saved Allow is honoured by WebView2 without raising the request
++// event, so no page may run before the runtime has confirmed the erasure, and
++// a failure or a missing answer must be known to the application before any
++// script can ask for a device.
++//
++// It reports whether navigation was put off. When it was, navigateInitialPage
++// runs again once the answer is known. The window's PermissionsSecured option
++// receives that answer first; it is called once for each webview the window
++// creates, including one rebuilt after a renderer failure.
++func (w *windowsWebviewWindow) whatsupSecurePermissionsFirst(chromium *edge.Chromium) (deferred bool) {
++	if chromium == nil || chromium.PermissionSource == nil || chromium.PermissionsSettled {
++		return false
++	}
++	settle := func(secured bool) {
++		if chromium.PermissionsSettled {
++			return
++		}
++		chromium.PermissionsSettled = true
++		chromium.PermissionsSecured = secured
++		if !secured {
++			globalApplication.warning("webview2: saved permissions were not confirmed erased; device permissions stay denied for this webview")
++		}
++		if report := w.parent.options.Windows.PermissionsSecured; report != nil {
++			report(secured)
++		}
++		if w.chromium == chromium {
++			w.navigateInitialPage()
++		}
++	}
++	origin, err := assetserver.GetStartURL("")
++	if err == nil {
++		err = chromium.ForgetSavedPermissions(origin, settle, whatsupPermissionKinds...)
++	}
++	if err != nil {
++		settle(false)
++		return true
++	}
++	if !chromium.PermissionsSettled {
++		time.AfterFunc(whatsupPermissionResetTimeout, func() { InvokeAsync(func() { settle(false) }) })
++	}
++	return true
++}
+--- /dev/null
++++ b/pkg/application/whatsup_permissions_windows_test.go
+@@ -0,0 +1,54 @@
++//go:build windows
++
++package application
++
++import (
++	"testing"
++
++	"github.com/wailsapp/wails/v3/internal/webview2/pkg/edge"
++)
++
++func TestWhatsUpPermissionAnswersReadTheApplicationsLiveTable(t *testing.T) {
++	const microphone = edge.CoreWebView2PermissionKind(CoreWebView2PermissionKindMicrophone)
++	const camera = edge.CoreWebView2PermissionKind(CoreWebView2PermissionKindCamera)
++	const sensors = edge.CoreWebView2PermissionKind(CoreWebView2PermissionKindOtherSensors)
++	general := map[PermissionType]Permission{PermissionMicrophone: PermissionDeny, PermissionCamera: PermissionDeny}
++	specific := map[CoreWebView2PermissionKind]CoreWebView2PermissionState{CoreWebView2PermissionKindOtherSensors: CoreWebView2PermissionStateDeny}
++	answer := func(kind edge.CoreWebView2PermissionKind) (edge.CoreWebView2PermissionState, bool) {
++		return whatsupPermissionAnswer(kind, specific, general)
++	}
++	if state, ok := answer(microphone); !ok || state != edge.CoreWebView2PermissionStateDeny {
++		t.Fatalf("idle microphone: %v %v", state, ok)
++	}
++	// The application changes its own map; no call into the window is needed.
++	general[PermissionMicrophone] = PermissionAllow
++	if state, ok := answer(microphone); !ok || state != edge.CoreWebView2PermissionStateAllow {
++		t.Fatalf("microphone during a call: %v %v", state, ok)
++	}
++	if state, ok := answer(camera); !ok || state != edge.CoreWebView2PermissionStateDeny {
++		t.Fatalf("camera stays denied while the microphone is allowed: %v %v", state, ok)
++	}
++	general[PermissionMicrophone] = PermissionDeny
++	if state, _ := answer(microphone); state != edge.CoreWebView2PermissionStateDeny {
++		t.Fatalf("microphone after the call: %v", state)
++	}
++	// The Windows-specific table wins over the general one.
++	if state, ok := answer(sensors); !ok || state != edge.CoreWebView2PermissionStateDeny {
++		t.Fatalf("Windows-only kind: %v %v", state, ok)
++	}
++	specific[CoreWebView2PermissionKindMicrophone] = CoreWebView2PermissionStateDeny
++	general[PermissionMicrophone] = PermissionAllow
++	if state, _ := answer(microphone); state != edge.CoreWebView2PermissionStateDeny {
++		t.Fatalf("the Windows-specific deny did not win: %v", state)
++	}
++	// A kind in neither table has no answer, which the handler denies.
++	if _, ok := answer(edge.CoreWebView2PermissionKind(CoreWebView2PermissionKindGeolocation)); ok {
++		t.Fatal("an unlisted kind was given an answer")
++	}
++	if _, ok := answer(edge.CoreWebView2PermissionKind(CoreWebView2PermissionKindUnknownPermission)); ok {
++		t.Fatal("the unknown kind matched a table entry")
++	}
++	if len(whatsupPermissionKinds) != 6 {
++		t.Fatalf("%d permission kinds are erased at start, want all 6", len(whatsupPermissionKinds))
++	}
 +}

@@ -91,7 +91,8 @@ export interface CallView {
 
     /**
      * Availability says why a call can or cannot be placed now: ready,
-     * calls-off, offline, peer-update or busy.
+     * calls-off, offline, peer-update, busy or blocked. Blocked means this
+     * device could not secure its microphone permission for this run.
      */
     "availability": string;
 

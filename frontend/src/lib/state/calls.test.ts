@@ -23,6 +23,7 @@ vi.mock('../call/audio', () => ({ createAudioEngine: () => ({}) }));
 const contactID = 'AQEBAQEBAQEBAQEBAQEBAQ';
 const otherContact = 'AgICAgICAgICAgICAgICAg';
 const callID = 'CQkJCQkJCQkJCQkJCQkJCQ';
+const otherCallID = 'CgoKCgoKCgoKCgoKCgoKCg';
 
 function view(patch: Partial<CallView> = {}): CallView {
   return {
@@ -309,6 +310,55 @@ describe('calls', () => {
       'This device cannot run call audio. (step: worklet)',
     );
     expect(h.engines[0].stopped).toBe(1);
+  });
+
+  it('keeps the microphone off when a hang-up fails and a refresh still shows the call answered', async () => {
+    const h = harness();
+    const live = view({ state: 'active', callID, activeSince: 1 });
+    await h.push(live);
+    expect(h.engines).toHaveLength(1);
+    // The desktop refuses the hang-up and still reports the call as active.
+    h.bridge.end = vi.fn(async () => {
+      throw new Error('The call could not be changed');
+    });
+    await h.calls.end(get(h.calls.state).current!);
+    expect(h.engines[0].stopped).toBe(1);
+    // The refresh after the failure, and any later hint, show it active.
+    h.hint({ contactID });
+    h.hint({ contactID });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(get(h.calls.state).current?.state).toBe('active');
+    expect(h.engines).toHaveLength(1);
+    expect(h.engines[0].started).toBe(1);
+    expect(h.log.filter((entry) => entry === 'mic-start')).toHaveLength(1);
+    // A different call still gets its microphone.
+    await h.push(
+      view({ state: 'active', callID: otherCallID, activeSince: 2 }),
+    );
+    expect(h.engines).toHaveLength(2);
+  });
+
+  it('stops capture at once when voice calls are being switched off, and keeps it stopped for that call', async () => {
+    const h = harness();
+    await h.push(view({ state: 'active', callID, activeSince: 1 }));
+    expect(h.engines[0].started).toBe(1);
+    h.calls.stopCapture(); // before the desktop has been asked anything
+    expect(h.engines[0].stopped).toBe(1);
+    expect(h.bridge.end).not.toHaveBeenCalled();
+    expect(h.calls.stats()).toBeNull();
+    // The desktop is slow to end the call: views still say active.
+    h.hint({ contactID });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(h.engines).toHaveLength(1);
+
+    // A ringing call is silenced too, and answering it later starts nothing.
+    const ringing = harness();
+    await ringing.push(view({ state: 'incoming', callID }));
+    expect(ringing.log).toContain('ringtone');
+    ringing.calls.stopCapture();
+    expect(ringing.log.at(-1)).toBe('ring-stop');
+    await ringing.push(view({ state: 'connecting', callID }));
+    expect(ringing.engines).toHaveLength(0);
   });
 
   it('offers audio counters only while a call is answered', async () => {

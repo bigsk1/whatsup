@@ -91,6 +91,32 @@ describe('local app preferences', () => {
     expect(get(preferences.state).value).toEqual(defaultAppPreferences);
     expect(get(preferences.state).loaded).toBe(false);
   });
+  it('runs the before-save step with the new values before the desktop is asked, even if the desktop never answers', async () => {
+    const held = deferred<unknown>();
+    const order: string[] = [];
+    const bridge = {
+      get: vi.fn(async () => ({ ...defaultAppPreferences, voiceCalls: true })),
+      set: vi.fn(() => {
+        order.push('desktop asked');
+        return held.promise;
+      }),
+    };
+    const preferences = createAppPreferences(bridge, (next) =>
+      order.push(
+        'before save: voice calls ' + (next.voiceCalls ? 'on' : 'off'),
+      ),
+    );
+    await preferences.load();
+    const saving = preferences.save({
+      ...defaultAppPreferences,
+      voiceCalls: false,
+    });
+    // The desktop has not answered and never needs to.
+    expect(order).toEqual(['before save: voice calls off', 'desktop asked']);
+    preferences.stop();
+    held.resolve(defaultAppPreferences);
+    await saving;
+  });
   it('keeps failed writes unavailable until an authoritative reload without exposing raw errors', async () => {
     const bridge = {
       get: vi.fn(async () => defaultAppPreferences),

@@ -63,6 +63,25 @@ Saved relay services cannot be changed silently by a peer. A service migration
 requires both users' authenticated approval. The operator can update its server
 list under the same service URL.
 
+## Voice calls
+
+Voice calls start off. **Allow voice calls** under **Settings → App behavior**
+turns them on for this device. WhatsUp uses your default microphone only during
+a call you placed or answered. A ringing call does not turn it on, and it is
+released when the call ends, when you switch voice calls off or when you go
+offline. Your operating system may show its own microphone indicator while a
+call is in progress. The camera is never used.
+
+Calls are not recorded. Audio is encrypted with fresh keys for each call, sent
+to the approved contact inside the encrypted connection, and played; nothing is
+saved to disk and no call history is kept beyond a notice on screen. The
+**Details** readout during a call shows counters and levels only. It stays on
+the device and is gone when the call ends.
+
+A relay service, if one carries the call, cannot hear it. Like any network
+observer it can see that encrypted packets are flowing between two addresses
+and for how long.
+
 ## Files, exports and deletion
 
 Received files require Accept/Decline. The exception is per-contact automatic

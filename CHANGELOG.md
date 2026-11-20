@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Voice calls between two connected contacts. Calls are off until you turn on
+  **Allow voice calls** under **Settings → App behavior**. Place a call from the
+  phone button; the other person accepts or declines. The call bar shows the call
+  time, **Direct** or **Relayed**, and a mute control. Call audio is encrypted
+  with fresh keys for every call. The microphone is used only during an answered
+  call and is released as soon as it ends. Both devices need a version with
+  voice calls.
+- **Silence the ring sound** in App behavior turns off the ring for incoming and
+  outgoing calls.
+- On Linux desktops that don't let an app raise its own window, the tray's
+  **Show WhatsUp**, launching WhatsUp again and an incoming call now bring a
+  minimized or covered window to the front.
+- The sidebar tagline is now **Private & encrypted**.
+
 ## 0.1.2 (unsigned preview)
 
 - Pause and resume one contact’s connection while other conversations stay

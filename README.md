@@ -2,16 +2,31 @@
 
 WhatsUp is a private desktop messenger for Windows and Linux. You pair with each
 person once, using an invitation that works a single time, and from then on your
-two computers talk over an encrypted connection. There is no account to create
-and no server that stores your messages. Every conversation is between exactly
-two devices; there are no group chats.
+two computers talk over an encrypted connection: messages, files and voice calls.
+There is no account to create and no server that stores your messages. Every
+conversation is between exactly two devices; there are no group chats.
 
 ![Stick figure animation introducing WhatsUp, a private desktop messenger](docs/images/whatsup-stick.webp)
 
-> WhatsUp **0.1.2** is unsigned preview software. Windows installers are not
-> Authenticode-signed, automatic updates are disabled, and the app has not
-> had an independent security audit. Read the [security information](SECURITY.md)
-> before relying on it for sensitive conversations.
+> WhatsUp **0.1.2** is a preview release. Windows installers are not yet
+> code-signed and automatic updates are off. The [security information](SECURITY.md)
+> describes the design in detail, including its current limits.
+
+## Private by design
+
+- **Only your two devices can read what you send.** Messages, files and calls
+  travel inside a WireGuard tunnel with a pre-shared key unique to each contact,
+  and every connection is authenticated again against the identity you approved
+  when you paired.
+- **A relay can't read your traffic.** WhatsUp connects directly when it can.
+  When it uses a relay, the relay carries only encrypted packets it can't open.
+- **Your history is encrypted on your device.** Messages, queued messages,
+  attachments and contact details are stored encrypted, protected by your
+  operating system's credential store and an optional passphrase.
+- **No accounts, no message servers, no analytics.** There is nothing to sign up
+  for and nowhere your conversations are kept except your own two computers.
+- **Open source.** Every release is built in the open with checksums, a
+  dependency list and a build attestation you can verify.
 
 ## Getting started
 
@@ -90,6 +105,8 @@ Export recovery copy…** and keep the export and its recovery passphrase safe.
   what you wrote once your contact's app is running again.
 - Photos, videos and files up to 2 GiB each. The receiver approves every
   transfer, and transfers can be paused, resumed or cancelled.
+- Voice calls with a connected contact, encrypted between your two devices.
+  Calls stay off until you turn them on.
 - Optional shared display names, and private nicknames that never leave your
   device.
 - Optional profile pictures with separate controls for sharing your photo and
@@ -264,6 +281,35 @@ Both devices need **0.0.13 or later** for acknowledged cancellation. Versions
 0.0.11 and 0.0.12 can't confirm a remote cancellation, so the pending notice can
 stay until both devices are updated.
 
+## Voice calls
+
+Voice calls are off until you turn on **Settings → App behavior → Allow voice
+calls**. Both people need a WhatsUp version with voice calls, which arrives in
+the preview after 0.1.2, and both need to be connected.
+
+To call, open the conversation, click the phone button and confirm. The other
+person sees an incoming call and chooses **Accept** or **Decline**. Calls ring on
+both sides, and you can silence the ring sound in App behavior. If WhatsUp is in
+the tray or minimized, an incoming call brings its window forward where your
+desktop allows it.
+
+During a call the bar at the top shows the call time, whether the connection is
+**Direct** or **Relayed**, and whether your microphone is on. Click the
+microphone to mute or unmute, and **Hang up** to end the call. **Details** shows
+a few live counters, which help if one side can't hear the other.
+
+Your microphone is used only during a call you placed or answered. A ringing
+call never turns it on, and it is released the moment the call ends, when you
+switch voice calls off, or when you go offline. WhatsUp records nothing.
+
+Call audio is encrypted with fresh keys for every call, on top of the encrypted
+connection it already travels in. A relay carries it the same way it carries
+messages: as encrypted packets it can't read.
+
+For the best sound, use headphones on both ends. Without them, the other person
+may hear an echo of themselves. If your voice is too loud or too quiet for them,
+adjust your microphone level in your system's sound settings.
+
 ## Settings and privacy
 
 Settings has six pages: Profile, Contact, Appearance, App behavior, Security &
@@ -339,6 +385,10 @@ depends on the relay service you chose.
 Changing relay services needs approval on both devices and keeps identity pins in
 place. A contact can't silently switch providers while reconnecting.
 
+You can also run your own relay. This
+[step-by-step discussion](https://github.com/bigsk1/whatsup/discussions/2)
+walks through setting one up.
+
 Transfers over 100 MB need extra approval for relay bandwidth when WhatsUp has no
 recent sign of a direct connection. It's a precaution to limit relay bandwidth,
 not a guarantee that data never passes through a relay. A strict direct-only mode is not
@@ -347,7 +397,7 @@ available yet.
 ## Current limits
 
 WhatsUp has no group chat, offline mailbox, conversation search or public contact
-directory. Support for older protocol versions is limited, and
+directory. Voice calls are one-to-one, and video calls are not available yet. Support for older protocol versions is limited, and
 an older version of the app may not be able to read local data written by a newer
 one. Native video playback hasn't been checked on every desktop environment, and
 the app hasn't been tested under every network condition. There is no signed

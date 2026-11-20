@@ -55,7 +55,11 @@
   import { createAvatars } from './lib/state/avatars';
   import type { LocalProfile } from './lib/profile';
 
-  const appPreferences = createAppPreferences();
+  // Switching voice calls off releases the microphone in this window at once,
+  // before the desktop is asked and whatever it answers.
+  const appPreferences = createAppPreferences(undefined, (next) => {
+    if (!next.voiceCalls) calls.stopCapture();
+  });
   const appPreferencesState = appPreferences.state;
   // Calls need unlocked storage but must not wait for unrelated busy work:
   // hanging up always has to go through.
@@ -814,7 +818,7 @@
       <Logo size="2.6rem" label="WhatsUp" />
       <div class="wordmark">
         <h1 id="contacts-heading">WhatsUp<span>.</span></h1>
-        <small>Private, encrypted chat</small>
+        <small>Private &amp; encrypted</small>
       </div>
       <button
         class="icon-button accent"

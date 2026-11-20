@@ -25,7 +25,7 @@ import { validID } from './bridge';
 export type CallStateName =
   'idle' | 'outgoing' | 'incoming' | 'connecting' | 'active';
 export type CallAvailability =
-  'ready' | 'calls-off' | 'offline' | 'peer-update' | 'busy';
+  'ready' | 'calls-off' | 'offline' | 'peer-update' | 'busy' | 'blocked';
 
 export interface CallView {
   contactID: string;
@@ -42,7 +42,14 @@ export interface CallView {
 }
 
 const states = ['idle', 'outgoing', 'incoming', 'connecting', 'active'];
-const availabilities = ['ready', 'calls-off', 'offline', 'peer-update', 'busy'];
+const availabilities = [
+  'ready',
+  'calls-off',
+  'offline',
+  'peer-update',
+  'busy',
+  'blocked',
+];
 const ends = [
   '',
   'hung-up',
@@ -337,6 +344,15 @@ export function createCalls(options: {
   let ringing = '';
   let media: { callID: string; link: MediaLink; engine: CallEngine } | null =
     null;
+  // Calls this device has ended on its own side: hung up, declined, or calls
+  // switched off. Capture for such a call never starts again, whatever a
+  // later view says. A failed or slow hang-up must not reopen the microphone.
+  const endedHere: string[] = [];
+  function endLocally(callID: string) {
+    if (!callID || endedHere.includes(callID)) return;
+    endedHere.push(callID);
+    if (endedHere.length > 16) endedHere.shift();
+  }
 
   function stopMedia() {
     if (!media) return;
@@ -387,7 +403,7 @@ export function createCalls(options: {
     }
     // The microphone follows answered calls only. A ringing call, incoming
     // or outgoing, never reaches this branch.
-    if (answered(view)) {
+    if (answered(view) && !endedHere.includes(view!.callID)) {
       if (media?.callID !== view!.callID) startMedia(view!);
       else media.engine.setMuted(view!.micMuted);
     } else stopMedia();
@@ -450,7 +466,9 @@ export function createCalls(options: {
 
   function end(contactID: string, callID: string) {
     // Stop capturing before asking Go: hanging up must never wait on the
-    // bridge to release the microphone.
+    // bridge to release the microphone. The call stays ended here even if the
+    // request fails and a refresh still shows it as answered.
+    endLocally(callID);
     if (media?.callID === callID) stopMedia();
     return run(contactID, () => bridge.end(contactID, callID));
   }
@@ -487,6 +505,17 @@ export function createCalls(options: {
     },
     dismissNotice: () => publish({ notice: '' }),
     /**
+     * Voice calls are being switched off, or capture must stop for another
+     * local reason: release the microphone and the ring now, and keep them
+     * released for the call in progress. Nothing here waits on the desktop.
+     */
+    stopCapture() {
+      if (current.current) endLocally(current.current.callID);
+      ringing = '';
+      ringer.stop();
+      stopMedia();
+    },
+    /**
      * Counters for the answered call's audio, or null when no call is
      * answered. Read on demand by the call details readout.
      */
@@ -505,6 +534,7 @@ export function createCalls(options: {
       ringing = '';
       ringer.stop();
       stopMedia();
+      endedHere.length = 0;
       publish({ views: {}, current: null, notice: '', busy: false });
     },
     destroy() {

@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/binary"
 	"errors"
-	"runtime"
 	"sync"
 	"time"
 
@@ -91,26 +90,27 @@ func registerCallMedia(app *application.App, service *desktop.Service) {
 // setCallCapture opens the microphone gate for an answered call and closes it
 // afterwards.
 //
-// Linux: WebKitGTK has no permission prompt of its own, and the pinned Wails
-// answers each request from the window's permission table at that moment. The
-// table says deny except between an answer and the end of that call. The
-// change is made on the GTK thread, where the table is read.
+// The window's permission table says deny except between an answer and the
+// end of that call. Each request is answered from that table at the moment it
+// is made: by the pinned Wails for WebKitGTK, which has no prompt of its own,
+// and by the reviewed Wails patch for WebView2, which would otherwise copy the
+// table once and save an Allow in the profile for good. The change is made on
+// the main thread, where the table is read.
 //
-// Windows: the table entry is "default", so WebView2 shows its own prompt the
-// first time and remembers the answer. This function is a no-op there. Closing
-// that gate at runtime needs a Wails patch revision that is not written yet.
-func (h *nativeHost) setCallCapture(allowed bool) {
-	if h == nil || runtime.GOOS != "linux" || h.permissions == nil || h.life.Err() != nil {
+// The argument is only a signal that the answer may have changed. What is
+// written is whatever desktop.CallCaptureAllowed says when the update runs on
+// the main thread, so an update that was queued for an earlier call state and
+// runs late, or after this function gave up waiting for it, cannot reopen the
+// gate: it applies the present truth like any other.
+func (h *nativeHost) setCallCapture(bool) {
+	if h == nil || h.permissions == nil || h.life.Err() != nil {
 		return
 	}
-	state := application.PermissionDeny
-	if allowed {
-		state = application.PermissionAllow
-	}
+	update := captureGateUpdate(h.permissions, func() bool { return desktop.CallCaptureAllowed(h.backend) })
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		application.InvokeSync(func() { h.permissions[application.PermissionMicrophone] = state })
+		application.InvokeSync(update)
 	}()
 	select {
 	case <-done:

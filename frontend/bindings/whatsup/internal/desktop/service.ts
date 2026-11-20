@@ -122,6 +122,12 @@ export function DiscardAttachment(id: string, handle: string): $CancellablePromi
 
 /**
  * EndCall cancels, declines or hangs up the given call.
+ * 
+ * The local side ends first and unconditionally: the call is revoked, which
+ * closes the capture gate and the media stream and shows the call as over,
+ * before the session is asked to tell the other device. If that request is
+ * slow or fails, this device stays ended and keeps trying in the background;
+ * the microphone never waits on the network.
  */
 export function EndCall(contactID: string, callID: string): $CancellablePromise<$models.CallView> {
     return $Call.ByID(3382137790, contactID, callID);

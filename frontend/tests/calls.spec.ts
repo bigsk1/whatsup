@@ -62,7 +62,8 @@ interface CallView {
   micMuted: boolean;
   peerMicMuted: boolean;
   activeSince: number;
-  availability: 'ready' | 'calls-off' | 'offline' | 'peer-update' | 'busy';
+  availability:
+    'ready' | 'calls-off' | 'offline' | 'peer-update' | 'busy' | 'blocked';
   lastEnd: string;
   lastOutgoing: boolean;
   lastConnected: boolean;

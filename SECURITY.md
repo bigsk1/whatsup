@@ -37,6 +37,56 @@ The approved service is saved with each contact. Relay migration requires
 explicit authenticated consent on both sides, retaining identity pins. An
 operator may update its map; this is not permanent operator certificate pinning.
 
+## Voice calls
+
+Voice calls are off until enabled and exist only between two approved, connected
+contacts whose builds both support them. Ring, accept, decline, hang-up and mute
+signals travel as frames on the same mutually authenticated TLS 1.3 session as
+messages. A device rings only for the pinned identity, takes one call at a time,
+and limits how fast call frames may arrive.
+
+Call audio is sealed with SRTP using AES-256-GCM, with replay protection on.
+Each call's keys come from the session's TLS 1.3 exporter, bound to a random
+call identifier chosen by the caller and a random value chosen by the answering
+device. Both devices contribute fresh randomness to every call, each direction
+has its own key, and a session refuses to derive keys for the same call twice.
+The sealed packets travel on a UDP flow inside the same WireGuard tunnel as
+everything else. That flow is opened only for an answered call with the approved
+peer and closed when the call ends. WhatsUp asks the audio encoder for a
+constant bitrate with silence suppression off, which keeps packet sizes from
+following speech where the system's encoder supports it. Where it does not, the
+encoder falls back to a variable bitrate. Either way the content is encrypted,
+but packet sizes and timing are visible on the network and can still reveal
+patterns such as when someone is speaking.
+
+The webview's microphone permission is denied except between an answer and the
+end of that call, and the camera is always denied. A ringing call cannot open
+the microphone or attach an audio stream. On Windows each request is answered
+at the moment it is made, the answer is not saved in the WebView2 profile, and
+answers saved by earlier preview builds are erased at start. The page is not
+loaded until the runtime confirms that erasure; if it cannot, or the runtime is
+too old to leave an answer unsaved (before version 111), voice calls are
+unavailable for that run and the page is served with capture refused. On
+Linux, WebKitGTK requests are answered from the same table. Hanging up, switching voice calls off and going offline each end the
+call and close capture on this device first, without waiting for the other
+device or the network. Calls are not recorded and audio is never written to
+disk. The call details readout shows counters only and stays on the device.
+
+Limits to keep in mind:
+
+- Capture, Opus encoding and decoding, and playback run in the system webview
+  (WebView2 or WebKitGTK). Audio packets from an approved contact are parsed by
+  that engine's decoder, as their videos already are.
+- A relay, or anyone watching the network, cannot read a call but can see that
+  packets are flowing, their sizes and timing, and for how long. That is enough
+  to infer that a call is taking place, its duration and possibly its rhythm.
+- The **Direct** / **Relayed** label on a call is the same sampled reading as
+  elsewhere, not packet-boundary enforcement.
+- WebKitGTK has no echo cancellation, noise suppression or automatic gain.
+  Headphones avoid echo; microphone level is set in the system's sound settings.
+- Bringing the window forward for an incoming call depends on the desktop. Some
+  only flash or notify.
+
 ## Local encryption and access
 
 A random master key is wrapped using the OS-protected credential. An optional

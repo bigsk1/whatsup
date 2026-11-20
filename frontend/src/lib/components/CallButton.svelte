@@ -33,9 +33,11 @@
             ? 'Connect to this contact before calling'
             : view.availability === 'peer-update'
               ? 'This contact needs a newer WhatsUp to take calls'
-              : view.availability === 'calls-off'
-                ? 'Checking voice call settings'
-                : '',
+              : view.availability === 'blocked'
+                ? 'Voice calls are unavailable until WhatsUp restarts: microphone access could not be secured'
+                : view.availability === 'calls-off'
+                  ? 'Checking voice call settings'
+                  : '',
   );
   const label = $derived(
     !voiceCalls ? 'Voice call (switched off)' : blocked || `Call ${name}`,

@@ -25,10 +25,9 @@ func TestWebviewPermissionsDenyEveryNamedCapability(t *testing.T) {
 		}
 	}
 	for kind, state := range policy {
-		if state == application.PermissionAllow {
-			t.Errorf("permission kind %d is allowed without asking", kind)
-		}
-		if kind != application.PermissionMicrophone && state != application.PermissionDeny {
+		// Deny, never "default": default would hand the decision to a webview
+		// prompt whose answer WebView2 saves.
+		if state != application.PermissionDeny {
 			t.Errorf("permission kind %d is %d, want deny", kind, state)
 		}
 	}
@@ -37,19 +36,68 @@ func TestWebviewPermissionsDenyEveryNamedCapability(t *testing.T) {
 	}
 }
 
-// The microphone is the one capability calls need. It must never be granted
-// silently by the static policy on either platform.
-func TestMicrophoneIsNeverAllowedWhileNoCallIsAnswered(t *testing.T) {
-	if got := microphoneIdlePermission("linux"); got != application.PermissionDeny {
-		t.Errorf("Linux microphone policy outside a call is %d, want deny", got)
-	}
-	if got := microphoneIdlePermission("windows"); got != application.PermissionDefault {
-		t.Errorf("Windows microphone policy is %d, want the WebView2 prompt", got)
-	}
-	for _, goos := range []string{"linux", "windows", "darwin", ""} {
-		if microphoneIdlePermission(goos) == application.PermissionAllow {
-			t.Errorf("%q grants the microphone without asking", goos)
+// The microphone is the one capability calls need. It is allowed only by the
+// capture gate, only for the microphone, and deny is restored afterwards.
+func TestTheCaptureGateChangesOnlyTheMicrophoneAndRestoresDeny(t *testing.T) {
+	table := webviewPermissions()
+	setCapturePermission(table, true)
+	for kind, state := range table {
+		want := application.PermissionDeny
+		if kind == application.PermissionMicrophone {
+			want = application.PermissionAllow
 		}
+		if state != want {
+			t.Errorf("during a call permission kind %d is %d, want %d", kind, state, want)
+		}
+	}
+	setCapturePermission(table, false)
+	for kind, state := range table {
+		if state != application.PermissionDeny {
+			t.Errorf("after the call permission kind %d is %d, want deny", kind, state)
+		}
+	}
+	if len(table) != len(webviewPermissions()) {
+		t.Error("the capture gate added or removed table entries")
+	}
+	setCapturePermission(nil, true) // a host without a table must not panic
+}
+
+// A gate update that was queued when a call was answered may run after the
+// update queued when it ended, or after its caller stopped waiting. It must
+// not reopen the gate.
+func TestALateCaptureGateUpdateAppliesThePresentTruth(t *testing.T) {
+	table := webviewPermissions()
+	answered := false
+	truth := func() bool { return answered }
+
+	answered = true
+	queuedWhenAnswered := captureGateUpdate(table, truth)
+	answered = false
+	queuedWhenEnded := captureGateUpdate(table, truth)
+
+	// The later update runs first; the earlier one arrives afterwards.
+	queuedWhenEnded()
+	queuedWhenAnswered()
+	if table[application.PermissionMicrophone] != application.PermissionDeny {
+		t.Fatal("an update queued for an earlier call state reopened the capture gate")
+	}
+	// Run again after any number of state changes: always the present truth.
+	answered = true
+	queuedWhenEnded()
+	if table[application.PermissionMicrophone] != application.PermissionAllow {
+		t.Fatal("an update did not apply the present truth")
+	}
+	answered = false
+	queuedWhenAnswered()
+	queuedWhenAnswered()
+	if table[application.PermissionMicrophone] != application.PermissionDeny {
+		t.Fatal("the gate stayed open after the call ended")
+	}
+	// Without a source of truth the gate is closed.
+	table[application.PermissionMicrophone] = application.PermissionAllow
+	captureGateUpdate(table, nil)()
+	if table[application.PermissionMicrophone] != application.PermissionDeny {
+		t.Fatal("a gate update with no source of truth left capture allowed")
 	}
 }
 
