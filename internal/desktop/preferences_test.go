@@ -76,8 +76,12 @@ func TestAppPreferenceDefaultsAndPrivateNoticeStayAvailableWhileLocked(t *testin
 		t.Fatal(err)
 	}
 	var fields map[string]any
-	if json.Unmarshal(wire, &fields) != nil || len(fields) != 5 || fields["trayNoticeSeen"] != nil {
+	// Five original settings plus the two call settings, and nothing private.
+	if json.Unmarshal(wire, &fields) != nil || len(fields) != 7 || fields["trayNoticeSeen"] != nil {
 		t.Fatal("preference DTO exposed non-public internal fields")
+	}
+	if fields["voiceCalls"] != false || fields["callRingMuted"] != false {
+		t.Fatal("call settings are missing from the preference DTO or on by default")
 	}
 	if err := CloseAppPreferences(s); err != nil {
 		t.Fatal(err)

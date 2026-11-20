@@ -28,6 +28,11 @@
   import { createAttachments } from './lib/state/attachments';
   import { createRelayChange } from './lib/state/relay';
   import RelayApprovalDialog from './lib/components/RelayApprovalDialog.svelte';
+  import CallButton from './lib/components/CallButton.svelte';
+  import CallOverlay from './lib/components/CallOverlay.svelte';
+  import CallConfirmDialog from './lib/components/CallConfirmDialog.svelte';
+  import { createCalls } from './lib/state/calls';
+  import { primeAudio } from './lib/call/context';
   import {
     createContacts,
     selectedConversation,
@@ -52,6 +57,14 @@
 
   const appPreferences = createAppPreferences();
   const appPreferencesState = appPreferences.state;
+  // Calls need unlocked storage but must not wait for unrelated busy work:
+  // hanging up always has to go through.
+  const calls = createCalls({
+    enabled: () => mounted && native && status.storageState === 'unlocked',
+    ringMuted: () => $appPreferencesState.value.callRingMuted,
+  });
+  const callsState = calls.state;
+  let callConfirm: CallConfirmDialog;
   const session = createSession();
   const sessionState = session.state;
   const security = createSecurity({
@@ -254,6 +267,8 @@
   });
 
   function clearConversation() {
+    // Storage locked or changed: release the ring and the microphone first.
+    calls.reset();
     fileDrag.select('', false);
     contactStorage.stop();
     relayChange.stop();
@@ -411,6 +426,21 @@
       conversation.peerDisplayName ||
       'Approved contact',
   );
+  const voiceCalls = $derived(
+    $appPreferencesState.loaded && $appPreferencesState.value.voiceCalls,
+  );
+  const callContact = $derived(
+    $contactsState.contacts.find(
+      (contact) => contact.contactID === $callsState.current?.contactID,
+    ),
+  );
+  $effect(() => {
+    // Read the selected contact's call view once voice calls are on. Later
+    // changes arrive as call events from the desktop.
+    const id = conversation.contactID;
+    if (voiceCalls && id !== '' && status.storageState === 'unlocked')
+      void calls.refresh(id);
+  });
   const ownName = $derived.by(() => profile?.displayName || 'Your device');
   const savedPairingIsConversation = $derived(
     hasContact &&
@@ -509,6 +539,14 @@
 
   onMount(() => {
     mounted = true;
+    calls.listen();
+    // Ring sounds need the audio output to have been started by a click or
+    // key press. Only do that once voice calls are switched on.
+    const unlockAudio = () => {
+      if ($appPreferencesState.value.voiceCalls) primeAudio();
+    };
+    window.addEventListener('pointerdown', unlockAudio, true);
+    window.addEventListener('keydown', unlockAudio, true);
     fileDrag.start();
     contacts.setVisible(!document.hidden);
     const stopActivation = activation.mount();
@@ -571,6 +609,9 @@
       stopActivation();
       fileDrag.stop();
       appPreferences.stop();
+      calls.destroy();
+      window.removeEventListener('pointerdown', unlockAudio, true);
+      window.removeEventListener('keydown', unlockAudio, true);
       security.reset();
       media.removeEventListener('change', updateSystemTheme);
       window.removeEventListener('keydown', keyboard);
@@ -893,6 +934,16 @@
               >{connecting ? 'Connecting…' : 'Connect'}</span
             ></button
           >
+        {/if}
+        {#if hasContact && native && conversation.state !== 'peer-removed' && !conversation.paused}
+          <CallButton
+            name={contactName}
+            view={$callsState.views[conversation.contactID]}
+            {voiceCalls}
+            inCall={$callsState.current !== null}
+            busy={$callsState.busy}
+            onrequest={() => callConfirm.show()}
+          />
         {/if}
         {#if hasContact && conversation.state !== 'peer-removed'}
           <button
@@ -1383,6 +1434,33 @@
     </footer>
   </main>
 </div>
+
+<CallConfirmDialog
+  bind:this={callConfirm}
+  contactID={conversation.contactID}
+  name={contactName}
+  {voiceCalls}
+  inCall={$callsState.current !== null}
+  busy={$callsState.busy || $appPreferencesState.busy}
+  onstart={(id) => void calls.start(id)}
+  onenable={() =>
+    void appPreferences.save({
+      ...$appPreferencesState.value,
+      voiceCalls: true,
+    })}
+/>
+
+<CallOverlay
+  call={$callsState.current}
+  name={callContact ? contactLabel(callContact) : 'Approved contact'}
+  path={callContact?.path ?? 'Unknown'}
+  notice={$callsState.notice}
+  busy={$callsState.busy}
+  onanswer={(call) => void calls.answer(call)}
+  onend={(call) => void calls.end(call)}
+  onmute={(call) => void calls.toggleMute(call)}
+  ondismiss={() => calls.dismissNotice()}
+/>
 
 <DeleteAttachmentDialog
   target={$attachmentsState.deleteTarget}

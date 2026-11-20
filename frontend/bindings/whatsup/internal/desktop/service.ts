@@ -25,6 +25,13 @@ export function AllowAttachmentRelay(id: string, attachment: string): $Cancellab
 }
 
 /**
+ * AnswerCall accepts the ringing voice call.
+ */
+export function AnswerCall(contactID: string, callID: string): $CancellablePromise<$models.CallView> {
+    return $Call.ByID(2044687135, contactID, callID);
+}
+
+/**
  * ApprovePairing confirms the current reserved identity. It returns public state
  * only; successful reciprocal durable completion later starts this generation's
  * saved connection through the coordinator callback.
@@ -113,6 +120,13 @@ export function DiscardAttachment(id: string, handle: string): $CancellablePromi
     return $Call.ByID(3824909412, id, handle);
 }
 
+/**
+ * EndCall cancels, declines or hangs up the given call.
+ */
+export function EndCall(contactID: string, callID: string): $CancellablePromise<$models.CallView> {
+    return $Call.ByID(3382137790, contactID, callID);
+}
+
 export function ExportRecovery(secret: string): $CancellablePromise<$models.RecoveryExportResult> {
     return $Call.ByID(1161439080, secret);
 }
@@ -153,6 +167,13 @@ export function GetAttachments(id: string): $CancellablePromise<$models.Attachme
  */
 export function GetAvatarState(): $CancellablePromise<$models.AvatarState> {
     return $Call.ByID(1498623443);
+}
+
+/**
+ * GetCall returns one contact's call view.
+ */
+export function GetCall(contactID: string): $CancellablePromise<$models.CallView> {
+    return $Call.ByID(3500026999, contactID);
 }
 
 export function GetContactStorage(contactID: string): $CancellablePromise<$models.ContactStorage> {
@@ -287,6 +308,13 @@ export function SetAvatarPreferences(shareAvatar: boolean, showContactPhotos: bo
     return $Call.ByID(4288652872, shareAvatar, showContactPhotos);
 }
 
+/**
+ * SetCallMuted records and announces this side's mute state.
+ */
+export function SetCallMuted(contactID: string, callID: string, muted: boolean): $CancellablePromise<$models.CallView> {
+    return $Call.ByID(1919176666, contactID, callID, muted);
+}
+
 export function SetContactName(contactID: string, localName: string): $CancellablePromise<messaging$0.Snapshot> {
     return $Call.ByID(3486640966, contactID, localName);
 }
@@ -308,6 +336,14 @@ export function ShowSavedAttachment(id: string, handle: string): $CancellablePro
 
 export function StageRecoveryImport(secret: string): $CancellablePromise<$models.RecoveryImportPreview> {
     return $Call.ByID(3049925459, secret);
+}
+
+/**
+ * StartCall places a voice call. It never opens the microphone: capture starts
+ * in the interface only after the other person answers.
+ */
+export function StartCall(contactID: string): $CancellablePromise<$models.CallView> {
+    return $Call.ByID(1108379935, contactID);
 }
 
 /**

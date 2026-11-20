@@ -185,7 +185,20 @@ for (const viewport of [
       exact: true,
     });
     const rows = card.locator('label');
-    await expect(rows).toHaveCount(5);
+    await expect(rows).toHaveCount(7);
+    // Voice calls are off until switched on, and the ring option waits for them.
+    await expect(
+      card.getByRole('checkbox', { name: 'Allow voice calls', exact: true }),
+    ).not.toBeChecked();
+    await expect(
+      card.getByRole('checkbox', { name: 'Allow voice calls', exact: true }),
+    ).toBeEnabled();
+    await expect(
+      card.getByRole('checkbox', {
+        name: 'Silence the ring sound',
+        exact: true,
+      }),
+    ).toBeDisabled();
     await expect(
       card.getByRole('checkbox', {
         name: 'Show new-message notifications',

@@ -910,7 +910,7 @@
                 opens local storage and reconnects saved contacts.
               </p>
               {#key appPreferences.loaded}
-                {#each [{ key: 'closeToTray', label: 'Keep running when the window closes', help: 'Close to the tray. Choose Quit from the tray to exit.' }, { key: 'startAtLogin', label: 'Start WhatsUp when I sign in', help: 'Starts on this OS account only. This is off unless you enable it.' }, { key: 'notifications', label: 'Show new-message notifications', help: 'Notifications say only “New message” by default.' }, { key: 'notificationName', label: 'Include contact names in notifications', help: 'Allows names on the desktop and its notification history.' }, { key: 'notificationPreview', label: 'Include message previews in notifications', help: 'Allows message text on the desktop and its notification history.' }] as option}
+                {#each [{ key: 'closeToTray', label: 'Keep running when the window closes', help: 'Close to the tray. Choose Quit from the tray to exit.' }, { key: 'startAtLogin', label: 'Start WhatsUp when I sign in', help: 'Starts on this OS account only. This is off unless you enable it.' }, { key: 'notifications', label: 'Show new-message notifications', help: 'Notifications say only “New message” by default.' }, { key: 'notificationName', label: 'Include contact names in notifications', help: 'Allows names on the desktop and its notification history.' }, { key: 'notificationPreview', label: 'Include message previews in notifications', help: 'Allows message text on the desktop and its notification history.' }, { key: 'voiceCalls', label: 'Allow voice calls', help: 'Uses your microphone only during a call you place or answer. Off unless you turn it on. Headphones are recommended.' }, { key: 'callRingMuted', label: 'Silence the ring sound', help: 'Incoming calls still appear on screen.' }] as option}
                   <label class="settings-toggle-row app-preference-row">
                     <span class="app-preference-copy">
                       <strong id={`app-preference-${option.key}-label`}
@@ -932,7 +932,9 @@
                         appPreferences.busy ||
                         ((option.key === 'notificationName' ||
                           option.key === 'notificationPreview') &&
-                          !appPreferences.value.notifications)}
+                          !appPreferences.value.notifications) ||
+                        (option.key === 'callRingMuted' &&
+                          !appPreferences.value.voiceCalls)}
                       onchange={(event) =>
                         onapppreferences({
                           ...appPreferences.value,

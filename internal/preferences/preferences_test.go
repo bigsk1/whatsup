@@ -247,3 +247,48 @@ func TestPreferenceCapabilitiesAreValueSafeAndClosedTogether(t *testing.T) {
 		t.Fatal("zero preference capability could read state")
 	}
 }
+
+// Call settings were added after the first preference format shipped. With
+// them off, the stored plaintext must be exactly what the earlier build wrote
+// and reads, so upgrading changes nothing on disk and a downgrade still works.
+func TestCallSettingsDefaultOffAndLeaveTheEarlierStoredFormUnchanged(t *testing.T) {
+	if defaults := Defaults(); defaults.VoiceCalls || defaults.CallRingMuted {
+		t.Fatal("a call setting is on by default")
+	}
+	const earlier = `{"version":1,"state":{"values":{"closeToTray":true,"startAtLogin":false,"notifications":true,"notificationName":false,"notificationPreview":false},"trayNoticeSeen":false}}`
+	plain, err := json.Marshal(stored{Version: 1, State: toStored(Snapshot{Values: Defaults()})})
+	if err != nil || string(plain) != earlier {
+		t.Fatalf("stored form with call settings off changed:\n%s", plain)
+	}
+	enabled := Defaults()
+	enabled.VoiceCalls, enabled.CallRingMuted = true, true
+	plain, err = json.Marshal(stored{Version: 1, State: toStored(Snapshot{Values: enabled, TrayNoticeSeen: true})})
+	if err != nil || !bytes.Contains(plain, []byte(`"voiceCalls":true,"callRingMuted":true`)) {
+		t.Fatalf("enabled call settings were not stored: %s", plain)
+	}
+	var decoded stored
+	if json.Unmarshal(plain, &decoded) != nil || fromStored(decoded.State) != (Snapshot{Values: enabled, TrayNoticeSeen: true}) {
+		t.Fatal("call settings did not survive the stored form")
+	}
+
+	store, _, _ := testStore(t)
+	loaded, err := store.Load()
+	if err != nil || loaded.Values.VoiceCalls {
+		t.Fatal("a fresh device has voice calls on")
+	}
+	loaded.Values.VoiceCalls = true
+	if err := store.Save(loaded); err != nil {
+		t.Fatal(err)
+	}
+	again, err := store.Load()
+	if err != nil || !again.Values.VoiceCalls || again.Values.CallRingMuted {
+		t.Fatal("the voice call setting did not survive an encrypted save and reload")
+	}
+	again.Values.VoiceCalls = false
+	if err := store.Save(again); err != nil {
+		t.Fatal(err)
+	}
+	if off, err := store.Load(); err != nil || off.Values != Defaults() {
+		t.Fatal("switching voice calls off did not return to the default values")
+	}
+}

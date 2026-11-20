@@ -7,4 +7,15 @@ export interface Values {
     "notifications": boolean;
     "notificationName": boolean;
     "notificationPreview": boolean;
+
+    /**
+     * VoiceCalls allows placing and receiving voice calls, which use the
+     * microphone. It is off unless the person switches it on.
+     */
+    "voiceCalls": boolean;
+
+    /**
+     * CallRingMuted silences the ring sound; an incoming call still shows.
+     */
+    "callRingMuted": boolean;
 }

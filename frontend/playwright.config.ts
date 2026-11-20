@@ -17,6 +17,10 @@ export default defineConfig({
         '--disable-breakpad',
         '--disable-domain-reliability',
         '--no-pings',
+        // Call tests use Chromium's built-in synthetic microphone and its
+        // automatic answer to the permission prompt. No real device is used.
+        '--use-fake-device-for-media-stream',
+        '--use-fake-ui-for-media-stream',
       ],
     },
   },

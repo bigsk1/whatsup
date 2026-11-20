@@ -18,6 +18,7 @@ import type * as messaging$0 from "../../../../../whatsup/internal/messaging/mod
 declare module "@wailsio/runtime" {
     namespace Events {
         interface CustomEvents {
+            "whatsup:call-changed": desktop$0.CallHint;
             "whatsup:contact-changed": messaging$0.Hint;
             "whatsup:file-drag": main$0.NativeFileDragHint;
             "whatsup:notification-activate": main$0.NativeNotificationHint;

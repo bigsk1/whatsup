@@ -7,6 +7,8 @@ export interface AppPreferences {
   notifications: boolean;
   notificationName: boolean;
   notificationPreview: boolean;
+  voiceCalls: boolean;
+  callRingMuted: boolean;
 }
 
 export const defaultAppPreferences: AppPreferences = Object.freeze({
@@ -15,6 +17,8 @@ export const defaultAppPreferences: AppPreferences = Object.freeze({
   notifications: true,
   notificationName: false,
   notificationPreview: false,
+  voiceCalls: false,
+  callRingMuted: false,
 });
 
 export function validateAppPreferences(value: unknown): AppPreferences {

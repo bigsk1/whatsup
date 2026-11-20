@@ -9,6 +9,11 @@ import type {} from "../github.com/wailsapp/wails/v3/internal/eventdata.js";
 import "../github.com/wailsapp/wails/v3/internal/eventcreate.js";
 
 /**
+ * Name of the custom event "whatsup:call-changed".
+ */
+export const WhatsupCallChanged = "whatsup:call-changed";
+
+/**
  * Name of the custom event "whatsup:contact-changed".
  */
 export const WhatsupContactChanged = "whatsup:contact-changed";

@@ -37,6 +37,12 @@ func ConfigureAppPreferences(s *Service, options AppPreferenceRuntimeOptions) er
 		return errors.New("App preferences could not be authenticated")
 	}
 	s.preferenceState = &appPreferenceState{store: store, options: options}
+	// Calls stay off unless the authenticated preferences say otherwise.
+	if loaded, err := store.Load(); err == nil {
+		s.calls.setSettings(loaded.Values)
+	} else {
+		s.calls.setSettings(AppPreferences{})
+	}
 	return nil
 }
 
@@ -52,6 +58,9 @@ func (s *Service) appPreferences() (*appPreferenceState, error) {
 			return nil, errors.New("App preferences could not be authenticated")
 		}
 		s.preferenceState = &appPreferenceState{store: store, options: s.preferenceOptions}
+		if loaded, err := store.Load(); err == nil {
+			s.calls.setSettings(loaded.Values)
+		}
 	}
 	return s.preferenceState, nil
 }
@@ -136,6 +145,10 @@ func (s *Service) SetAppPreferences(values AppPreferences) (AppPreferences, erro
 	}
 	if state.options.OnChanged != nil {
 		state.options.OnChanged(values)
+	}
+	// A call setting takes effect at once, including on a call in progress.
+	if old.Values.VoiceCalls != values.VoiceCalls {
+		s.applyCallSettings(values)
 	}
 	return values, nil
 }

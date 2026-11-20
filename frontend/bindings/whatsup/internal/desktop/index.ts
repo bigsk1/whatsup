@@ -13,6 +13,8 @@ export type {
     Attachments,
     AvatarContact,
     AvatarState,
+    CallHint,
+    CallView,
     ContactStorage,
     InvitationInspection,
     InvitationShare,

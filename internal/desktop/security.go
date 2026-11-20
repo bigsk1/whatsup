@@ -208,6 +208,7 @@ func (s *Service) quiesceSecurityLocked(op *securityOperation, closeVault bool) 
 	if s.messages != nil {
 		s.messages.Close()
 		s.messages = nil
+		s.resetCalls()
 	}
 	if s.invitations != nil {
 		s.invitations.close()
@@ -239,7 +240,7 @@ func (s *Service) resumeSecurityLocked(op *securityOperation) error {
 	if err != nil {
 		return errSecurity
 	}
-	messages, pairing, invitations, err := makeControllers(local, s.application, s.revisions, s.events.enqueue, s.runtimeOptions, s.record)
+	messages, pairing, invitations, err := makeControllers(s, local, s.application, s.revisions, s.events.enqueue, s.runtimeOptions, s.record)
 	if err != nil {
 		return errSecurity
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"whatsup/internal/chat"
 	"whatsup/internal/diagnostics"
@@ -51,6 +52,11 @@ type Service struct {
 	fingerprint       string
 	state             string
 	record            func(diagnostics.Event)
+	// Call state has its own locks so it can be settled from the messaging
+	// notification goroutine and while Service.mu is held during lock.
+	calls              callControl
+	callOptionsMu      sync.Mutex
+	callRuntimeOptions RuntimeOptions
 }
 
 func New(directory string, keys storage.KeyStore, listeners ...func(diagnostics.Event)) *Service {
@@ -103,11 +109,19 @@ func (s *Service) GetStatus() Status {
 // runtime generation. A late completion cannot select a replacement manager.
 // The callback never enters Service.mu: Lock/Forget hold that mutex while
 // joining the pairing run, and close messages before doing so.
-func makeControllers(local *identity.Identity, app *storage.ApplicationState, revisions *messaging.Revisions, notify func(messaging.Hint), options RuntimeOptions, record func(diagnostics.Event)) (*messaging.Registry, *pairflow.Coordinator, *invitationControl, error) {
-	messages, err := messaging.NewRegistry(local, app, messaging.RegistryOptions{Revisions: revisions, OnChanged: notify, OnIncoming: options.OnIncoming, Diagnostics: record, Factories: options.Factories})
+func makeControllers(s *Service, local *identity.Identity, app *storage.ApplicationState, revisions *messaging.Revisions, notify func(messaging.Hint), options RuntimeOptions, record func(diagnostics.Event)) (*messaging.Registry, *pairflow.Coordinator, *invitationControl, error) {
+	// Call state is settled before the general contact hint is passed on, so
+	// the capture gate and the call view are current when the interface reacts.
+	var registry atomic.Pointer[messaging.Registry]
+	observed := func(hint messaging.Hint) {
+		s.observeCall(registry.Load(), hint.ContactID)
+		notify(hint)
+	}
+	messages, err := messaging.NewRegistry(local, app, messaging.RegistryOptions{Revisions: revisions, OnChanged: observed, OnIncoming: options.OnIncoming, Diagnostics: record, Factories: options.Factories, Calls: s.callOptions()})
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	registry.Store(messages)
 	flow, err := pairflow.New(local, app, pairflow.Options{
 		CompleteActivation: true,
 		OnCompleted:        func(id string) { _, _ = messages.Connect(id) },
@@ -225,7 +239,7 @@ func (s *Service) unlockStorageLocked(secret []byte) (Status, error) {
 	if s.security != nil && s.security.options.Life != nil && s.security.options.Life.Err() != nil {
 		return fail()
 	}
-	messages, pairing, invitations, err := makeControllers(local, application, s.revisions, s.events.enqueue, s.runtimeOptions, s.record)
+	messages, pairing, invitations, err := makeControllers(s, local, application, s.revisions, s.events.enqueue, s.runtimeOptions, s.record)
 	if err != nil {
 		return fail()
 	}
@@ -284,6 +298,9 @@ func (s *Service) lockStorageLocked() Status {
 		s.messages.Close()
 		s.messages = nil
 	}
+	// Closing the registry ended any call and joined its media. Close the
+	// capture gate and the interface's media stream before anything else.
+	s.resetCalls()
 	if s.invitations != nil {
 		s.invitations.close()
 		s.invitations = nil

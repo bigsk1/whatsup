@@ -29,10 +29,14 @@ import LockSimpleOpen from 'phosphor-svelte/lib/LockSimpleOpen';
 import MagnifyingGlass from 'phosphor-svelte/lib/MagnifyingGlass';
 import MagnifyingGlassMinus from 'phosphor-svelte/lib/MagnifyingGlassMinus';
 import MagnifyingGlassPlus from 'phosphor-svelte/lib/MagnifyingGlassPlus';
+import Microphone from 'phosphor-svelte/lib/Microphone';
+import MicrophoneSlash from 'phosphor-svelte/lib/MicrophoneSlash';
 import Palette from 'phosphor-svelte/lib/Palette';
 import PaperPlaneRight from 'phosphor-svelte/lib/PaperPlaneRight';
 import Paperclip from 'phosphor-svelte/lib/Paperclip';
 import Pause from 'phosphor-svelte/lib/Pause';
+import Phone from 'phosphor-svelte/lib/Phone';
+import PhoneDisconnect from 'phosphor-svelte/lib/PhoneDisconnect';
 import Play from 'phosphor-svelte/lib/Play';
 import Plug from 'phosphor-svelte/lib/Plug';
 import Plus from 'phosphor-svelte/lib/Plus';
@@ -105,4 +109,8 @@ export const phosphorIcons = {
   dragDrop: FileArrowDown,
   gamepad: GameController,
   eye: Eye,
+  phone: Phone,
+  phoneEnd: PhoneDisconnect,
+  mic: Microphone,
+  micOff: MicrophoneSlash,
 } satisfies Record<IconName, unknown>;

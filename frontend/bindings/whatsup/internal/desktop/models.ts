@@ -56,6 +56,55 @@ export interface AvatarState {
 }
 
 /**
+ * CallHint tells the interface to fetch one contact's call view. It carries
+ * no state: a forged or stale hint can only cause a harmless read.
+ */
+export interface CallHint {
+    "contactID": string;
+}
+
+/**
+ * CallView is the display state of one contact's call slot. It carries no
+ * key, address, path detail or media. The call ID is an opaque handle the
+ * interface passes back so an action cannot hit a different call.
+ */
+export interface CallView {
+    "contactID": string;
+
+    /**
+     * State is idle, outgoing, incoming, connecting or active.
+     */
+    "state": string;
+
+    /**
+     * CallID is empty when State is idle.
+     */
+    "callID": string;
+    "peerRinging": boolean;
+    "micMuted": boolean;
+    "peerMicMuted": boolean;
+
+    /**
+     * ActiveSince is Unix milliseconds, or zero before media flows.
+     */
+    "activeSince": number;
+
+    /**
+     * Availability says why a call can or cannot be placed now: ready,
+     * calls-off, offline, peer-update or busy.
+     */
+    "availability": string;
+
+    /**
+     * LastEnd names how the most recent call with this contact finished, or
+     * is empty. LastOutgoing and LastConnected describe that call.
+     */
+    "lastEnd": string;
+    "lastOutgoing": boolean;
+    "lastConnected": boolean;
+}
+
+/**
  * ContactStorage exposes only logical quota counters for an approved contact.
  * Reservations/tombstones count; this is neither OS free space nor exact disk use.
  */

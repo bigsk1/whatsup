@@ -76,6 +76,7 @@ func (s *Service) failForget() (messaging.Snapshot, error) {
 	if s.messages != nil {
 		s.messages.Close()
 		s.messages = nil
+		s.resetCalls()
 	}
 	if s.invitations != nil {
 		s.invitations.close()

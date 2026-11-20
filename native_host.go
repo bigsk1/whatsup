@@ -46,18 +46,21 @@ type nativeNotifier interface {
 }
 
 type nativeHost struct {
-	app               *application.App
-	backend           *desktop.Service
-	record            func(diagnostics.Event)
-	entry             launch.Entry
-	notifier          nativeNotifier
-	controller        *lifecycle.Controller
-	tray              *application.SystemTray
-	trayMonitor       *lifecycle.TrayMonitor
-	trayGraceElapsed  atomic.Bool
-	hiddenToTray      atomic.Bool
-	windowMu          sync.RWMutex
-	window            *application.WebviewWindow
+	app              *application.App
+	backend          *desktop.Service
+	record           func(diagnostics.Event)
+	entry            launch.Entry
+	notifier         nativeNotifier
+	controller       *lifecycle.Controller
+	tray             *application.SystemTray
+	trayMonitor      *lifecycle.TrayMonitor
+	trayGraceElapsed atomic.Bool
+	hiddenToTray     atomic.Bool
+	windowMu         sync.RWMutex
+	window           *application.WebviewWindow
+	// permissions is the same table the window was created with. Only
+	// setCallCapture changes it, and only its microphone entry.
+	permissions       map[application.PermissionType]application.Permission
 	closeToTray       atomic.Bool
 	visible           atomic.Bool
 	focused           atomic.Bool

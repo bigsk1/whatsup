@@ -84,4 +84,11 @@ export const pixelPaths = {
   gamepad:
     'M4 4h16v2H4zm0 14h16v2H4zM2 6h2v12H2zm18 0h2v12h-2zM8 9h2v6H8zM6 11h6v2H6zm8-2h2v2h-2zm2 4h2v2h-2z',
   eye: 'M16 20H8v-2h8v2Zm-8-2H4v-2h4v2Zm12 0h-4v-2h4v2ZM4 16H2v-2h2v2Zm10-6h-2v2h2v-2h2v4h-2v2h-4v-2H8v-4h2V8h4v2Zm8 6h-2v-2h2v2ZM2 14H0v-4h2v4Zm22 0h-2v-4h2v4ZM4 10H2V8h2v2Zm18 0h-2V8h2v2ZM8 8H4V6h4v2Zm12 0h-4V6h4v2Zm-4-2H8V4h8v2Z',
+  phone:
+    'M4 2h5v2H4zM2 4h2v6H2zm7 0h2v4H9zM7 8h2v2H7zM4 10h3v2H4zm3 2h2v2H7zm2 2h2v2H9zm2 2h2v2h-2zm2-1h2v2h-2zm2-2h4v2h-4zm4 2h2v5h-2zm-7 5h7v2h-7zm-2-2h2v2h-2z',
+  phoneEnd:
+    'M6 9h12v2H6zM3 11h3v2H3zm15 0h3v2h-3zM1 13h2v4H1zm20 0h2v4h-2zM3 17h5v-4h2v2h4v-2h2v4h5v2h-7v-2h-4v2H3z',
+  mic: 'M10 2h4v2h-4zM8 4h2v8H8zm6 0h2v8h-2zm-4 8h4v2h-4zM5 10h2v4H5zm12 0h2v4h-2zM7 14h2v2H7zm8 0h2v2h-2zm-6 2h6v2H9zm2 2h2v2h-2zm-3 2h8v2H8z',
+  micOff:
+    'M2 2h2v2H2zm2 2h2v2H4zm2 2h2v2H6zm2 2h2v2H8zm2 2h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2zm2 2h2v2h-2zM10 2h4v2h-4zm4 2h2v6h-2zM5 10h2v4H5zm2 4h2v2H7zm2 2h4v2H9zm2 2h2v2h-2zm-3 2h8v2H8z',
 } as const;

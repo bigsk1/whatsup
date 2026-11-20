@@ -14,6 +14,15 @@ type RuntimeOptions struct {
 	Factories          messaging.Factories
 	OnPairingChanged   func(PairingHint)
 	OnContactForgotten func(string)
+	// OnCallCapture opens or closes the native microphone gate. It is called
+	// synchronously, with true only while a call has been answered, before the
+	// interface can learn of that state.
+	OnCallCapture func(bool)
+	// OnIncomingCall asks the native host to bring the window forward once
+	// for each new ringing call. It must return promptly.
+	OnIncomingCall func()
+	// OnCallChanged tells the interface to re-read one contact's call view.
+	OnCallChanged func(CallHint)
 }
 
 func ConfigureRuntime(s *Service, options RuntimeOptions) error {
@@ -32,5 +41,8 @@ func ConfigureRuntime(s *Service, options RuntimeOptions) error {
 	}
 	options.OnPairingChanged = s.pairingEvents.enqueue
 	s.runtimeOptions = options
+	s.callOptionsMu.Lock()
+	s.callRuntimeOptions = options
+	s.callOptionsMu.Unlock()
 	return nil
 }

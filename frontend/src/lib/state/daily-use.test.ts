@@ -51,14 +51,19 @@ function form() {
 }
 
 describe('local app preferences', () => {
-  it('defaults to tray and generic notifications with login/name/preview off, and rejects extra fields', () => {
+  it('defaults to tray and generic notifications with login/name/preview and voice calls off, and rejects extra fields', () => {
     expect(defaultAppPreferences).toEqual({
       closeToTray: true,
       startAtLogin: false,
       notifications: true,
       notificationName: false,
       notificationPreview: false,
+      voiceCalls: false,
+      callRingMuted: false,
     });
+    // A preference object from before call settings existed is incomplete.
+    const { voiceCalls: _voiceCalls, ...withoutCalls } = defaultAppPreferences;
+    expect(() => validateAppPreferences(withoutCalls)).toThrow();
     expect(() =>
       validateAppPreferences({ ...defaultAppPreferences, endpoint: 'hidden' }),
     ).toThrow();

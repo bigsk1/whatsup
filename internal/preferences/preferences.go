@@ -40,6 +40,11 @@ type Values struct {
 	Notifications       bool `json:"notifications"`
 	NotificationName    bool `json:"notificationName"`
 	NotificationPreview bool `json:"notificationPreview"`
+	// VoiceCalls allows placing and receiving voice calls, which use the
+	// microphone. It is off unless the person switches it on.
+	VoiceCalls bool `json:"voiceCalls"`
+	// CallRingMuted silences the ring sound; an incoming call still shows.
+	CallRingMuted bool `json:"callRingMuted"`
 }
 
 func Defaults() Values { return Values{CloseToTray: true, Notifications: true} }
@@ -49,9 +54,37 @@ type Snapshot struct {
 	TrayNoticeSeen bool   `json:"trayNoticeSeen"`
 }
 
+// The stored form keeps the original field set byte for byte. Settings added
+// later are written only when switched on, so a file saved before they existed
+// still authenticates and canonicalizes unchanged, and a file with every later
+// setting off is readable by the earlier build. An earlier build rejects a
+// file that has one of them on; switch call settings off before downgrading.
+type storedValues struct {
+	CloseToTray         bool `json:"closeToTray"`
+	StartAtLogin        bool `json:"startAtLogin"`
+	Notifications       bool `json:"notifications"`
+	NotificationName    bool `json:"notificationName"`
+	NotificationPreview bool `json:"notificationPreview"`
+	VoiceCalls          bool `json:"voiceCalls,omitempty"`
+	CallRingMuted       bool `json:"callRingMuted,omitempty"`
+}
+
+type storedSnapshot struct {
+	Values         storedValues `json:"values"`
+	TrayNoticeSeen bool         `json:"trayNoticeSeen"`
+}
+
 type stored struct {
-	Version int      `json:"version"`
-	State   Snapshot `json:"state"`
+	Version int            `json:"version"`
+	State   storedSnapshot `json:"state"`
+}
+
+func toStored(state Snapshot) storedSnapshot {
+	return storedSnapshot{Values: storedValues(state.Values), TrayNoticeSeen: state.TrayNoticeSeen}
+}
+
+func fromStored(state storedSnapshot) Snapshot {
+	return Snapshot{Values: Values(state.Values), TrayNoticeSeen: state.TrayNoticeSeen}
 }
 
 // KeyStore deliberately has no Set method: preference access cannot create or
@@ -238,7 +271,7 @@ func (s *Store) loadLocked() (Snapshot, error) {
 	if err != nil || !bytes.Equal(plain, canonical) {
 		return Snapshot{}, ErrCorrupt
 	}
-	return state.State, nil
+	return fromStored(state.State), nil
 }
 
 func (s *Store) Save(state Snapshot) error {
@@ -262,7 +295,7 @@ func (s *Store) Save(state Snapshot) error {
 	if err != nil {
 		return ErrCredential
 	}
-	plain, err := json.Marshal(stored{Version: 1, State: state})
+	plain, err := json.Marshal(stored{Version: 1, State: toStored(state)})
 	if err != nil {
 		return ErrUnavailable
 	}

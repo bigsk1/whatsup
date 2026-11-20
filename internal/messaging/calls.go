@@ -563,3 +563,42 @@ func (r *Registry) SendCallVideo(id string, callID call.ID, frame []byte, timest
 	}
 	return m.SendCallVideo(callID, frame, timestamp, key)
 }
+
+// CallAvailability says whether a call could be placed with a contact now.
+type CallAvailability struct {
+	Connected  bool // a live authenticated session exists
+	Supported  bool // and the peer negotiated the call protocol on it
+	DeviceBusy bool // a call with a different contact holds this device
+}
+
+func (s *CallSlot) heldByOther(contactID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.holder != "" && s.holder != contactID
+}
+
+func (m *Manager) CallAvailability() CallAvailability {
+	if m == nil || m.managerState == nil {
+		return CallAvailability{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	live := !m.closed && !m.paused && !m.removing && !m.peerRemoved && m.sessionActive
+	result := CallAvailability{Connected: live, Supported: live && m.capabilities.Calls && m.calls.session != nil}
+	slot := m.calls.slot
+	if slot == nil {
+		slot = m.calls.options.Slot
+	}
+	if slot != nil {
+		result.DeviceBusy = slot.heldByOther(m.record.ID)
+	}
+	return result
+}
+
+func (r *Registry) CallAvailability(id string) CallAvailability {
+	m, err := r.manager(id)
+	if err != nil {
+		return CallAvailability{}
+	}
+	return m.CallAvailability()
+}

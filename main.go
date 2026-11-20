@@ -53,6 +53,7 @@ func main() {
 	}
 	application.RegisterEvent[messaging.Hint](desktop.ContactChangedEvent)
 	application.RegisterEvent[desktop.PairingHint](desktop.PairingChangedEvent)
+	application.RegisterEvent[desktop.CallHint](desktop.CallChangedEvent)
 	application.RegisterEvent[NativeStorageHint](nativeStorageChangedEvent)
 	application.RegisterEvent[NativeNotificationHint](nativeNotificationActivateEvent)
 	application.RegisterEvent[bool](nativeWindowVisibleEvent)
@@ -132,6 +133,9 @@ func main() {
 		AutoConnect: true, OnIncoming: host.enqueueIncoming,
 		OnContactForgotten: host.forgetContact,
 		OnPairingChanged:   func(hint desktop.PairingHint) { app.Event.Emit(desktop.PairingChangedEvent, hint) },
+		OnCallCapture:      host.setCallCapture,
+		OnIncomingCall:     host.incomingCall,
+		OnCallChanged:      func(hint desktop.CallHint) { app.Event.Emit(desktop.CallChangedEvent, hint) },
 	}); err != nil {
 		log.Fatal("WhatsUp could not configure its desktop runtime")
 	}
@@ -150,6 +154,8 @@ func main() {
 	}
 	app.RegisterService(application.NewService(service))
 	app.RegisterService(application.NewService(&nativeLifecycle{host: host}))
+	registerCallMedia(app, service)
+	host.permissions = webviewPermissions()
 	linuxWindow := application.LinuxWindow{}
 	if options.SoftwareRendering {
 		linuxWindow.WebviewGpuPolicy = application.WebviewGpuPolicyNever
@@ -163,7 +169,7 @@ func main() {
 		DevToolsEnabled: false, DefaultContextMenuDisabled: false,
 		NativeFileDropHandler: host.nativeFileDrop,
 		NativeFileDragHandler: host.nativeFileDrag,
-		Permissions:           webviewPermissions(),
+		Permissions:           host.permissions,
 		Windows:               application.WindowsWindow{Permissions: windowsWebviewPermissions()},
 		Linux:                 linuxWindow,
 	})
