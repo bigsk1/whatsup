@@ -288,6 +288,7 @@ func (h *nativeHost) show() {
 	}
 	if window := h.windowValue(); window != nil {
 		h.hiddenToTray.Store(false)
+		prepareReveal(window)
 		window.Show()
 		// Pinned Wails' first Show may create a deferred hidden native window.
 		// A second call explicitly reveals it after that synchronous creation.
