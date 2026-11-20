@@ -1460,6 +1460,7 @@
   onend={(call) => void calls.end(call)}
   onmute={(call) => void calls.toggleMute(call)}
   ondismiss={() => calls.dismissNotice()}
+  readStats={() => calls.stats()}
 />
 
 <DeleteAttachmentDialog

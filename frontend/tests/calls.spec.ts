@@ -298,6 +298,16 @@ test('an outgoing call rings without the microphone, captures only once answered
 
   await push(idle({ state: 'active', callID, activeSince: Date.now() }));
   await expect(bar).toContainText(/00:0\d · Direct/);
+  // The details readout shows the microphone really being captured and
+  // encoded, and the sound output really running. Counts only.
+  const details = bar.getByRole('button', { name: 'Details' });
+  await expect(details).toHaveAttribute('aria-expanded', 'false');
+  await details.click();
+  await expect(bar).toContainText(/microphone [1-9]\d* · sent [1-9]\d*/, {
+    timeout: 10_000,
+  });
+  await expect(bar).toContainText(/received 0 · decoded 0 · played 0\s+s/);
+  await expect(bar).toContainText(/Sound output\s*running/);
   await bar.getByRole('button', { name: 'Mute microphone' }).click();
   await expect(bar).toContainText('Muted');
   expect(calls.find((c) => c.operation === 'SetCallMuted')?.args).toEqual([

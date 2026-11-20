@@ -22,11 +22,36 @@ class StageError extends Error {
   }
 }
 
+/**
+ * Counters for the call details readout. They say how far audio got in each
+ * direction so a silent call can be diagnosed from the screen. Numbers only:
+ * no audio, no device names, nothing leaves the page.
+ */
+export interface AudioStats {
+  /** 20 ms frames delivered by the microphone. */
+  captured: number;
+  /** Encoded frames handed to the desktop for sending. */
+  sent: number;
+  /** Encoded frames that arrived from the other person. */
+  received: number;
+  /** Frames the decoder turned back into sound. */
+  decoded: number;
+  /** Seconds of sound the output has actually played. */
+  playedSeconds: number;
+  /** Loudest recent microphone sample, 0 to 100. */
+  micLevel: number;
+  /** Loudest recent incoming sample, 0 to 100. */
+  incomingLevel: number;
+  /** Whether the audio output is running at all. */
+  output: 'running' | 'stopped';
+}
+
 /** The running capture, encode, decode and playback chain for one call. */
 export interface AudioPipeline {
   setMuted(muted: boolean): void;
   receive(timestamp: number, data: Uint8Array): void;
   close(): void;
+  stats?(): AudioStats;
 }
 
 export interface AudioDeps {
@@ -147,6 +172,7 @@ export function createAudioEngine(options: {
       pipeline?.setMuted(value);
     },
     isRunning: () => running,
+    stats: (): AudioStats | null => pipeline?.stats?.() ?? null,
   };
 }
 
@@ -212,6 +238,20 @@ async function buildBrowserPipeline(
   const fail = (reason: AudioFailure) => {
     if (!closed) failed(reason);
   };
+  const counts = { captured: 0, sent: 0, received: 0, decoded: 0 };
+  let playedSamples = 0;
+  let outputQuanta = 0;
+  let outputQuantaSeen = 0;
+  let micPeak = 0;
+  let incomingPeak = 0;
+  const peakOf = (samples: Float32Array) => {
+    let peak = 0;
+    for (let i = 0; i < samples.length; i += 8) {
+      const value = Math.abs(samples[i]);
+      if (value > peak) peak = value;
+    }
+    return peak;
+  };
 
   entering('codec');
   const encoder = new AudioEncoder({
@@ -220,6 +260,7 @@ async function buildBrowserPipeline(
         return;
       const data = new Uint8Array(chunk.byteLength);
       chunk.copyTo(data);
+      counts.sent += 1;
       // Microseconds to 48 kHz sample units, wrapped to 32 bits.
       send(Math.round((chunk.timestamp * 48) / 1000) >>> 0, data);
     },
@@ -237,6 +278,11 @@ async function buildBrowserPipeline(
     outputChannelCount: [1],
   });
   playback.connect(context.destination);
+  playback.port.onmessage = (event) => {
+    const report = event.data as { played?: unknown; quanta?: unknown } | null;
+    if (typeof report?.played === 'number') playedSamples = report.played;
+    if (typeof report?.quanta === 'number') outputQuanta = report.quanta;
+  };
   entering('codec');
   const decoder = new AudioDecoder({
     output: (audio) => {
@@ -247,6 +293,8 @@ async function buildBrowserPipeline(
       const samples = new Float32Array(audio.numberOfFrames);
       audio.copyTo(samples, { planeIndex: 0, format: 'f32-planar' });
       audio.close();
+      counts.decoded += 1;
+      incomingPeak = Math.max(incomingPeak, peakOf(samples));
       playback.port.postMessage(samples, [samples.buffer]);
     },
     error: () => fail('failed'),
@@ -275,6 +323,8 @@ async function buildBrowserPipeline(
       encoder.state !== 'configured'
     )
       return;
+    counts.captured += 1;
+    micPeak = Math.max(micPeak, peakOf(samples));
     const data = new AudioData({
       format: 'f32-planar',
       sampleRate: 48000,
@@ -298,6 +348,7 @@ async function buildBrowserPipeline(
       });
     },
     receive(timestamp, data) {
+      counts.received += 1;
       if (closed || decoder.state !== 'configured') return;
       // Decode strictly forward in time. Anything older than what was
       // already decoded has missed its moment.
@@ -315,10 +366,30 @@ async function buildBrowserPipeline(
         }),
       );
     },
+    stats() {
+      // Levels cover the time since the last reading. The output counts as
+      // running only if the audio thread advanced since then.
+      const level = (peak: number) => Math.min(100, Math.round(peak * 100));
+      const result: AudioStats = {
+        ...counts,
+        playedSeconds: Math.round((playedSamples / 48000) * 10) / 10,
+        micLevel: level(micPeak),
+        incomingLevel: level(incomingPeak),
+        output:
+          context.state === 'running' && outputQuanta !== outputQuantaSeen
+            ? 'running'
+            : 'stopped',
+      };
+      outputQuantaSeen = outputQuanta;
+      micPeak = 0;
+      incomingPeak = 0;
+      return result;
+    },
     close() {
       if (closed) return;
       closed = true;
       capture.port.onmessage = null;
+      playback.port.onmessage = null;
       for (const node of [source, capture, silent, playback]) {
         try {
           node.disconnect();

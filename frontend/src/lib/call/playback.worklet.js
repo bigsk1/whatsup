@@ -15,6 +15,9 @@ class CallPlaybackProcessor extends AudioWorkletProcessor {
     this.write = 0;
     this.size = 0;
     this.playing = false;
+    // Counters for the call details readout: numbers only, never audio.
+    this.played = 0;
+    this.quanta = 0;
     this.port.onmessage = (event) => {
       const samples = event.data;
       if (!(samples instanceof Float32Array) || samples.length > CAPACITY)
@@ -34,6 +37,10 @@ class CallPlaybackProcessor extends AudioWorkletProcessor {
   }
 
   process(_inputs, outputs) {
+    // About twice a second, say how many samples have been played so far.
+    this.quanta++;
+    if (this.quanta % 188 === 0)
+      this.port.postMessage({ played: this.played, quanta: this.quanta });
     const output = outputs[0] && outputs[0][0];
     if (!output) return true;
     if (!this.playing && this.size >= START_AT) this.playing = true;
@@ -47,6 +54,7 @@ class CallPlaybackProcessor extends AudioWorkletProcessor {
       output[i] = this.buffer[this.read];
       this.read = (this.read + 1) % CAPACITY;
       this.size--;
+      this.played++;
     }
     return true;
   }

@@ -99,6 +99,16 @@ function harness() {
         },
         receive: () => log.push('audio-in'),
         setMuted: (muted) => record.muted.push(muted),
+        stats: () => ({
+          captured: 8,
+          sent: 7,
+          received: 6,
+          decoded: 5,
+          playedSeconds: 0.1,
+          micLevel: 12,
+          incomingLevel: 9,
+          output: 'running' as const,
+        }),
       };
     },
     openMedia: (id, receive) => {
@@ -282,6 +292,17 @@ describe('calls', () => {
       'This device cannot run call audio. (step: worklet)',
     );
     expect(h.engines[0].stopped).toBe(1);
+  });
+
+  it('offers audio counters only while a call is answered', async () => {
+    const h = harness();
+    expect(h.calls.stats()).toBeNull();
+    await h.push(view({ state: 'outgoing', callID, peerRinging: true }));
+    expect(h.calls.stats()).toBeNull();
+    await h.push(view({ state: 'active', callID, activeSince: 1 }));
+    expect(h.calls.stats()).toMatchObject({ sent: 7, output: 'running' });
+    await h.calls.end(get(h.calls.state).current!);
+    expect(h.calls.stats()).toBeNull();
   });
 
   it('lock releases ring and microphone at once and ignores late answers', async () => {

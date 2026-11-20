@@ -1,6 +1,6 @@
 <script lang="ts">
   import Icon from '../icons/Icon.svelte';
-  import type { CallView } from '../state/calls';
+  import type { AudioStats, CallView } from '../state/calls';
 
   let {
     call,
@@ -12,6 +12,7 @@
     onend,
     onmute,
     ondismiss,
+    readStats,
   }: {
     /** The one call in progress on this device, or null. */
     call: CallView | null;
@@ -25,11 +26,15 @@
     onend: (call: CallView) => void;
     onmute: (call: CallView) => void;
     ondismiss: () => void;
+    /** Audio counters for the answered call; numbers only. */
+    readStats?: () => AudioStats | null;
   } = $props();
 
   let dialog: HTMLDialogElement;
   let declineButton: HTMLButtonElement;
   let now = $state(Date.now());
+  let showDetails = $state(false);
+  let stats = $state<AudioStats | null>(null);
 
   const incoming = $derived(call?.state === 'incoming');
   const answered = $derived(
@@ -50,6 +55,21 @@
     now = Date.now();
     const timer = setInterval(() => (now = Date.now()), 1000);
     return () => clearInterval(timer);
+  });
+
+  $effect(() => {
+    // Read the counters once a second, only while the readout is open.
+    if (!showDetails || !answered || !readStats) {
+      stats = null;
+      return;
+    }
+    stats = readStats();
+    const timer = setInterval(() => (stats = readStats()), 1000);
+    return () => clearInterval(timer);
+  });
+
+  $effect(() => {
+    if (!call) showDetails = false;
   });
 
   function elapsed(since: number): string {
@@ -140,6 +160,13 @@
         onclick={() => call && onmute(call)}
         ><Icon name={call.micMuted ? 'micOff' : 'mic'} /></button
       >
+      <button
+        type="button"
+        class="secondary-button compact"
+        aria-expanded={showDetails}
+        aria-controls="call-details"
+        onclick={() => (showDetails = !showDetails)}>Details</button
+      >
     {/if}
     <button
       type="button"
@@ -150,6 +177,34 @@
         >{answered ? 'Hang up' : 'Cancel'}</span
       ></button
     >
+    {#if showDetails && answered}
+      <dl id="call-details" class="call-details" aria-live="off">
+        {#if stats}
+          <div>
+            <dt>Your audio</dt>
+            <dd>
+              microphone {stats.captured} · sent {stats.sent} · level {stats.micLevel}%
+            </dd>
+          </div>
+          <div>
+            <dt>Their audio</dt>
+            <dd>
+              received {stats.received} · decoded {stats.decoded} · played {stats.playedSeconds}
+              s · level {stats.incomingLevel}%
+            </dd>
+          </div>
+          <div>
+            <dt>Sound output</dt>
+            <dd>{stats.output}</dd>
+          </div>
+        {:else}
+          <div>
+            <dt>Audio</dt>
+            <dd>starting…</dd>
+          </div>
+        {/if}
+      </dl>
+    {/if}
   </section>
 {/if}
 
@@ -199,6 +254,28 @@
   }
   .call-bar {
     top: 76px;
+    flex-wrap: wrap;
+  }
+  .call-details {
+    flex-basis: 100%;
+    margin: 0;
+    display: grid;
+    gap: 4px;
+    color: var(--muted);
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .call-details div {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .call-details dt {
+    color: var(--text);
+    min-width: 6.5em;
+  }
+  .call-details dd {
+    margin: 0;
   }
   .call-notice {
     bottom: 84px;

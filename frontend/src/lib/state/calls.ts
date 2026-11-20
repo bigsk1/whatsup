@@ -5,7 +5,10 @@ import {
   createAudioEngine,
   type AudioFailure,
   type AudioStage,
+  type AudioStats,
 } from '../call/audio';
+
+export type { AudioStats };
 import {
   callMediaStream,
   decodeAudio,
@@ -177,6 +180,7 @@ export interface CallEngine {
   stop(): void;
   receive(timestamp: number, data: Uint8Array): void;
   setMuted(muted: boolean): void;
+  stats?(): AudioStats | null;
 }
 
 export type EngineFactory = (options: {
@@ -397,6 +401,11 @@ export function createCalls(options: {
       );
     },
     dismissNotice: () => publish({ notice: '' }),
+    /**
+     * Counters for the answered call's audio, or null when no call is
+     * answered. Read on demand by the call details readout.
+     */
+    stats: (): AudioStats | null => media?.engine.stats?.() ?? null,
     /** Storage locked or the app is closing: release everything at once. */
     reset() {
       generation += 1;
