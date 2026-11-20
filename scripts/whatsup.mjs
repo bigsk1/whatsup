@@ -24,6 +24,7 @@ import {
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const frontendDirectory = path.join(root, 'frontend');
+const frontendGates = ['format:check', 'check', 'test', 'test:e2e', 'build', 'test:e2e:bundle'];
 const configFile = path.join(root, 'config/toolchain.json');
 const policy = await readJson(configFile);
 const command = process.argv[2] ?? 'doctor';
@@ -301,14 +302,17 @@ async function implementedCheck() {
   const scanner = requirePinnedTool('govulncheck', 'golang.org/x/vuln', policy.govulncheckVersion);
   const wails = wailsPath();
   const manifest = await readJson(path.join(frontendDirectory, 'package.json'));
-  requireFrontendScripts(manifest, ['format:check', 'check', 'test', 'test:e2e', 'build']);
+  requireFrontendScripts(manifest, frontendGates);
   if (!(await collectSourceFiles(path.join(frontendDirectory, 'src'), '.test.ts')).length) throw new Error('Frontend component/domain unit tests are required');
   await frozenInstall();
   await toolingTest();
   await checkGoFormatting();
   await generateBindings();
   // Build real frontend assets before loading the root Go package's embed.
-  for (const script of ['format:check', 'check', 'test', 'test:e2e', 'build']) await frontendScript(script);
+  // The last gate reruns the call tests against that built bundle: the
+  // development server cannot show whether the embedded assets load under the
+  // application's Content Security Policy.
+  for (const script of frontendGates) await frontendScript(script);
   run('go', ['vet', './...'], { timeout: 300000 });
   const race = raceAvailable();
   if (!race && process.platform !== 'win32') throw new Error('Linux application tests require CGO and a compatible C compiler for the race detector');

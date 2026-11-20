@@ -8,8 +8,12 @@ import {
   validCallID,
 } from './protocol';
 
-vi.mock('./capture.worklet.js?url', () => ({ default: '/capture.js' }));
-vi.mock('./playback.worklet.js?url', () => ({ default: '/playback.js' }));
+vi.mock('./capture.worklet.js?url&no-inline', () => ({
+  default: '/capture.js',
+}));
+vi.mock('./playback.worklet.js?url&no-inline', () => ({
+  default: '/playback.js',
+}));
 vi.mock('./context', () => ({
   sharedAudioContext: () => {
     throw new Error('the real audio context must not be used in unit tests');
@@ -167,7 +171,8 @@ describe('call audio engine', () => {
       },
     });
     await engine.start();
-    expect(failed).toHaveBeenCalledWith('unsupported');
+    // A failure outside the browser chain names no step.
+    expect(failed).toHaveBeenCalledWith('unsupported', undefined);
     expect(track.stop).toHaveBeenCalledTimes(1);
   });
 

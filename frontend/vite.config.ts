@@ -44,6 +44,31 @@ export default defineConfig({
       },
     },
     {
+      // The page's Content Security Policy allows data: URLs for images only.
+      // Vite packs small imported assets into the bundle as data: URLs, which
+      // the built application then cannot load (a worklet, a sound). The
+      // development server never does this, so only the build can catch it.
+      name: 'whatsup-no-inlined-scripts-or-media',
+      apply: 'build',
+      generateBundle(_, bundle) {
+        for (const [file, output] of Object.entries(bundle)) {
+          const text =
+            output.type === 'chunk'
+              ? output.code
+              : typeof output.source === 'string'
+                ? output.source
+                : '';
+          const inlined = text.match(
+            /data:(?:text\/javascript|application\/javascript|audio\/|video\/|font\/|application\/font)[^"'`\s]{0,40}/,
+          );
+          if (inlined)
+            this.error(
+              `${file} carries an inlined asset the Content Security Policy refuses (${inlined[0].split(/[;,]/)[0]}). Import it with ?url&no-inline.`,
+            );
+        }
+      },
+    },
+    {
       name: 'whatsup-local-development-csp',
       transformIndexHtml: {
         order: 'pre',

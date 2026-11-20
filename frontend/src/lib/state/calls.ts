@@ -1,7 +1,11 @@
 import { Events, Stream } from '@wailsio/runtime';
 import { writable } from 'svelte/store';
 import { hasDesktopBridge } from '../backend';
-import { createAudioEngine, type AudioFailure } from '../call/audio';
+import {
+  createAudioEngine,
+  type AudioFailure,
+  type AudioStage,
+} from '../call/audio';
 import {
   callMediaStream,
   decodeAudio,
@@ -177,7 +181,7 @@ export interface CallEngine {
 
 export type EngineFactory = (options: {
   send(timestamp: number, data: Uint8Array): void;
-  failed(reason: AudioFailure): void;
+  failed(reason: AudioFailure, stage?: AudioStage): void;
 }) => CallEngine;
 
 const endNotices: Record<string, string> = {
@@ -263,9 +267,12 @@ export function createCalls(options: {
         if (media?.callID === callID)
           media.link.send(encodeAudio(timestamp, data));
       },
-      failed: (reason) => {
+      failed: (reason, stage) => {
         if (media?.callID !== callID) return;
-        publish({ notice: audioNotices[reason] });
+        // The step is one of four fixed words, kept so a failure on a real
+        // device can be reported from the screen alone.
+        const step = stage ? ` (step: ${stage})` : '';
+        publish({ notice: audioNotices[reason] + step });
         void end(contactID, callID);
       },
     });

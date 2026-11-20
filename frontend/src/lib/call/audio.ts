@@ -1,10 +1,26 @@
-import captureWorkletURL from './capture.worklet.js?url';
-import playbackWorkletURL from './playback.worklet.js?url';
+// no-inline: the worklets must be emitted as files. Small assets are otherwise
+// packed into the bundle as data: URLs, which the application's Content
+// Security Policy (script-src 'self') refuses to load.
+import captureWorkletURL from './capture.worklet.js?url&no-inline';
+import playbackWorkletURL from './playback.worklet.js?url&no-inline';
 import { sharedAudioContext } from './context';
 import { audioFrameSamples, maxAudioFrame } from './protocol';
 
 export type AudioFailure =
   'permission' | 'no-microphone' | 'unsupported' | 'failed';
+
+/**
+ * The step of building the audio chain that failed. It is shown with the
+ * "cannot run call audio" notice so a failure on a real device can be reported
+ * without a debugger. It names a step only: no device, error text or data.
+ */
+export type AudioStage = 'output' | 'worklet' | 'codec' | 'graph';
+
+class StageError extends Error {
+  constructor(readonly stage: AudioStage) {
+    super(stage);
+  }
+}
 
 /** The running capture, encode, decode and playback chain for one call. */
 export interface AudioPipeline {
@@ -43,7 +59,7 @@ function describeCaptureFailure(error: unknown): AudioFailure {
  */
 export function createAudioEngine(options: {
   send(timestamp: number, data: Uint8Array): void;
-  failed(reason: AudioFailure): void;
+  failed(reason: AudioFailure, stage?: AudioStage): void;
   deps?: Partial<AudioDeps>;
 }) {
   const deps: AudioDeps = {
@@ -102,10 +118,13 @@ export function createAudioEngine(options: {
         stop();
         options.failed(reason);
       });
-    } catch {
+    } catch (error) {
       if (epoch !== generation) return;
       stop();
-      options.failed('unsupported');
+      options.failed(
+        'unsupported',
+        error instanceof StageError ? error.stage : undefined,
+      );
       return;
     }
     if (epoch !== generation) {
@@ -167,9 +186,26 @@ async function createBrowserPipeline(
   send: (timestamp: number, data: Uint8Array) => void,
   failed: (reason: AudioFailure) => void,
 ): Promise<AudioPipeline> {
+  let stage: AudioStage = 'output';
+  try {
+    return await buildBrowserPipeline(stream, send, failed, (next) => {
+      stage = next;
+    });
+  } catch {
+    throw new StageError(stage);
+  }
+}
+
+async function buildBrowserPipeline(
+  stream: MediaStream,
+  send: (timestamp: number, data: Uint8Array) => void,
+  failed: (reason: AudioFailure) => void,
+  entering: (stage: AudioStage) => void,
+): Promise<AudioPipeline> {
   const context = sharedAudioContext();
   if (context.state !== 'running') await context.resume();
   if (context.sampleRate !== 48000) throw new Error('unsupported sample rate');
+  entering('worklet');
   await loadWorklets(context);
 
   let closed = false;
@@ -177,6 +213,7 @@ async function createBrowserPipeline(
     if (!closed) failed(reason);
   };
 
+  entering('codec');
   const encoder = new AudioEncoder({
     output: (chunk) => {
       if (closed || chunk.byteLength === 0 || chunk.byteLength > maxAudioFrame)
@@ -193,12 +230,14 @@ async function createBrowserPipeline(
   );
   encoder.configure(constant.supported ? opusConstant : opusPlain);
 
+  entering('graph');
   const playback = new AudioWorkletNode(context, 'whatsup-call-playback', {
     numberOfInputs: 0,
     numberOfOutputs: 1,
     outputChannelCount: [1],
   });
   playback.connect(context.destination);
+  entering('codec');
   const decoder = new AudioDecoder({
     output: (audio) => {
       if (closed) {
@@ -214,6 +253,7 @@ async function createBrowserPipeline(
   });
   decoder.configure(opusDecode);
 
+  entering('graph');
   const source = context.createMediaStreamSource(stream);
   const capture = new AudioWorkletNode(context, 'whatsup-call-capture', {
     numberOfInputs: 1,

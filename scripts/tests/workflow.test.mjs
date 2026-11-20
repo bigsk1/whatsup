@@ -72,7 +72,7 @@ test('partial implementation and absent real integration cannot pass full packag
 });
 
 test('each individual frontend validation gate is mandatory', () => {
-  const names = ['format:check', 'check', 'test', 'test:e2e', 'build'];
+  const names = ['format:check', 'check', 'test', 'test:e2e', 'build', 'test:e2e:bundle'];
   const scripts = Object.fromEntries(names.map((name) => [name, 'synthetic-test-command']));
   for (const name of names) {
     assert.throws(() => requireFrontendScripts({ scripts: { ...scripts, [name]: '' } }, names), new RegExp(`missing: ${name}`));

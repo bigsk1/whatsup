@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
-import type { AudioFailure } from '../call/audio';
+import type { AudioFailure, AudioStage } from '../call/audio';
 import type { Ringer } from '../call/ring';
 import {
   createCalls,
@@ -44,7 +44,7 @@ function harness() {
   const log: string[] = [];
   let hint: (value: unknown) => void = () => {};
   let serverView = view();
-  const failures: ((reason: AudioFailure) => void)[] = [];
+  const failures: ((reason: AudioFailure, stage?: AudioStage) => void)[] = [];
   const sent: Uint8Array[] = [];
   const engines: { started: number; stopped: number; muted: boolean[] }[] = [];
   const bridge: CallBridge = {
@@ -268,6 +268,19 @@ describe('calls', () => {
     );
     await vi.waitFor(() => expect(get(h.calls.state).current).toBeNull());
     expect(get(h.calls.state).notice).toContain('microphone');
+    expect(h.engines[0].stopped).toBe(1);
+  });
+
+  it('names the step that failed when the device cannot run call audio', async () => {
+    const h = harness();
+    await h.push(view({ state: 'connecting', callID }));
+    h.failures[0]('unsupported', 'worklet');
+    await vi.waitFor(() =>
+      expect(h.bridge.end).toHaveBeenCalledWith(contactID, callID),
+    );
+    expect(get(h.calls.state).notice).toBe(
+      'This device cannot run call audio. (step: worklet)',
+    );
     expect(h.engines[0].stopped).toBe(1);
   });
 

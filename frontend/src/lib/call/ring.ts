@@ -1,4 +1,4 @@
-import ringtoneURL from '../../assets/ringtone.wav?url';
+import ringtoneURL from '../../assets/ringtone.wav?url&no-inline';
 import { sharedAudioContext } from './context';
 
 export interface Ringer {

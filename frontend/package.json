@@ -15,7 +15,8 @@
     "format:check": "prettier --check src tests *.ts *.js *.json index.html",
     "format": "prettier --write src tests *.ts *.js *.json index.html",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:bundle": "playwright test --config playwright.bundle.config.ts"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "5.3.0",
