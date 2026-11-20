@@ -163,6 +163,8 @@ func main() {
 		DevToolsEnabled: false, DefaultContextMenuDisabled: false,
 		NativeFileDropHandler: host.nativeFileDrop,
 		NativeFileDragHandler: host.nativeFileDrag,
+		Permissions:           webviewPermissions(),
+		Windows:               application.WindowsWindow{Permissions: windowsWebviewPermissions()},
 		Linux:                 linuxWindow,
 	})
 	host.attachWindow(window)

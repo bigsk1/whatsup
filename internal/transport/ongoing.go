@@ -95,6 +95,7 @@ type ongoingState struct {
 	peer      key.NodePublic
 	endpoint  address.Endpoint
 	active    *ongoingServerConn
+	media     *serverCallMedia
 	accepting bool
 	closed    bool
 	setupDone chan struct{}
@@ -223,9 +224,12 @@ func (l *OngoingListener) Close() error {
 		<-state.setupDone
 		state.stop()
 		state.mu.Lock()
-		active, listener, server := state.active, state.listener, state.server
+		active, listener, server, media := state.active, state.listener, state.server, state.media
 		state.active, state.endpoint, state.peer = nil, address.Endpoint{}, key.NodePublic{}
 		state.mu.Unlock()
+		if media != nil {
+			_ = media.Close()
+		}
 		if active != nil {
 			_ = active.Conn.Close()
 		}
@@ -249,8 +253,18 @@ type ongoingServerConn struct {
 
 func (c *ongoingServerConn) Close() error {
 	c.once.Do(func() {
-		c.err = c.Conn.Close()
 		state := c.owner.state
+		state.mu.Lock()
+		var media *serverCallMedia
+		if state.media != nil && state.media.owner == c {
+			media = state.media
+		}
+		state.mu.Unlock()
+		// A call cannot outlive the authenticated stream it was set up on.
+		if media != nil {
+			_ = media.Close()
+		}
+		c.err = c.Conn.Close()
 		state.mu.Lock()
 		if state.active == c {
 			state.active = nil
@@ -301,6 +315,7 @@ type ongoingClientConn struct {
 	once   sync.Once
 	mu     sync.Mutex
 	peer   key.NodePublic
+	media  *clientCallMedia
 	closed bool
 	stop   func() bool
 	cancel context.CancelFunc
@@ -313,9 +328,13 @@ func (c *ongoingClientConn) Close() error {
 		c.cancel()
 		c.mu.Lock()
 		c.closed = true
-		stop := c.stop
+		stop, media := c.stop, c.media
 		c.mu.Unlock()
 		stop()
+		// A call cannot outlive the authenticated stream it was set up on.
+		if media != nil {
+			_ = media.Close()
+		}
 		_ = c.Conn.Close()
 		_ = c.client.Close()
 		c.client.Key, c.client.Server = key.NodePrivate{}, ""

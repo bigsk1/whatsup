@@ -114,6 +114,7 @@ type managerState struct {
 	preferredAuthenticated uint64
 	peerRouteBudget        routeReadyRetry
 	reconnect              reconnectBackoff
+	calls                  callState
 }
 
 func (Manager) String() string               { return "[private WhatsUp messaging coordinator]" }
@@ -150,11 +151,14 @@ type ContactOptions struct {
 	OnIncoming  func(Incoming)
 	Diagnostics func(diagnostics.Event)
 	Factories   Factories
+	// Calls is off by default. See CallOptions.
+	Calls CallOptions
 }
 
 func newManager(local *identity.Identity, app *storage.ApplicationState, id string, options ContactOptions) (*Manager, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{managerState: &managerState{local: local, application: app, targetID: id, revisions: options.Revisions, onChanged: options.OnChanged, onIncoming: options.OnIncoming, diagnostics: diagnostics.RateLimited(options.Diagnostics), path: transport.PathUnknown, state: "none", revision: 1, ctx: ctx, cancel: cancel, wake: make(chan struct{}, 1), routeRestart: make(chan *routeRestartRequest, 1), profiles: map[string]*transport.RelayProfile{}, attempts: map[*routeAttempt]struct{}{}}}
+	m.calls.options = options.Calls
 	m.factories = Factories{
 		Profile:         transport.FetchRelayProfile,
 		PreferredRegion: func(profile *transport.RelayProfile) (uint16, error) { return profile.PreferredRegion() },

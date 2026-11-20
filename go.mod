@@ -9,6 +9,8 @@ require (
 	github.com/go-ole/go-ole v1.3.0
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/gofrs/flock v0.13.2
+	github.com/pion/rtp v1.10.6
+	github.com/pion/srtp/v3 v3.1.3
 	github.com/tailscale/tailcat v0.7.1-0.20261105151022-e00cdde6ff78
 	github.com/tink-crypto/tink-go/v2 v2.9.0
 	github.com/wailsapp/wails/v3 v3.1.0
@@ -134,6 +136,10 @@ require (
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
+	github.com/pion/logging v0.2.4 // indirect
+	github.com/pion/randutil v0.1.0 // indirect
+	github.com/pion/rtcp v1.2.19 // indirect
+	github.com/pion/transport/v5 v5.1.1 // indirect
 	github.com/pires/go-proxyproto v0.15.0 // indirect
 	github.com/pjbgf/sha1cd v0.6.0 // indirect
 	github.com/pkg/sftp v1.13.11 // indirect

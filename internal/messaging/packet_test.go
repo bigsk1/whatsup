@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"whatsup/internal/chat"
+	"whatsup/internal/sessionauth"
 )
 
 type headerOnlyReader struct {
@@ -24,11 +25,17 @@ func (r *headerOnlyReader) Read(p []byte) (int, error) {
 }
 
 func TestMessagingPacketRejectsUnknownTypesAndOversizeBeforeBodyRead(t *testing.T) {
-	for _, kind := range []byte{0, 9, 255} {
+	for _, kind := range []byte{0, 10, 255} {
 		reader := bytes.NewReader([]byte{kind, 1, 2, 3})
 		if _, err := readPacket(reader); !errors.Is(err, errProtocol) || reader.Len() != 3 {
 			t.Fatal("unknown packet type consumed payload or was accepted")
 		}
+	}
+	// Type 9 is call signaling. Without the negotiated call capability it is
+	// as unknown as any other type and its body is never read.
+	reader := bytes.NewReader([]byte{callPacket, 1, 2, 3})
+	if _, err := readPacketFor(reader, sessionauth.Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true, Avatars: true}); !errors.Is(err, errProtocol) || reader.Len() != 3 {
+		t.Fatal("call packet without the call capability consumed payload or was accepted")
 	}
 	for _, length := range []uint32{0, chat.MaxFrameBytes + 1, ^uint32(0)} {
 		wire := []byte{dataPacket}

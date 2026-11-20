@@ -9,6 +9,7 @@ import (
 	"io"
 	"time"
 
+	"whatsup/internal/call"
 	"whatsup/internal/chat"
 	"whatsup/internal/profile"
 	"whatsup/internal/sessionauth"
@@ -36,12 +37,13 @@ type packet struct {
 	attachment transfer.Frame
 	control    controlFrame
 	avatar     avatarFrame
+	call       call.Frame
 }
 
 var errProtocol = errors.New("authenticated messaging protocol failed")
 
 func readPacket(reader io.Reader) (packet, error) {
-	return readPacketFor(reader, sessionauth.Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true, Avatars: true})
+	return readPacketFor(reader, sessionauth.Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true, Avatars: true, Calls: true})
 }
 
 func readPacketFor(reader io.Reader, capabilities sessionauth.Capabilities) (packet, error) {
@@ -51,6 +53,18 @@ func readPacketFor(reader io.Reader, capabilities sessionauth.Capabilities) (pac
 	}
 	p := packet{kind: kind[0]}
 	switch p.kind {
+	case callPacket:
+		// Call frames exist only on a session whose TLS transcript negotiated
+		// the call protocol. An older peer can neither send nor be sent one.
+		if !capabilities.Calls {
+			return packet{}, errProtocol
+		}
+		frame, err := call.Read(reader)
+		if err != nil {
+			return packet{}, errProtocol
+		}
+		p.call = frame
+		return p, nil
 	case avatarPacket:
 		if !capabilities.Avatars {
 			return packet{}, errProtocol
@@ -99,6 +113,21 @@ func readPacketFor(reader io.Reader, capabilities sessionauth.Capabilities) (pac
 
 func writePacket(session *sessionauth.Session, p packet) error {
 	caps := session.Capabilities()
+	if p.kind == callPacket {
+		if !caps.Calls {
+			return errProtocol
+		}
+		encoded, err := call.Encode(p.call)
+		if err != nil || session.SetWriteDeadline(time.Now().Add(writeTimeout)) != nil {
+			return errProtocol
+		}
+		wire := append([]byte{callPacket}, encoded...)
+		n, err := session.Write(wire)
+		if err != nil || n != len(wire) {
+			return errProtocol
+		}
+		return nil
+	}
 	if p.kind == avatarPacket {
 		if !caps.Avatars {
 			return errProtocol
@@ -249,6 +278,10 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 		}
 	}()
 	defer func() { cancel(); _ = session.Close(); <-finished }()
+	// Any call ends with this session. Registered last so it runs first: the
+	// media flow is closed and joined before the session itself is torn down.
+	calls := m.newCallRuntime(work, session)
+	defer calls.close()
 	retry := time.NewTicker(250 * time.Millisecond)
 	defer retry.Stop()
 	heartbeat := time.NewTicker(heartbeatInterval)
@@ -338,6 +371,11 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 			return errProtocol
 		}
 		switch got.packet.kind {
+		case callPacket:
+			if !caps.Calls || session.WithLivePeer(m.record.Peer, func() error { return nil }) != nil {
+				return errProtocol
+			}
+			return calls.handle(got.packet.call)
 		case avatarPacket:
 			if !caps.Avatars || !avatarLimit.accept(got.packet.avatar, time.Now()) || session.WithLivePeer(m.record.Peer, func() error { return nil }) != nil {
 				return errProtocol
@@ -555,6 +593,14 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 			if outbound.Epoch == epoch {
 				pendingTransfer = &outbound
 			}
+		case request := <-calls.requests():
+			if err := calls.request(request); err != nil {
+				return err
+			}
+		case event := <-calls.mediaEvents():
+			if err := calls.mediaEvent(event); err != nil {
+				return err
+			}
 		case <-m.wake:
 			if err := relays.sync(); err != nil {
 				return err
@@ -576,6 +622,9 @@ func (m *Manager) exchange(ctx context.Context, session *sessionauth.Session, co
 		case <-retry.C:
 			if !pingAt.IsZero() && time.Since(pingAt) > peerTimeout {
 				return errProtocol
+			}
+			if err := calls.tick(); err != nil {
+				return err
 			}
 			if err := sendProfile(); err != nil {
 				return err

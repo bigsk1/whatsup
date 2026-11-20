@@ -162,6 +162,9 @@ type RegistryOptions struct {
 	// joins this callback so it cannot outlive the runtime generation.
 	OnChanged func(Hint)
 	Factories Factories
+	// Calls is off by default. The registry gives every contact the same
+	// device call slot, so only one call exists at a time.
+	Calls CallOptions
 }
 
 // Registry owns independent approved-contact runtimes for one unlocked vault.
@@ -200,6 +203,9 @@ func NewRegistry(local *identity.Identity, app *storage.ApplicationState, option
 		selected.Revisions = &Revisions{}
 	}
 	selected.Diagnostics = diagnostics.RateLimited(selected.Diagnostics)
+	if selected.Calls.Slot == nil {
+		selected.Calls.Slot = NewCallSlot()
+	}
 	r := &Registry{&registryState{local: local, application: app, options: selected, managers: map[string]*Manager{}, retired: map[string]bool{}, transition: map[string]bool{}, dirty: map[string]Hint{}, notify: make(chan struct{}, 1), stop: make(chan struct{}), done: make(chan struct{})}}
 	go r.dispatch()
 	if _, err := r.Contacts(); err != nil {
@@ -256,7 +262,7 @@ func (r *Registry) ensureLocked(id string) (*Manager, error) {
 	if len(r.managers) >= storage.MaxContacts {
 		return nil, ErrUnavailable
 	}
-	m, err := NewContact(r.local, r.application, id, ContactOptions{Revisions: r.options.Revisions, OnChanged: r.enqueue, OnIncoming: r.options.OnIncoming, Diagnostics: r.options.Diagnostics, Factories: r.options.Factories})
+	m, err := NewContact(r.local, r.application, id, ContactOptions{Revisions: r.options.Revisions, OnChanged: r.enqueue, OnIncoming: r.options.OnIncoming, Diagnostics: r.options.Diagnostics, Factories: r.options.Factories, Calls: r.options.Calls})
 	if err != nil {
 		return nil, err
 	}

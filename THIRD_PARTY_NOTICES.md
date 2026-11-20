@@ -35,6 +35,24 @@ distributed under the Apache License, Version 2.0. Its full license is retained
 at [third_party/licenses/tink-Apache-2.0.txt](third_party/licenses/tink-Apache-2.0.txt).
 Source: [Tink Go 2.9.0](https://github.com/tink-crypto/tink-go/tree/v2.9.0).
 
+## Pion RTP and SRTP
+
+The real-time media protection code under `internal/callmedia` uses
+`github.com/pion/rtp` version 1.10.6 and `github.com/pion/srtp/v3` version 3.1.3.
+They bring in `github.com/pion/transport/v5` 5.1.1, `github.com/pion/rtcp`
+1.2.19, `github.com/pion/logging` 0.2.4 and `github.com/pion/randutil` 0.1.0.
+All six are resolved through `go.mod` and `go.sum`; none is vendored or modified.
+
+These modules are distributed under the MIT License. Their copyright notices
+and the license text are retained at
+[third_party/licenses/pion-MIT.txt](third_party/licenses/pion-MIT.txt). The
+`utils/xor` package of `pion/transport` also carries a BSD 3-Clause notice from
+The Go Authors, retained at
+[third_party/licenses/pion-transport-xor-BSD-3-Clause.txt](third_party/licenses/pion-transport-xor-BSD-3-Clause.txt).
+
+Source: [pion/rtp 1.10.6](https://github.com/pion/rtp/tree/v1.10.6),
+[pion/srtp 3.1.3](https://github.com/pion/srtp/tree/v3.1.3).
+
 ## Tailcat
 
 A reviewed library-only source copy is retained under `third_party/tailcat` and

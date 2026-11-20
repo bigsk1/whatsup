@@ -57,7 +57,7 @@ func TestSavedIdentitiesReconnectWithoutAnyUserDecision(t *testing.T) {
 		if left.err != nil || right.err != nil {
 			t.Fatal("saved identity authentication failed")
 		}
-		if left.session.Capabilities() != (Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true, Avatars: true}) || right.session.Capabilities() != left.session.Capabilities() {
+		if left.session.Capabilities() != (Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true, Avatars: true, Calls: true}) || right.session.Capabilities() != left.session.Capabilities() {
 			t.Fatal("current peers did not negotiate authenticated extended capabilities")
 		}
 		if !left.session.Matches(a.Local.PublicKey(), a.Peer, a.ContactID, a.Association) || left.session.WithLivePeer(a.Peer, func() error { return nil }) != nil {
@@ -514,6 +514,7 @@ func TestProtocol2OfferDoesNotDowngradeSupportedMessaging(t *testing.T) {
 			{controlProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true}},
 			{withdrawProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true}},
 			{avatarProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true, Avatars: true}},
+			{callProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true, Avatars: true, Calls: true}},
 		} {
 			t.Run(fmt.Sprintf("server=%v/%s", server, usable.name), func(t *testing.T) {
 				current, old := optionsPair(t)
@@ -528,7 +529,7 @@ func TestProtocol2OfferDoesNotDowngradeSupportedMessaging(t *testing.T) {
 				config := protocolPeerConfig(t, old, protos)
 				if !server {
 					config.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
-						if len(hello.SupportedProtos) != 6 || hello.SupportedProtos[5] != diagnosticProtocol+suffix {
+						if len(hello.SupportedProtos) != 7 || hello.SupportedProtos[6] != diagnosticProtocol+suffix {
 							t.Error("diagnostic ALPN was not offered last with exact context")
 						}
 						return nil, nil

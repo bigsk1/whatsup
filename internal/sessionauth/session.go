@@ -42,6 +42,16 @@ const (
 	// wire-4 peers retain their original attachment grammar.
 	withdrawProtocol = "whatsup-contact/4-control2"
 	avatarProtocol   = "whatsup-contact/4-control3-avatar1"
+	// Calls add bounded signaling frames and a per-call media key export. Older
+	// peers negotiate a lower identifier and never receive a call frame.
+	callProtocol = "whatsup-contact/4-control3-avatar1-call1"
+	// callExporterLabel uses the prefix RFC 5705 section 4 reserves for private
+	// labels that are not registered with IANA.
+	callExporterLabel = "EXPERIMENTAL whatsup call media v1"
+	// CallIDSize is the length of the random per-call identifier bound into
+	// exported media keys. MaxCallKeyMaterial bounds one export.
+	CallIDSize         = 16
+	MaxCallKeyMaterial = 128
 	// Previous protocol framing is selected only after exact-contact mutual TLS.
 	previousProtocol = "whatsup-contact/3"
 	// Wire 2 is diagnostic-only: authenticate its exact pin and context before
@@ -76,6 +86,7 @@ type Capabilities struct {
 	Control     bool
 	Withdrawals bool
 	Avatars     bool
+	Calls       bool
 }
 
 func (s *Session) Capabilities() Capabilities {
@@ -150,8 +161,8 @@ func authenticate(ctx context.Context, raw net.Conn, options Options, associatio
 		capabilities Capabilities
 		diagnostic   bool
 	}
-	routes := make(map[string]negotiatedRoute, 4*len(associations))
-	nextProtos := make([]string, 0, 4*len(associations))
+	routes := make(map[string]negotiatedRoute, 7*len(associations))
+	nextProtos := make([]string, 0, 7*len(associations))
 	for i, association := range associations {
 		if association == [32]byte{} || i > 0 && association == associations[0] {
 			return nil, ErrAuthentication
@@ -163,6 +174,7 @@ func authenticate(ctx context.Context, raw net.Conn, options Options, associatio
 		name string
 		caps Capabilities
 	}{
+		{callProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true, Avatars: true, Calls: true}},
 		{avatarProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true, Avatars: true}},
 		{withdrawProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true, Withdrawals: true}},
 		{controlProtocol, Capabilities{WireVersion: 4, Attachments: true, Control: true}},
@@ -326,6 +338,44 @@ func (s *Session) ClaimAvatarScope() error {
 	}
 	s.state.avatarScopeClaimed = true
 	return nil
+}
+
+// ExportCallKeyMaterial derives secret bytes for one call from this live TLS
+// 1.3 session using the standard exporter (RFC 8446 section 7.5). Both ends of
+// the same session and call ID obtain identical bytes; another session, or
+// another call ID, obtains unrelated bytes. The result therefore inherits this
+// session's pinned-identity authentication without any new key agreement.
+//
+// It grants no permission to place or accept a call. The caller keeps the
+// bytes out of logs, storage and the frontend, and clears them after use.
+func (s *Session) ExportCallKeyMaterial(callID []byte, length int) ([]byte, error) {
+	if s == nil || s.state == nil || len(callID) != CallIDSize || length < 1 || length > MaxCallKeyMaterial {
+		return nil, ErrAuthentication
+	}
+	var any byte
+	for _, b := range callID {
+		any |= b
+	}
+	if any == 0 {
+		return nil, ErrAuthentication
+	}
+	s.state.mu.Lock()
+	defer s.state.mu.Unlock()
+	if s.state.closed || !time.Now().Before(s.state.expires) {
+		return nil, ErrClosed
+	}
+	if !s.state.capabilities.Calls {
+		return nil, ErrAuthentication
+	}
+	state := s.state.tls.ConnectionState()
+	if !state.HandshakeComplete || state.Version != tls.VersionTLS13 || state.DidResume {
+		return nil, ErrAuthentication
+	}
+	material, err := state.ExportKeyingMaterial(callExporterLabel, callID, length)
+	if err != nil || len(material) != length {
+		return nil, ErrAuthentication
+	}
+	return material, nil
 }
 
 func (s *Session) Read(p []byte) (int, error)         { return s.state.tls.Read(p) }
