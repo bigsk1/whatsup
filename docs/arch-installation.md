@@ -31,8 +31,8 @@ If your desktop needs a keyring setup, follow the
 
 ## 2. Download WhatsUp
 
-Download `whatsup_0.2.0_amd64.deb` and `SHA256SUMS` from the
-[v0.2.0 release](https://github.com/bigsk1/whatsup/releases/tag/v0.2.0).
+Download `whatsup_0.2.1_amd64.deb` and `SHA256SUMS` from the
+[v0.2.1 release](https://github.com/bigsk1/whatsup/releases/tag/v0.2.1).
 Save both files in `~/Downloads`, then check the download:
 
 ```bash
@@ -40,7 +40,7 @@ cd "$HOME/Downloads"
 sha256sum --ignore-missing --check SHA256SUMS
 ```
 
-Confirm that `whatsup_0.2.0_amd64.deb` reports `OK`.
+Confirm that `whatsup_0.2.1_amd64.deb` reports `OK`.
 
 ## 3. Install the app and menu entry
 
@@ -52,7 +52,7 @@ and creates the menu entry.
 ```bash
 (
   set -euo pipefail
-  package="$HOME/Downloads/whatsup_0.2.0_amd64.deb"
+  package="$HOME/Downloads/whatsup_0.2.1_amd64.deb"
   appdir="$HOME/.local/opt/whatsup"
   data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
   applications="$data_home/applications"

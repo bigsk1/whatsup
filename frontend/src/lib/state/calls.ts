@@ -478,6 +478,17 @@ export function createCalls(options: {
     video: CallVideo | null;
     /** The person chose to send this call's video over a relay. */
     relayChosen: boolean;
+    /**
+     * The person muted the microphone here. It is silenced on the click and
+     * stays silent whatever views arrive, until the desktop itself answers
+     * their unmute with the microphone on. Without it a slow or failed
+     * request, or a view read before the click, would leave them audible
+     * after pressing Mute, or bring the microphone back before an unmute
+     * was confirmed.
+     */
+    muteHeld: boolean;
+    /** Counts mute and unmute presses: only the latest one's answer counts. */
+    muteTurn: number;
   } | null = null;
   // Calls this device has ended on its own side: hung up, declined, or calls
   // switched off. Capture for such a call never starts again, whatever a
@@ -509,7 +520,8 @@ export function createCalls(options: {
     const contactID = view.contactID;
     const engine = makeEngine({
       send: (timestamp, data) => {
-        if (media?.callID === callID)
+        // Nothing captured before a mute leaves after it.
+        if (media?.callID === callID && !media.muteHeld)
           media.link.send(encodeAudio(timestamp, data));
       },
       failed: (reason, stage) => {
@@ -556,7 +568,16 @@ export function createCalls(options: {
         video?.receive(frame.timestamp, frame.key, frame.data);
       else video?.keyframe();
     });
-    media = { callID, contactID, link, engine, video, relayChosen: false };
+    media = {
+      callID,
+      contactID,
+      link,
+      engine,
+      video,
+      relayChosen: false,
+      muteHeld: false,
+      muteTurn: 0,
+    };
     engine.setMuted(view.micMuted);
     void engine.start();
     if (video) {
@@ -642,7 +663,15 @@ export function createCalls(options: {
     }
   }
 
+  /** The person muted this call here, and has not unmuted since. */
+  const mutedHere = (callID: string) =>
+    media?.callID === callID && media.muteHeld;
+
   function apply(view: CallView) {
+    // A mute made here outlasts any view that does not show it yet, or never
+    // will: one read before the click, or the answer to a failed request.
+    if (!view.micMuted && view.callID && mutedHere(view.callID))
+      view = { ...view, micMuted: true };
     const previous = current.current;
     const views = { ...current.views, [view.contactID]: view };
     const live = Object.values(views).find((v) => v.state !== 'idle') ?? null;
@@ -755,11 +784,38 @@ export function createCalls(options: {
       if (view.state === 'idle') return Promise.resolve();
       return end(view.contactID, view.callID);
     },
-    toggleMute(view: CallView) {
-      if (!answered(view)) return Promise.resolve();
-      return run(view.contactID, () =>
-        bridge.setMuted(view.contactID, view.callID, !view.micMuted),
+    /**
+     * Mute silences the microphone here first and tells the desktop second,
+     * so nothing more is sent while that request is on its way, and nothing
+     * if it fails.
+     *
+     * Unmute goes the other way round. The microphone stays silent while the
+     * desktop is asked and comes back only on the desktop's own answer to
+     * that request, for this call, saying the microphone is on. A view from
+     * anywhere else does not count: if the mute before it never reached the
+     * desktop, every refresh already says "not muted". An unmute that fails,
+     * or that a later press overtook, leaves the microphone muted.
+     */
+    async toggleMute(view: CallView) {
+      if (!answered(view)) return;
+      const mute = !view.micMuted;
+      const held = media?.callID === view.callID ? media : null;
+      const turn = held ? (held.muteTurn += 1) : 0;
+      if (held && mute) {
+        held.muteHeld = true;
+        held.engine.setMuted(true);
+        const shown = current.views[view.contactID];
+        if (shown?.callID === view.callID) apply(shown);
+      }
+      const answer = await run(view.contactID, () =>
+        bridge.setMuted(view.contactID, view.callID, mute),
       );
+      if (mute || !held || media !== held || held.muteTurn !== turn) return;
+      if (!answer || answer.callID !== view.callID || answer.micMuted) return;
+      held.muteHeld = false;
+      // What is on screen was shown as muted while this was being confirmed.
+      const shown = current.views[view.contactID];
+      if (shown?.callID === view.callID) apply({ ...shown, micMuted: false });
     },
     /**
      * The connection to a contact changed between direct and relayed.

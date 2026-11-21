@@ -1262,6 +1262,252 @@ func TestMuteAndCameraChangedAtTheSameMomentEachKeepTheirOwnSetting(t *testing.T
 	})
 }
 
+// audioArrives sends one marked audio frame and reports whether it reached
+// the other device's interface.
+func audioArrives(t *testing.T, from, to *CallMediaSession, timestamp uint32, mark byte) bool {
+	t.Helper()
+	if err := from.SendAudio(timestamp, []byte{mark, mark, mark}); err != nil {
+		t.Fatalf("sending audio ended the stream: %v", err)
+	}
+	select {
+	case frame := <-to.Frames():
+		if frame.Video || !bytes.Equal(frame.Data, []byte{mark, mark, mark}) {
+			t.Fatalf("an unexpected frame arrived: %+v", frame)
+		}
+		return true
+	case <-time.After(300 * time.Millisecond):
+		return false
+	}
+}
+
+// Mute takes effect when the person asks for it, not when the session has
+// managed to tell the other side: a request that is still waiting, or that
+// failed, sends no more of their audio, and only an explicit unmute undoes it.
+func TestMuteSilencesAudioBeforeAndWithoutTheSessionBeingTold(t *testing.T) {
+	a, b, contact, _ := callTestPair(t, true, true)
+	id, fromA, fromB := activeTestCall(t, a, b, contact)
+	stamp := uint32(0)
+	next := func() uint32 { stamp += callmedia.AudioFrameSamples; return stamp }
+	if !audioArrives(t, fromA, fromB, next(), 1) {
+		t.Fatal("audio did not flow before the mute")
+	}
+
+	// The session loop takes the mute request only when released.
+	entered, release := make(chan struct{}), make(chan struct{})
+	var fail atomic.Bool
+	a.service.callMuteForTest = func(ctx context.Context, messages *messaging.Registry, contactID string, call call.ID, muted bool) (call.Snapshot, error) {
+		if muted {
+			close(entered)
+			<-release
+			if fail.Load() {
+				return messages.Call(contactID), context.DeadlineExceeded
+			}
+		}
+		return messages.SetCallMuted(ctx, contactID, call, muted)
+	}
+	fail.Store(true)
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.service.SetCallMuted(contact, id, true)
+		done <- err
+	}()
+	<-entered
+	// The request is still waiting: nothing has been written to the session.
+	if snapshot := a.service.messages.Call(contact); snapshot.MicMuted {
+		t.Fatal("the test did not hold the mute request")
+	}
+	if audioArrives(t, fromA, fromB, next(), 2) {
+		t.Fatal("audio went out while the mute request was still waiting")
+	}
+	if view, err := a.service.GetCall(contact); err != nil || !view.MicMuted {
+		t.Fatalf("the interface is shown %+v (%v) while muted here", view, err)
+	}
+	// The request fails. The microphone stays muted.
+	close(release)
+	if err := <-done; err == nil {
+		t.Fatal("the failed mute request reported success")
+	}
+	if snapshot := a.service.messages.Call(contact); snapshot.MicMuted {
+		t.Fatal("the failed request reached the session after all")
+	}
+	if audioArrives(t, fromA, fromB, next(), 3) {
+		t.Fatal("audio went out after the mute request failed")
+	}
+	for i := 0; i < 3; i++ {
+		a.service.observeCall(a.service.messages, contact)
+	}
+	if view, err := a.service.GetCall(contact); err != nil || !view.MicMuted {
+		t.Fatalf("a refresh after the failure shows %+v (%v), want muted", view, err)
+	}
+	if audioArrives(t, fromA, fromB, next(), 4) {
+		t.Fatal("audio went out after a refresh that predates the mute")
+	}
+	// The other direction was never affected.
+	if !audioArrives(t, fromB, fromA, callmedia.AudioFrameSamples, 5) {
+		t.Fatal("the other device's audio stopped too")
+	}
+
+	// Only the person's own unmute lets audio through again.
+	if view, err := a.service.SetCallMuted(contact, id, false); err != nil || view.MicMuted {
+		t.Fatalf("unmute returned %+v, %v", view, err)
+	}
+	if !audioArrives(t, fromA, fromB, next(), 6) {
+		t.Fatal("audio did not come back after the unmute")
+	}
+
+	// A mute the session did record drops audio too, and the other side sees it.
+	a.service.callMuteForTest = nil
+	if view, err := a.service.SetCallMuted(contact, id, true); err != nil || !view.MicMuted {
+		t.Fatalf("mute returned %+v, %v", view, err)
+	}
+	callWait(t, "the other device to see the mute", func() bool {
+		view, _ := b.service.GetCall(contact)
+		return view.PeerMicMuted
+	})
+	if audioArrives(t, fromA, fromB, next(), 7) {
+		t.Fatal("audio went out while muted")
+	}
+	// The session's record is enough on its own, without this device's note.
+	a.service.calls.releaseMute(id, a.service.calls.beginUnmute())
+	if a.service.calls.muteHeld(id) {
+		t.Fatal("the test could not lift this device's own note")
+	}
+	if audioArrives(t, fromA, fromB, next(), 8) {
+		t.Fatal("audio went out while the session records the microphone as muted")
+	}
+	// A lock forgets the note along with everything else about the call.
+	a.service.calls.holdMute(id)
+	a.service.resetCalls()
+	if a.service.calls.muteHeld(id) {
+		t.Fatal("a held mute survived the reset")
+	}
+}
+
+// An unmute lifts the mute only when the session has confirmed it for that
+// call. Until then, and if it fails, the call stays muted, even when the mute
+// before it never reached the session and every refresh says "not muted". A
+// request about another call changes nothing, and neither does an unmute that
+// a later mute overtook.
+func TestUnmuteLiftsTheMuteOnlyOnceTheSessionConfirmsItForThatCall(t *testing.T) {
+	a, b, contact, _ := callTestPair(t, true, true)
+	id, fromA, fromB := activeTestCall(t, a, b, contact)
+	stamp := uint32(0)
+	next := func() uint32 { stamp += callmedia.AudioFrameSamples; return stamp }
+	muted := func(when string) {
+		t.Helper()
+		if audioArrives(t, fromA, fromB, next(), 9) {
+			t.Fatalf("%s: audio went out", when)
+		}
+		if view, err := a.service.GetCall(contact); err != nil || !view.MicMuted {
+			t.Fatalf("%s: the interface is shown %+v (%v), want muted", when, view, err)
+		}
+	}
+
+	// The next mute, or the next unmute, waits at the session until released
+	// and can be made to fail there.
+	type gate struct {
+		entered, release chan struct{}
+		fail             bool
+	}
+	var gatesMu sync.Mutex
+	gates := map[bool]*gate{}
+	arm := func(mute, fail bool) *gate {
+		g := &gate{entered: make(chan struct{}), release: make(chan struct{}), fail: fail}
+		gatesMu.Lock()
+		gates[mute] = g
+		gatesMu.Unlock()
+		return g
+	}
+	a.service.callMuteForTest = func(ctx context.Context, messages *messaging.Registry, contactID string, callID call.ID, mute bool) (call.Snapshot, error) {
+		gatesMu.Lock()
+		g := gates[mute]
+		delete(gates, mute)
+		gatesMu.Unlock()
+		if g != nil {
+			close(g.entered)
+			<-g.release
+			if g.fail {
+				return messages.Call(contactID), context.DeadlineExceeded
+			}
+		}
+		return messages.SetCallMuted(ctx, contactID, callID, mute)
+	}
+	ask := func(mute bool) chan error {
+		done := make(chan error, 1)
+		go func() {
+			_, err := a.service.SetCallMuted(contact, id, mute)
+			done <- err
+		}()
+		return done
+	}
+
+	// A mute that never reaches the session.
+	g := arm(true, true)
+	done := ask(true)
+	<-g.entered
+	close(g.release)
+	if err := <-done; err == nil {
+		t.Fatal("the failed mute reported success")
+	}
+	if snapshot := a.service.messages.Call(contact); snapshot.MicMuted {
+		t.Fatal("the test did not keep the mute from the session")
+	}
+	muted("after a mute the session never heard of")
+
+	// An unmute is asked for and waits. Refreshes meanwhile read a session
+	// that was never muted; the call stays muted all the same.
+	g = arm(false, true)
+	done = ask(false)
+	<-g.entered
+	for i := 0; i < 3; i++ {
+		a.service.observeCall(a.service.messages, contact)
+	}
+	muted("while the unmute is waiting")
+	// The unmute fails.
+	close(g.release)
+	if err := <-done; err == nil {
+		t.Fatal("the failed unmute reported success")
+	}
+	muted("after the unmute failed")
+
+	// Requests naming another call are refused and disturb nothing.
+	const otherCall = "CgoKCgoKCgoKCgoKCgoKCg"
+	for _, mute := range []bool{true, false} {
+		if _, err := a.service.SetCallMuted(contact, otherCall, mute); err == nil {
+			t.Fatalf("a request for another call (mute=%v) was accepted", mute)
+		}
+		if a.service.calls.muteHeld(otherCall) {
+			t.Fatal("a call that is not in progress was given a mute hold")
+		}
+		muted("after a request that named another call")
+	}
+
+	// An unmute is waiting when the person mutes again. The mute goes
+	// through; the unmute then succeeds at the session, and must not lift it.
+	g = arm(false, false)
+	done = ask(false)
+	<-g.entered
+	if _, err := a.service.SetCallMuted(contact, id, true); err != nil {
+		t.Fatal(err)
+	}
+	close(g.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := a.service.messages.Call(contact); snapshot.MicMuted {
+		t.Fatal("the test expected the session to end up unmuted")
+	}
+	muted("after an unmute that a later mute overtook")
+
+	// The person's unmute, confirmed by the session, brings the audio back.
+	if view, err := a.service.SetCallMuted(contact, id, false); err != nil || view.MicMuted {
+		t.Fatalf("unmute returned %+v, %v", view, err)
+	}
+	if !audioArrives(t, fromA, fromB, next(), 10) {
+		t.Fatal("audio did not come back after a confirmed unmute")
+	}
+}
+
 func TestASlowRefreshCannotReopenCaptureAfterTheCallIsOver(t *testing.T) {
 	for _, how := range []string{"hang-up", "the other side hanging up", "lock"} {
 		a, b, contact, _ := callTestPair(t, true, true)

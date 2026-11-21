@@ -19,7 +19,7 @@ import (
 	"whatsup/internal/storage"
 )
 
-const Version = "0.2.0"
+const Version = "0.2.1"
 
 type Status struct {
 	Version              string `json:"version"`
@@ -59,9 +59,10 @@ type Service struct {
 	calls              callControl
 	callOptionsMu      sync.Mutex
 	callRuntimeOptions RuntimeOptions
-	// Test seams for the two requests that reach the session loop. Nil in
-	// the application.
+	// Test seams for the requests that reach the session loop. Nil in the
+	// application.
 	callEndForTest     func(context.Context, *messaging.Registry, string, call.ID) (call.Snapshot, error)
+	callMuteForTest    func(context.Context, *messaging.Registry, string, call.ID, bool) (call.Snapshot, error)
 	callEnforceForTest func(context.Context, *messaging.Registry)
 	callPathForTest    func(contactID string) string
 	// callRefreshForTest runs between a refresh reading a call's state and

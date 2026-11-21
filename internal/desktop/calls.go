@@ -98,6 +98,19 @@ type callControl struct {
 	// insertion order so the set stays bounded.
 	revoked      map[string]struct{}
 	revokedOrder []string
+	// muted holds the calls whose microphone the person muted on this device.
+	// A call is added when the request arrives, before the session is asked
+	// to tell the other side, and audio for it is dropped from then on, so a
+	// request that is slow or fails cannot leave speech going out. It is
+	// removed only when the session has confirmed an unmute for that call.
+	// Holds are per call: a request about one call never touches another's.
+	// mutedOrder keeps insertion order so the set stays bounded.
+	muted      map[string]struct{}
+	mutedOrder []string
+	// muteTurn counts the mute and unmute requests made here. An unmute lifts
+	// a hold only if no other request was made while it was being confirmed,
+	// so a mute pressed in the meantime is never undone by an earlier unmute.
+	muteTurn uint64
 	// stop is closed when storage locks or the service shuts down, which ends
 	// any background effort started for a call of that unlocked period.
 	stop chan struct{}
@@ -143,6 +156,67 @@ func (c *callControl) isRevoked(callID string) bool {
 	defer c.mu.Unlock()
 	_, revoked := c.revoked[callID]
 	return revoked
+}
+
+// callMuteHolds bounds the mute holds kept. One call is in progress at a time,
+// so anything beyond the newest belongs to a call that is over.
+const callMuteHolds = 8
+
+// holdMute records that the person muted this call's microphone here.
+func (c *callControl) holdMute(callID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.muteTurn++
+	if _, held := c.muted[callID]; held {
+		return
+	}
+	if c.muted == nil {
+		c.muted = make(map[string]struct{})
+	}
+	c.muted[callID] = struct{}{}
+	c.mutedOrder = append(c.mutedOrder, callID)
+	for len(c.mutedOrder) > callMuteHolds {
+		delete(c.muted, c.mutedOrder[0])
+		c.mutedOrder = c.mutedOrder[1:]
+	}
+}
+
+// beginUnmute notes that an unmute was asked for and returns its turn. The
+// hold stays until releaseMute is called with that turn.
+func (c *callControl) beginUnmute() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.muteTurn++
+	return c.muteTurn
+}
+
+// releaseMute lifts this call's hold once the session has confirmed the
+// unmute that took the given turn, unless another mute or unmute was asked for
+// since: the newest request decides.
+func (c *callControl) releaseMute(callID string, turn uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.muteTurn != turn {
+		return
+	}
+	if _, held := c.muted[callID]; !held {
+		return
+	}
+	delete(c.muted, callID)
+	for i, id := range c.mutedOrder {
+		if id == callID {
+			c.mutedOrder = append(c.mutedOrder[:i], c.mutedOrder[i+1:]...)
+			break
+		}
+	}
+}
+
+// muteHeld reports whether the person muted this call's microphone here.
+func (c *callControl) muteHeld(callID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, held := c.muted[callID]
+	return held
 }
 
 func (c *callControl) setSettings(values AppPreferences) {
@@ -307,6 +381,9 @@ func (s *Service) callView(messages *messaging.Registry, contactID string) CallV
 		LastEnd: callEndName(snapshot.Last.End), LastOutgoing: snapshot.Last.Outgoing, LastConnected: snapshot.Last.Connected}
 	if snapshot.State != call.Idle {
 		view.CallID = snapshot.Call.String()
+		// Muted here counts from the person's request, not from the moment
+		// the session recorded it: the audio is already being dropped.
+		view.MicMuted = view.MicMuted || s.calls.muteHeld(view.CallID)
 		view.Video = snapshot.Media == call.Video
 		view.CameraOn = view.Video && snapshot.CameraOn
 		view.PeerCameraOn = view.Video && snapshot.PeerCameraOn
@@ -443,6 +520,7 @@ func (s *Service) resetCalls() {
 	}
 	c.media, c.capturing, c.filming, c.views, c.announced = nil, false, false, nil, ""
 	c.revoked, c.revokedOrder = nil, nil
+	c.muted, c.mutedOrder = nil, nil
 	if c.stop != nil {
 		close(c.stop)
 		c.stop = nil
@@ -637,6 +715,20 @@ func (s *Service) finishEndingCall(messages *messaging.Registry, contactID strin
 }
 
 // SetCallMuted records and announces this side's mute state.
+//
+// A mute takes effect here first: audio for the call is dropped from this
+// point, and only then is the session asked to tell the other side. That
+// request can wait behind a slow connection or fail, and neither may leave the
+// person's speech going out after they pressed Mute.
+//
+// An unmute goes the other way round. The hold stays while the session is
+// asked, and is lifted only when the session answers that this call's
+// microphone is on. An unmute that is slow or fails leaves the call muted, as
+// does one overtaken by a later mute.
+//
+// The request must name the call the session has answered right now. Any
+// other, such as a late request from a call that is already over, is refused
+// before anything is recorded, so it cannot disturb the current call's hold.
 func (s *Service) SetCallMuted(contactID, callID string, muted bool) (CallView, error) {
 	messages, err := s.callRegistry()
 	if err != nil {
@@ -649,9 +741,26 @@ func (s *Service) SetCallMuted(contactID, callID string, muted bool) (CallView, 
 	// Only the microphone state is sent to the call's owner. The camera state
 	// is not read here and passed back: a camera change made at the same
 	// moment would be overwritten by what this saw.
+	if current := messages.Call(contactID); current.Call != id || (current.State != call.Connecting && current.State != call.Active) {
+		return s.callView(messages, contactID), callError(call.ErrUnavailable)
+	}
+	var turn uint64
+	if muted {
+		s.calls.holdMute(id.String())
+	} else {
+		turn = s.calls.beginUnmute()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), callActionTimeout)
 	defer cancel()
-	_, err = messages.SetCallMuted(ctx, contactID, id, muted)
+	var recorded call.Snapshot
+	if s.callMuteForTest != nil {
+		recorded, err = s.callMuteForTest(ctx, messages, contactID, id, muted)
+	} else {
+		recorded, err = messages.SetCallMuted(ctx, contactID, id, muted)
+	}
+	if !muted && err == nil && recorded.Call == id && !recorded.MicMuted {
+		s.calls.releaseMute(id.String(), turn)
+	}
 	return s.callView(messages, contactID), callError(err)
 }
 
@@ -850,6 +959,11 @@ func (m *CallMediaSession) Done() <-chan struct{} { return m.done }
 // and the encrypted media flow opens a moment later. A frame that arrives in
 // between is dropped, never queued, and is not an error: closing the stream
 // for it would leave the whole call silent in both directions.
+//
+// A frame is also dropped, without error, while this device's microphone is
+// muted: from the moment the person asked for it, and for as long as the
+// session records it. The interface stops capturing on its own; this is the
+// check that does not depend on it.
 func (m *CallMediaSession) SendAudio(timestamp uint32, frame []byte) error {
 	select {
 	case <-m.done:
@@ -861,6 +975,12 @@ func (m *CallMediaSession) SendAudio(timestamp uint32, frame []byte) error {
 	}
 	if m.service.calls.isRevoked(m.id.String()) {
 		return ErrCallMedia
+	}
+	if m.service.calls.muteHeld(m.id.String()) {
+		return nil
+	}
+	if current := m.messages.Call(m.contactID); current.Call == m.id && current.MicMuted {
+		return nil
 	}
 	if m.messages.SendCallAudio(m.contactID, m.id, frame, timestamp) == nil {
 		return nil

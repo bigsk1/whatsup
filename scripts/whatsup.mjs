@@ -259,10 +259,7 @@ async function npmAdvisoryScan(frontend) {
   try { report = JSON.parse(raw); } catch { throw new Error('npm audit did not return valid JSON'); }
   await mkdir(path.join(root, '.local'), { recursive: true });
   await writeJson(path.join(root, '.local', `npm-audit-${frontend ? 'frontend' : 'root'}-${process.platform}-${process.arch}.json`), report);
-  const result = evaluateNpmAudit(report, { frontend, exception: await readJson(path.join(root, 'config/advisory-exception.json')),
-    lock: await readJson(path.join(cwd, 'package-lock.json')) });
-  if (result.exceptions.length) console.log(`Reviewed frontend tooling advisory exception: ${result.exceptions[0].advisory}; expires ${result.exceptions[0].expiresOn}. Raw audit retained locally.`);
-  return result;
+  return evaluateNpmAudit(report);
 }
 
 async function frontendScript(name) {
@@ -354,7 +351,7 @@ async function implementedCheck() {
     source: sourceBefore && sourceAfter ? { commit: sourceAfter.sourceCommit, dirty: sourceAfter.sourceDirty, digestSHA256: sourceAfter.sourceDigest } : null,
     scans, patches: patchEvidence(), applicationReady: false, transportIntegrationVerified: false,
   });
-  if (scans.some((scan) => !scan.passed)) throw new Error(`Security scans failed: ${scans.filter((scan) => !scan.passed).map((scan) => scan.name).join(', ')}. Only the exact documented unexpired development advisory can be excepted. Local report: ${report}`);
+  if (scans.some((scan) => !scan.passed)) throw new Error(`Security scans failed: ${scans.filter((scan) => !scan.passed).map((scan) => scan.name).join(', ')}. No advisory is excepted. Local report: ${report}`);
   console.log('Implemented-component checks completed. These do not establish native two-machine messaging, complete transport security verification, or release readiness.');
 }
 
@@ -653,7 +650,7 @@ async function nativePackage() {
       || receipt.source?.sourceDigest !== source.sourceDigest || receipt.source?.sourceCommit !== source.sourceCommit
       || !Number.isFinite(Date.parse(receipt.recordedAt)) || Date.parse(receipt.recordedAt) > Date.now()
       || Date.now() - Date.parse(receipt.recordedAt) > 2 * 60 * 60 * 1000
-      || receipt.scans.some((scan) => scan.exceptions?.some((exception) => !Number.isFinite(Date.parse(exception.expiresOn)) || Date.now() >= Date.parse(exception.expiresOn)))) {
+      || receipt.scans.some((scan) => scan.exceptions !== undefined && (!Array.isArray(scan.exceptions) || scan.exceptions.length))) {
     throw new Error('Native packaging requires fresh source-bound checks; run npm run package');
   }
   const version = (await readJson(path.join(root, 'package.json'))).version;

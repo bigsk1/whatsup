@@ -109,15 +109,8 @@ export async function verifyReleasePackage(directory, context, platform) {
   for (const scan of checks.scans) {
     if (scan.exceptions === undefined) continue;
     if (!Array.isArray(scan.exceptions)) throw new Error('Advisory exception evidence is malformed');
-    if (!scan.exceptions.length) continue;
-    const exception = context.advisoryException;
-    const accepted = scan.exceptions[0];
-    if (scan.name !== 'frontend npm audit' || scan.exceptions.length !== 1
-        || !exception || accepted?.advisory !== exception.advisory || accepted.package !== exception.package
-        || accepted.version !== exception.version || accepted.scope !== exception.scope || accepted.expiresOn !== exception.expiresOn
-        || !Number.isFinite(Date.parse(exception.expiresOn + 'T00:00:00Z')) || now >= Date.parse(exception.expiresOn + 'T00:00:00Z')) {
-      throw new Error('Package uses an unapproved or expired advisory exception');
-    }
+    // No advisory exception is approved, so a package built under one is refused.
+    if (scan.exceptions.length) throw new Error('Package uses an advisory exception, and none is approved');
   }
   const installerInfo = await boundedFile(path.join(directory, names.installer), 1024 ** 3);
   if (!Array.isArray(manifest.files) || manifest.files.length !== 1 || manifest.files[0]?.name !== names.installer
@@ -167,7 +160,6 @@ export async function verifyReleasePackage(directory, context, platform) {
 export async function releaseCollect(root) {
   const context = await releasePreflight(root);
   context.packagingTools = await readJson(path.join(root, 'config/packaging-tools.json'));
-  context.advisoryException = await readJson(path.join(root, 'config/advisory-exception.json'));
   context.minimumGo = (await readJson(path.join(root, 'config/toolchain.json'))).minimumGo;
   context.arWriterPolicy = await readJson(path.join(root, 'config/nfpm-ar-writer.json'));
   context.sourceTools = Object.fromEntries(await Promise.all(['nfpm', 'cyclonedx-gomod'].map(async (name) =>

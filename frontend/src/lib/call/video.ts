@@ -589,6 +589,19 @@ export function vp8KeyframeSize(
     : null;
 }
 
+// The most pictures left waiting at the decoder. Beyond this the picture on
+// screen is too far behind to be worth showing, and whatever is waiting is
+// thrown away instead of being allowed to pile up.
+const maxVideoDecodeBacklog = 8;
+// How many decoders may be started within a stretch of time. Recovery from a
+// fault or a backlog starts a new one, and the engine can still be setting up
+// or tearing down the last while that happens. A few in a row are normal: a
+// camera switched off and on, a change of picture size. A steady stream of
+// them is not, so beyond this the receiver waits, without a decoder, for a
+// keyframe that arrives once the stretch has passed.
+const maxDecoderStarts = 3;
+const decoderStartWindowMs = 3000;
+
 function createBrowserReceiver(shown: () => void): VideoReceiver | null {
   if (typeof VideoDecoder === 'undefined') return null;
   const counts = { received: 0, keyframesReceived: 0, decoded: 0, shown: 0 };
@@ -600,6 +613,16 @@ function createBrowserReceiver(shown: () => void): VideoReceiver | null {
   // Nothing can be decoded until a keyframe arrives; after a decoder fault or
   // a backlog, wait for the next one.
   let waiting = true;
+  // When recent decoders were started, oldest first.
+  const starts: number[] = [];
+  const mayStartDecoder = () => {
+    const now = performance.now();
+    while (starts.length && now - starts[0] >= decoderStartWindowMs)
+      starts.shift();
+    if (starts.length >= maxDecoderStarts) return false;
+    starts.push(now);
+    return true;
+  };
 
   const paint = (frame: VideoFrame) => {
     counts.decoded += 1;
@@ -652,6 +675,17 @@ function createBrowserReceiver(shown: () => void): VideoReceiver | null {
       if (key) counts.keyframesReceived += 1;
       if (waiting && !key) return;
       try {
+        // The limit holds for every kind of frame. A backlog is dropped
+        // whole; a keyframe then starts again from itself, and anything else
+        // waits for the next keyframe.
+        if (
+          decoder &&
+          decoder.state === 'configured' &&
+          decoder.decodeQueueSize > maxVideoDecodeBacklog
+        ) {
+          discard();
+          if (!key) return;
+        }
         if (key) {
           // Every keyframe says how large its pictures are. Start a decoder
           // for that size if there is none, or the size has changed.
@@ -666,14 +700,11 @@ function createBrowserReceiver(shown: () => void): VideoReceiver | null {
             size !== declared.width + 'x' + declared.height
           ) {
             discard();
+            // Too many decoders lately: stay without one for now.
+            if (!mayStartDecoder()) return;
             build(declared.width, declared.height);
           }
         } else if (!decoder || decoder.state !== 'configured') {
-          discard();
-          return;
-        }
-        if (!key && decoder!.decodeQueueSize > 8) {
-          // Too far behind to be worth showing: start again at a keyframe.
           discard();
           return;
         }

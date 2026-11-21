@@ -467,3 +467,113 @@ describe('call media stream video frames', () => {
       expect(decodeMedia(bad)).toBeNull();
   });
 });
+
+describe('the browser video receiver', () => {
+  // A decoder that accepts work and never finishes any of it.
+  class StuckDecoder {
+    static made: StuckDecoder[] = [];
+    state = 'unconfigured';
+    decodeQueueSize = 0;
+    accepted = 0;
+    constructor() {
+      StuckDecoder.made.push(this);
+    }
+    configure() {
+      this.state = 'configured';
+    }
+    decode() {
+      this.accepted += 1;
+      this.decodeQueueSize += 1;
+    }
+    close() {
+      this.state = 'closed';
+    }
+  }
+  const keyframe = new Uint8Array([16, 56, 0, 157, 1, 42, 128, 2, 104, 1]);
+  const delta = new Uint8Array([17, 1, 2, 3]);
+
+  function receiver() {
+    StuckDecoder.made = [];
+    vi.stubGlobal('VideoDecoder', StuckDecoder);
+    vi.stubGlobal('EncodedVideoChunk', class {});
+    return createVideoEngine({ send: () => {}, failed: () => {} });
+  }
+  const open = () =>
+    StuckDecoder.made.filter((decoder) => decoder.state !== 'closed');
+  const most = () =>
+    Math.max(...StuckDecoder.made.map((decoder) => decoder.accepted));
+
+  it('never leaves more than a few pictures waiting, when every frame is a keyframe', () => {
+    try {
+      const engine = receiver();
+      vi.spyOn(performance, 'now').mockReturnValue(1000);
+      for (let i = 0; i < 500; i++) engine.receive(i * 3000, true, keyframe);
+      // No decoder was ever handed more than the limit and one over, and the
+      // backlog was thrown away each time.
+      expect(most()).toBeLessThanOrEqual(9);
+      expect(engine.stats().received).toBe(500);
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('starts only a few decoders in a row, then waits before starting another', () => {
+    try {
+      const engine = receiver();
+      const clock = vi.spyOn(performance, 'now').mockReturnValue(1000);
+      // Sustained overload: every decoder falls behind as soon as it starts.
+      for (let i = 0; i < 500; i++) engine.receive(i * 3000, true, keyframe);
+      expect(StuckDecoder.made).toHaveLength(3);
+      expect(open()).toHaveLength(0);
+      expect(engine.stats().waitingForKeyframe).toBe(true);
+      // Still inside the stretch: keyframes are dropped, nothing is started.
+      clock.mockReturnValue(3900);
+      for (let i = 0; i < 50; i++) engine.receive(i * 3000, true, keyframe);
+      expect(StuckDecoder.made).toHaveLength(3);
+      // Once it has passed, the next keyframe starts a decoder again.
+      clock.mockReturnValue(4000);
+      engine.receive(0, true, keyframe);
+      expect(StuckDecoder.made).toHaveLength(4);
+      expect(open()).toHaveLength(1);
+      expect(open()[0].accepted).toBe(1);
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a camera switched off and on a couple of times gets its picture back at once', () => {
+    try {
+      const engine = receiver();
+      vi.spyOn(performance, 'now').mockReturnValue(1000);
+      engine.receive(0, true, keyframe);
+      for (let round = 1; round <= 2; round++) {
+        engine.forgetPicture();
+        engine.receive(round * 3000, true, keyframe);
+        expect(open()).toHaveLength(1);
+      }
+      expect(StuckDecoder.made).toHaveLength(3);
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('drops a backlog of ordinary frames and waits for the next keyframe', () => {
+    try {
+      const engine = receiver();
+      engine.receive(0, true, keyframe);
+      for (let i = 1; i < 200; i++) engine.receive(i * 3000, false, delta);
+      expect(most()).toBeLessThanOrEqual(9);
+      expect(open()).toHaveLength(0);
+      expect(engine.stats().waitingForKeyframe).toBe(true);
+      // The next keyframe starts a fresh decoder.
+      engine.receive(200 * 3000, true, keyframe);
+      expect(open()).toHaveLength(1);
+      expect(open()[0].accepted).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

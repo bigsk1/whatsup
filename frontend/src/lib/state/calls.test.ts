@@ -54,6 +54,11 @@ function harness(endNoticeMs = 0) {
   const failures: ((reason: AudioFailure, stage?: AudioStage) => void)[] = [];
   const sent: Uint8Array[] = [];
   const engines: { started: number; stopped: number; muted: boolean[] }[] = [];
+  // Each engine's way of handing captured audio to the store.
+  const speakers: ((timestamp: number, data: Uint8Array) => void)[] = [];
+  // While set, the desktop has not yet answered a mute request.
+  let muteGate: Promise<void> | null = null;
+  let muteFails = false;
   // Video engines the store created, with what it did to each.
   const videos: {
     camera: 'off' | 'starting' | 'on';
@@ -89,6 +94,8 @@ function harness(endNoticeMs = 0) {
       return serverView;
     }),
     setMuted: vi.fn(async (_c, _i, muted) => {
+      if (muteGate) await muteGate;
+      if (muteFails) throw new Error('The session did not answer');
       serverView = { ...serverView, micMuted: muted };
       return serverView;
     }),
@@ -122,6 +129,7 @@ function harness(endNoticeMs = 0) {
     engine: (options) => {
       const record = { started: 0, stopped: 0, muted: [] as boolean[] };
       engines.push(record);
+      speakers.push(options.send);
       failures.push(options.failed);
       return {
         start: async () => {
@@ -271,6 +279,19 @@ function harness(endNoticeMs = 0) {
         release();
       };
     },
+    /** The desktop holds its answers to mute requests until released. */
+    holdMute(fails = false) {
+      let release: () => void = () => {};
+      muteGate = new Promise<void>((resolve) => (release = resolve));
+      muteFails = fails;
+      return () => {
+        muteGate = null;
+        release();
+      };
+    },
+    muteWorksAgain: () => (muteFails = false),
+    /** The microphone hands the store one more captured frame. */
+    speak: () => speakers.at(-1)!(1920, new Uint8Array([4, 5, 6])),
     /** The window goes to the back, or comes to the front. */
     setFocused(value: boolean) {
       const cameForward = value && !focused;
@@ -576,6 +597,166 @@ describe('calls', () => {
     expect(get(h.calls.state).current?.micMuted).toBe(true);
     expect(h.engines[0].muted.at(-1)).toBe(true);
     expect(h.engines[0].started).toBe(1);
+  });
+
+  it('mute silences the microphone on the click, before the desktop answers', async () => {
+    const h = harness();
+    await h.push(view({ state: 'active', callID, activeSince: 1 }));
+    h.speak();
+    const before = h.sent.length;
+    expect(before).toBeGreaterThan(0);
+    const release = h.holdMute();
+    const pending = h.calls.toggleMute(get(h.calls.state).current!);
+    // The desktop has been asked and has not answered.
+    expect(h.bridge.setMuted).toHaveBeenCalledWith(contactID, callID, true);
+    expect(h.engines[0].muted.at(-1)).toBe(true);
+    expect(get(h.calls.state).current?.micMuted).toBe(true);
+    // Audio the capture had already taken does not leave either.
+    h.speak();
+    expect(h.sent).toHaveLength(before);
+    // A view read before the click arrives late: it changes nothing.
+    h.hint({ contactID });
+    await vi.waitFor(() => expect(h.bridge.get).toHaveBeenCalled());
+    await Promise.resolve();
+    expect(h.engines[0].muted.at(-1)).toBe(true);
+    expect(get(h.calls.state).current?.micMuted).toBe(true);
+    h.speak();
+    expect(h.sent).toHaveLength(before);
+    release();
+    await pending;
+    expect(h.engines[0].muted.at(-1)).toBe(true);
+    // The first entry is the unmuted start of the call.
+    expect(h.engines[0].muted.slice(1)).not.toContain(false);
+  });
+
+  it('a mute the desktop could not record stays until the person unmutes', async () => {
+    const h = harness();
+    await h.push(view({ state: 'active', callID, activeSince: 1 }));
+    const before = h.sent.length;
+    const release = h.holdMute(true);
+    const pending = h.calls.toggleMute(get(h.calls.state).current!);
+    release();
+    await pending;
+    // The request failed and the desktop still has the microphone as on.
+    expect(get(h.calls.state).notice).not.toBe('');
+    await vi.waitFor(() => expect(h.bridge.get).toHaveBeenCalled());
+    await Promise.resolve();
+    expect(get(h.calls.state).current?.micMuted).toBe(true);
+    expect(h.engines[0].muted.at(-1)).toBe(true);
+    // Later views that never saw the mute do not undo it.
+    h.hint({ contactID });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(get(h.calls.state).current?.micMuted).toBe(true);
+    // The first entry is the unmuted start of the call.
+    expect(h.engines[0].muted.slice(1)).not.toContain(false);
+    h.speak();
+    expect(h.sent).toHaveLength(before);
+    // The person unmutes: the desktop is asked, and the microphone returns.
+    h.muteWorksAgain();
+    await h.calls.toggleMute(get(h.calls.state).current!);
+    expect(h.bridge.setMuted).toHaveBeenLastCalledWith(
+      contactID,
+      callID,
+      false,
+    );
+    expect(get(h.calls.state).current?.micMuted).toBe(false);
+    expect(h.engines[0].muted.at(-1)).toBe(false);
+    h.speak();
+    expect(h.sent.length).toBeGreaterThan(before);
+  });
+
+  it('unmute brings the microphone back only once the desktop has recorded it', async () => {
+    const h = harness();
+    await h.push(view({ state: 'active', callID, activeSince: 1 }));
+    await h.calls.toggleMute(get(h.calls.state).current!);
+    const before = h.sent.length;
+    const release = h.holdMute();
+    const pending = h.calls.toggleMute(get(h.calls.state).current!);
+    expect(h.engines[0].muted.at(-1)).toBe(true);
+    release();
+    await pending;
+    expect(h.engines[0].muted.at(-1)).toBe(false);
+    h.speak();
+    expect(h.sent.length).toBeGreaterThan(before);
+  });
+
+  it('an unmute after a mute the desktop never recorded waits for the desktop too', async () => {
+    const h = harness();
+    await h.push(view({ state: 'active', callID, activeSince: 1 }));
+    // The mute fails: the desktop still has the microphone as on.
+    let release = h.holdMute(true);
+    let pending = h.calls.toggleMute(get(h.calls.state).current!);
+    release();
+    await pending;
+    const before = h.sent.length;
+    const silent = async (when: string) => {
+      // Any refresh now reads "not muted" from the desktop.
+      h.hint({ contactID });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(get(h.calls.state).current?.micMuted, when).toBe(true);
+      expect(h.engines[0].muted.slice(1), when).not.toContain(false);
+      h.speak();
+      expect(h.sent, when).toHaveLength(before);
+    };
+    await silent('after the failed mute');
+    // The person unmutes and the desktop has not answered yet.
+    release = h.holdMute(true);
+    pending = h.calls.toggleMute(get(h.calls.state).current!);
+    expect(h.bridge.setMuted).toHaveBeenLastCalledWith(
+      contactID,
+      callID,
+      false,
+    );
+    await silent('while the unmute is waiting');
+    // The unmute fails as well.
+    release();
+    await pending;
+    await silent('after the unmute failed');
+    // An unmute the desktop confirms brings the microphone back.
+    h.muteWorksAgain();
+    await h.calls.toggleMute(get(h.calls.state).current!);
+    expect(get(h.calls.state).current?.micMuted).toBe(false);
+    expect(h.engines[0].muted.at(-1)).toBe(false);
+    h.speak();
+    expect(h.sent.length).toBeGreaterThan(before);
+  });
+
+  it('only the answer to the latest unmute counts', async () => {
+    const h = harness();
+    await h.push(view({ state: 'active', callID, activeSince: 1 }));
+    await h.calls.toggleMute(get(h.calls.state).current!);
+    // A first unmute is waiting when the person presses again, and that
+    // second request fails. The first one's late success does not count.
+    const release = h.holdMute();
+    const first = h.calls.toggleMute(get(h.calls.state).current!);
+    h.bridge.setMuted = vi.fn(async () => {
+      throw new Error('The session did not answer');
+    });
+    await h.calls.toggleMute(get(h.calls.state).current!);
+    release();
+    await first;
+    expect(h.engines[0].muted.at(-1)).toBe(true);
+    expect(get(h.calls.state).current?.micMuted).toBe(true);
+  });
+
+  it('a mute does not carry over to the next call', async () => {
+    const h = harness();
+    await h.push(view({ state: 'active', callID, activeSince: 1 }));
+    const release = h.holdMute(true);
+    const pending = h.calls.toggleMute(get(h.calls.state).current!);
+    release();
+    await pending;
+    h.muteWorksAgain();
+    await h.push(view({ lastEnd: 'peer-hung-up' }));
+    await h.push(
+      view({ state: 'active', callID: otherCallID, activeSince: 2 }),
+    );
+    expect(h.engines).toHaveLength(2);
+    expect(h.engines[1].muted).not.toContain(true);
+    expect(get(h.calls.state).current?.micMuted).toBe(false);
   });
 });
 

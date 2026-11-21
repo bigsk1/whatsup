@@ -206,6 +206,10 @@ const opusDecode: AudioDecoderConfig = {
   sampleRate: 48000,
   numberOfChannels: 1,
 };
+// The most frames left waiting at the decoder: 200 ms of audio. The playback
+// buffer has its own limit; this one keeps undecoded audio from piling up
+// when frames arrive faster than the engine decodes them.
+const maxAudioDecodeBacklog = 10;
 
 async function createBrowserPipeline(
   stream: MediaStream,
@@ -302,9 +306,18 @@ async function assembleBrowserPipeline(
   };
 
   entering('codec');
+  // Checked where samples arrive and again where encoded audio leaves, so a
+  // mute takes effect at once: the message to the capture thread and the
+  // track switch both take a moment, and the encoder may still hold a frame.
+  let muted = false;
   const encoder = new AudioEncoder({
     output: (chunk) => {
-      if (closed || chunk.byteLength === 0 || chunk.byteLength > maxAudioFrame)
+      if (
+        closed ||
+        muted ||
+        chunk.byteLength === 0 ||
+        chunk.byteLength > maxAudioFrame
+      )
         return;
       const data = new Uint8Array(chunk.byteLength);
       chunk.copyTo(data);
@@ -378,6 +391,7 @@ async function assembleBrowserPipeline(
     const samples = event.data;
     if (
       closed ||
+      muted ||
       !(samples instanceof Float32Array) ||
       samples.length !== audioFrameSamples ||
       encoder.state !== 'configured'
@@ -401,15 +415,20 @@ async function assembleBrowserPipeline(
 
   let lastTimestamp = -1;
   return {
-    setMuted(muted) {
-      capture.port.postMessage({ muted });
+    setMuted(value) {
+      muted = value;
+      capture.port.postMessage({ muted: value });
       stream.getAudioTracks().forEach((track) => {
-        track.enabled = !muted;
+        track.enabled = !value;
       });
     },
     receive(timestamp, data) {
       counts.received += 1;
       if (closed || decoder.state !== 'configured') return;
+      // Frames arriving faster than they can be decoded are dropped, not
+      // queued: a queue would only add delay and memory, and late audio has
+      // missed its moment anyway.
+      if (decoder.decodeQueueSize > maxAudioDecodeBacklog) return;
       // Decode strictly forward in time. Anything older than what was
       // already decoded has missed its moment.
       if (lastTimestamp >= 0) {

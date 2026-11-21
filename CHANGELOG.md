@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1 (unsigned)
+
+- Mute now takes effect the moment you press it. Before, WhatsUp kept sending
+  your audio until the other device had been told, so a slow or failed
+  connection could leave you audible for a moment after pressing Mute. Your
+  microphone now stays muted until you unmute it, whatever happens to that
+  message.
+- Incoming call audio and video that arrive faster than your device can decode
+  them are dropped instead of building up, which keeps a call from falling
+  behind or using more and more memory.
+- The temporary build-tooling exception for the picomatch advisory is removed.
+  GitHub withdrew that advisory; dependency scans now accept no exceptions.
+
 ## 0.2.0 (unsigned)
 
 - Voice calls between two connected contacts. Calls are off until you turn on

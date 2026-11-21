@@ -50,7 +50,7 @@ level is set in your system's sound settings.
 
 Install the downloaded package with the system package manager:
 
-    sudo apt install ./whatsup_0.2.0_amd64.deb
+    sudo apt install ./whatsup_0.2.1_amd64.deb
 
 The package installs runtime dependencies, one application-menu entry and the
 scoped AppArmor compatibility profile. Quit WhatsUp from its tray before an

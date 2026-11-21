@@ -61,5 +61,4 @@ jobs:
 # Component CI does not authorize a release or establish native transport QA.
 # Keep the matrix jobs/check names present for documentation-only changes. Only
 # their expensive steps are skipped; workflow tests and release runs stay intact.
-# Dependency advisories are enforced with only the exact, expiring development
-# exception in config/advisory-exception.json; new or changed findings fail.
+# Dependency advisories are enforced with no exception: any finding fails.

@@ -31,65 +31,39 @@ function audit() {
   }, metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 7, critical: 0, total: 7 } } };
 }
 
-test('the advisory exception covers only the reviewed frontend tooling graph and expires closed', async () => {
-  const exception = await json('config/advisory-exception.json');
-  const lock = await json('frontend/package-lock.json');
-  const options = { exception, lock, frontend: true, now: new Date('2026-11-17T12:00:00Z') };
-  assert.deepEqual(evaluateNpmAudit(audit(), options), { passed: true, exceptions: [{
-    advisory, package: 'picomatch', version: '4.0.7', scope: 'frontend build and test tooling only', expiresOn: '2026-12-17',
-  }] });
-  const reordered = audit();
-  reordered.vulnerabilities.vite.via.reverse();
-  reordered.vulnerabilities.picomatch.effects.reverse();
-  assert.equal(evaluateNpmAudit(reordered, options).passed, true);
-  const alternative = audit();
-  for (const name of ['fdir', 'picomatch', 'tinyglobby']) {
-    alternative.vulnerabilities[name].fixAvailable = { name: 'vitest', version: '3.1.4', isSemVerMajor: true };
-  }
-  assert.equal(evaluateNpmAudit(alternative, options).passed, true);
+test('no npm advisory is excepted: any finding fails, including the retired picomatch one', async () => {
+  const clean = { auditReportVersion: 2, vulnerabilities: {},
+    metadata: { vulnerabilities: { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 } } };
+  assert.deepEqual(evaluateNpmAudit(clean), { passed: true, exceptions: [] });
+  // The exact report the retired exception used to accept.
+  assert.throws(() => evaluateNpmAudit(audit()), /no exception is approved/);
+  // Callers cannot hand an exception back in.
+  assert.throws(() => evaluateNpmAudit(audit(), { frontend: true, now: new Date('2026-11-17T12:00:00Z'),
+    exception: { schemaVersion: 1, advisory, package: 'picomatch', version: '4.0.7', severity: 'high', expiresOn: '2026-12-17' } }),
+  /no exception is approved/);
+  const low = structuredClone(clean);
+  low.vulnerabilities.other = { name: 'other', severity: 'low', isDirect: false, via: [], effects: [], range: '*', nodes: ['node_modules/other'], fixAvailable: false };
+  low.metadata.vulnerabilities = { ...low.metadata.vulnerabilities, low: 1, total: 1 };
+  assert.throws(() => evaluateNpmAudit(low), /no exception is approved/);
   for (const change of [
-    (value) => { value.vulnerabilities.picomatch.severity = 'critical'; },
-    (value) => { value.vulnerabilities.picomatch.via[0].url = 'https://github.com/advisories/GHSA-gcqx-w48m-w2h4'; },
-    (value) => { value.vulnerabilities.picomatch.via.push({ ...value.vulnerabilities.picomatch.via[0], url: 'https://github.com/advisories/GHSA-new' }); },
-    (value) => { value.vulnerabilities.picomatch.via[0].cvss.score = 8; },
-    (value) => { value.vulnerabilities.picomatch.fixAvailable.isSemVerMajor = false; },
-    (value) => { value.vulnerabilities.picomatch.fixAvailable.version = '8.3.9'; },
-    (value) => { value.vulnerabilities.vite.fixAvailable = { name: 'vitest', version: '3.1.4', isSemVerMajor: true }; },
-    (value) => { value.vulnerabilities.picomatch.nodes.push('node_modules/other/node_modules/picomatch'); },
-    (value) => { value.vulnerabilities.picomatch.effects.push('another-package'); },
-    (value) => { value.vulnerabilities.vite.isDirect = false; },
-    (value) => { value.vulnerabilities.vite.via = ['another-package', 'picomatch']; },
-    (value) => { value.vulnerabilities.other = value.vulnerabilities.picomatch; },
-    (value) => { value.metadata.vulnerabilities.total = 8; },
+    (value) => { value.metadata.vulnerabilities.total = 1; },
     (value) => { value.metadata.vulnerabilities.critical = 1; },
     (value) => { value.error = { code: 'EAI_AGAIN' }; },
+    (value) => { value.auditReportVersion = 1; },
+    (value) => { delete value.metadata; },
+    (value) => { value.vulnerabilities = []; },
   ]) {
-    const value = audit(); change(value);
-    assert.throws(() => evaluateNpmAudit(value, options));
+    const value = structuredClone(clean); change(value);
+    assert.throws(() => evaluateNpmAudit(value));
   }
-  assert.throws(() => evaluateNpmAudit(audit(), { ...options, frontend: false }));
-  for (const now of ['2026-11-16T23:59:59Z', '2026-12-17T00:00:00Z'])
-    assert.throws(() => evaluateNpmAudit(audit(), { ...options, now: new Date(now) }));
-  for (const expiresOn of ['2026-11-31', '2026-12-19'])
-    assert.throws(() => evaluateNpmAudit(audit(), { ...options, exception: { ...exception, expiresOn } }));
-  for (const change of [
-    (value) => { value.packages['node_modules/picomatch'].version = '4.0.8'; },
-    (value) => { value.packages['node_modules/vite'].version = '8.3.9'; },
-    (value) => { delete value.packages['node_modules/picomatch'].devOptional; },
-    (value) => { value.packages['node_modules/svelte'].dependencies.picomatch = '4.0.7'; },
-    (value) => { value.packages['node_modules/other/node_modules/picomatch'] = value.packages['node_modules/picomatch']; },
-  ]) {
-    const wrongLock = structuredClone(lock); change(wrongLock);
-    assert.throws(() => evaluateNpmAudit(audit(), { ...options, lock: wrongLock }));
+  // The exception file is gone, and the bundle guard no longer depends on it.
+  await assert.rejects(read('config/advisory-exception.json'), { code: 'ENOENT' });
+  const vite = await read('frontend/vite.config.ts');
+  assert.doesNotMatch(vite, /advisory-exception/);
+  for (const name of ['@sveltejs/vite-plugin-svelte', 'fdir', 'picomatch', 'svelte-check', 'tinyglobby', 'vite', 'vitest']) {
+    assert.ok(vite.includes(`'${name}',`), `the bundle guard no longer names ${name}`);
   }
-  const versionBump = structuredClone(lock);
-  versionBump.version = versionBump.packages[''].version = '0.2.1';
-  assert.equal(evaluateNpmAudit(audit(), { ...options, lock: versionBump }).passed, true);
-  const clean = audit();
-  clean.vulnerabilities = {};
-  assert.throws(() => evaluateNpmAudit(clean, options));
-  clean.metadata.vulnerabilities = { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 };
-  assert.deepEqual(evaluateNpmAudit(clean, { ...options, frontend: false }), { passed: true, exceptions: [] });
+  assert.match(vite, /Build tooling must stay out of the app bundle/);
 });
 
 test('packaging tool pins require an official fixed HTTPS asset and SHA256', async () => {

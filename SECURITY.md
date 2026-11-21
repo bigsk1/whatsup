@@ -1,6 +1,6 @@
 # Security information
 
-WhatsUp 0.2.0 is distributed unsigned. It has not undergone an independent
+WhatsUp 0.2.1 is distributed unsigned. It has not undergone an independent
 security audit or certification; weigh that before relying on it for sensitive
 communication.
 
@@ -89,7 +89,13 @@ Linux, WebKitGTK requests are answered from the same table, and the desktop's
 own camera permission applies on top of it. Hanging up, switching calls off and
 going offline each end the call and close capture on this device first, without
 waiting for the other device or the network; turning the camera off stops the
-camera before the other device is told. Calls are not recorded, and audio and
+camera before the other device is told. Mute works the same way: from the
+moment Mute is pressed this device hands no new audio to the network, before
+the other device is told, and it stays muted even if that message is delayed
+or fails. A packet already on its way at that instant can still arrive.
+Unmuting takes effect only once this device has recorded it for that call.
+Received audio and video that arrive faster than the device can decode them
+are dropped instead of being queued. Calls are not recorded, and audio and
 video are never written to disk. The call details readout shows counters only
 and stays on the device.
 
@@ -255,19 +261,28 @@ In-app updates remain disabled. Version numbers, passing tests and successful
 connections do not certify security.
 Older executables cannot necessarily read upgraded storage.
 
-## Build dependency exception
+## Dependency advisories
 
-The high-severity [picomatch advisory GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf)
-has no patched upstream release at the time of review. A temporary exception
-covers only picomatch 4.0.7 and its exact locked frontend build and test chain.
-It expires on **2026-12-17 at 00:00 UTC**, or should be removed sooner when a
-compatible patch is available. The affected tools use project-controlled file
-patterns. They are absent from the shipped app and do not receive peer input.
-This review does not cover building untrusted configuration or file patterns.
+The component checks and release packaging run known-vulnerability scans over
+the Go modules and both npm dependency trees. No advisory is excepted: any
+finding fails those checks, and a failed or unreachable scan counts as a
+failure, not a clean result. An ordinary development build does not run them.
 
-The full audit remains recorded. A changed dependency chain, a different finding,
-or an expired exception fails the gate. See [the exact exception policy](config/advisory-exception.json).
-All other scans remain required.
+Earlier releases were built under a temporary exception for one advisory in
+the frontend build and test tooling:
+
+- 0.1.0 and 0.1.1: deepmerge,
+  [GHSA-gcqx-w48m-w2h4](https://github.com/advisories/GHSA-gcqx-w48m-w2h4).
+- 0.1.2 and 0.2.0: picomatch,
+  [GHSA-fc5q-39xc-vjpf](https://github.com/advisories/GHSA-fc5q-39xc-vjpf).
+  GitHub withdrew this advisory on 2026-11-18 and npm no longer reports it.
+
+In both cases the affected tools handled project files during the build, were
+not part of the shipped app and did not receive peer input. From 0.2.1 on, no
+exception applies.
+
+Build and test tooling stays out of the application: the build fails if any of
+it is bundled into the app.
 
 ## Reporting a security issue
 

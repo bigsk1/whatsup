@@ -10,7 +10,7 @@ info:
   description: Private one-to-one desktop messenger
   copyright: Copyright (c) 2026 bigsk1
   comments: Not code-signed
-  version: 0.2.0
+  version: 0.2.1
 
 dev_mode:
   root_path: .

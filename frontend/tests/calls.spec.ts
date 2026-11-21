@@ -127,6 +127,10 @@ async function fixture(
       videoCalls,
     } as AppPreferences,
     call: idle({ availability: voiceCalls ? 'ready' : 'calls-off' }),
+    // How the desktop treats the next mute requests: it can be made to wait
+    // before answering, and to fail instead of recording the change.
+    muteWait: null as Promise<void> | null,
+    muteFails: false,
     contact: {
       contactID,
       revision: 1,
@@ -302,6 +306,9 @@ async function fixture(
         state.call = idle({ lastEnd: 'hung-up' });
         return route.fulfill({ json: state.call });
       case 'SetCallMuted':
+        if (state.muteWait) await state.muteWait;
+        if (state.muteFails)
+          return route.fulfill({ status: 503, body: 'synthetic failure' });
         state.call = { ...state.call, micMuted: args[2] as boolean };
         return route.fulfill({ json: state.call });
     }
@@ -405,11 +412,10 @@ test('an outgoing call rings without the microphone, captures only once answered
   await expect(bar).toContainText(/Sound output\s*running/);
   await bar.getByRole('button', { name: 'Mute microphone' }).click();
   await expect(bar).toContainText('Muted');
-  expect(calls.find((c) => c.operation === 'SetCallMuted')?.args).toEqual([
-    contactID,
-    callID,
-    true,
-  ]);
+  // The microphone is muted on the click; the desktop is told right after.
+  await expect
+    .poll(() => calls.find((c) => c.operation === 'SetCallMuted')?.args)
+    .toEqual([contactID, callID, true]);
 
   await bar.getByRole('button', { name: 'Hang up' }).click();
   await expect(bar).toHaveCount(0);
@@ -641,6 +647,173 @@ test('a camera whose picture never changes is switched off and named, and the ca
   expect((await microphone()).live).toBe(1);
   expect(calls.filter((c) => c.operation === 'EndCall')).toHaveLength(0);
   expect((await pictures()).detachedLive).toBe(0);
+  expect(errors).toEqual([]);
+});
+
+// Replaces the media stream to the desktop with a stand-in: the test can
+// deliver frames on it as Go would, and every audio frame the page sends on it
+// is counted at the moment it leaves.
+async function standInMediaStream(page: Page) {
+  await page.addInitScript(() => {
+    const host = window as Window & {
+      _wails?: { streamFactory?: (name: string) => unknown };
+      __sockets?: EventTarget[];
+      __audioOut?: number;
+    };
+    host.__sockets = [];
+    host.__audioOut = 0;
+    class Socket extends EventTarget {
+      binaryType = '';
+      readyState = 1;
+      send(frame: Uint8Array) {
+        if (frame[0] === 1) host.__audioOut = (host.__audioOut ?? 0) + 1;
+      }
+      close() {
+        this.readyState = 3;
+      }
+    }
+    host._wails ??= {};
+    host._wails.streamFactory = () => {
+      const socket = new Socket();
+      host.__sockets!.push(socket);
+      setTimeout(() => socket.dispatchEvent(new Event('open')));
+      return socket;
+    };
+  });
+  return () =>
+    page.evaluate(
+      () => (window as Window & { __audioOut?: number }).__audioOut ?? 0,
+    );
+}
+
+test('mute stops outgoing audio on the click, while the desktop has not answered and after it fails', async ({
+  page,
+}) => {
+  const { push, state, count, errors } = await fixture(page, true);
+  // Audio frames that have left the page for the desktop, counted exactly.
+  const sent = await standInMediaStream(page);
+  await page.goto('/');
+  await page
+    .getByRole('button', { name: 'Call Synthetic Friend', exact: true })
+    .click();
+  await page
+    .getByRole('dialog', { name: 'Call Synthetic Friend?' })
+    .getByRole('button', { name: 'Call', exact: true })
+    .click();
+  const bar = page.getByRole('region', { name: 'Voice call', exact: true });
+  await expect(bar).toContainText('Calling…');
+  await push({ ...state.call, state: 'active', activeSince: Date.now() });
+  await expect.poll(sent, { timeout: 10_000 }).toBeGreaterThan(5);
+
+  // The desktop does not answer the mute request, and will fail it.
+  let release: () => void = () => {};
+  state.muteWait = new Promise<void>((resolve) => (release = resolve));
+  state.muteFails = true;
+  await bar.getByRole('button', { name: 'Mute microphone' }).click();
+  await expect(bar).toContainText('Muted');
+  // Nothing leaves from the click on: the count is taken the moment the
+  // page shows the mute, with the desktop still silent.
+  const atMute = await sent();
+  await expect.poll(() => count('SetCallMuted')).toBe(1);
+  await page.waitForTimeout(700);
+  expect(await sent()).toBe(atMute);
+  // A view that never saw the mute arrives while the request is waiting.
+  await push({ ...state.call, peerRinging: false });
+  await expect(bar).toContainText('Muted');
+  // The request fails. Still muted, still nothing sent.
+  state.muteWait = null;
+  release();
+  await expect(
+    page.getByRole('status').filter({ hasText: /call/i }),
+  ).toBeVisible();
+  await page.waitForTimeout(500);
+  await expect(bar).toContainText('Muted');
+  expect(await sent()).toBe(atMute);
+  expect(state.call.micMuted).toBe(false);
+
+  // An unmute the desktop cannot confirm changes nothing either, although
+  // the desktop's own view never showed the mute.
+  await bar.getByRole('button', { name: 'Unmute microphone' }).click();
+  await expect.poll(() => count('SetCallMuted')).toBe(2);
+  await push({ ...state.call, peerRinging: false });
+  await page.waitForTimeout(500);
+  await expect(bar).toContainText('Muted');
+  expect(await sent()).toBe(atMute);
+
+  // Only an unmute the desktop confirms brings the microphone back.
+  state.muteFails = false;
+  await bar.getByRole('button', { name: 'Unmute microphone' }).click();
+  await expect(bar).toContainText('Microphone on');
+  await expect.poll(sent, { timeout: 10_000 }).toBeGreaterThan(atMute);
+  expect(errors).toEqual([]);
+});
+
+test('incoming audio that arrives faster than it can be decoded is dropped, not queued', async ({
+  page,
+}) => {
+  const { push, state, errors } = await fixture(page, true);
+  // The decoder reports whatever backlog the test sets, and counts what it
+  // is handed without decoding it.
+  await standInMediaStream(page);
+  await page.addInitScript(() => {
+    const host = window as Window & {
+      __backlog?: number;
+      __decodes?: number;
+    };
+    host.__backlog = 0;
+    host.__decodes = 0;
+    AudioDecoder.prototype.decode = () => {
+      host.__decodes = (host.__decodes ?? 0) + 1;
+    };
+    Object.defineProperty(AudioDecoder.prototype, 'decodeQueueSize', {
+      configurable: true,
+      get: () => host.__backlog ?? 0,
+    });
+  });
+  await page.goto('/');
+  await page
+    .getByRole('button', { name: 'Call Synthetic Friend', exact: true })
+    .click();
+  await page
+    .getByRole('dialog', { name: 'Call Synthetic Friend?' })
+    .getByRole('button', { name: 'Call', exact: true })
+    .click();
+  const bar = page.getByRole('region', { name: 'Voice call', exact: true });
+  await expect(bar).toContainText('Calling…');
+  await push({ ...state.call, state: 'active', activeSince: Date.now() });
+  await bar.getByRole('button', { name: 'Details' }).click();
+  await expect(bar).toContainText(/Sound output\s*running/, {
+    timeout: 10_000,
+  });
+  // Deliver audio frames numbered first..last, as Go frames them, with the
+  // decoder reporting this backlog. Returns how many it has been handed.
+  const deliver = (first: number, last: number, backlog: number) =>
+    page.evaluate(
+      ([first, last, backlog]) => {
+        const host = window as Window & {
+          __sockets?: EventTarget[];
+          __backlog?: number;
+          __decodes?: number;
+        };
+        host.__backlog = backlog;
+        const socket = host.__sockets!.at(-1)!;
+        for (let i = first; i <= last; i++) {
+          const frame = new Uint8Array([1, 0, 0, 0, 0, 0, 7, 7, 7]);
+          new DataView(frame.buffer).setUint32(2, i * 960);
+          socket.dispatchEvent(
+            new MessageEvent('message', { data: frame.buffer }),
+          );
+        }
+        return host.__decodes ?? 0;
+      },
+      [first, last, backlog],
+    );
+  expect(await deliver(1, 5, 0)).toBe(5);
+  // A decoder that is behind is handed nothing more, however much arrives.
+  expect(await deliver(6, 2005, 50)).toBe(5);
+  await expect(bar).toContainText(/received 2005 · decoded 0/);
+  // Once it has caught up, audio is decoded again.
+  expect(await deliver(2006, 2008, 0)).toBe(8);
   expect(errors).toEqual([]);
 });
 

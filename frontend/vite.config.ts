@@ -2,9 +2,19 @@ import { defineConfig } from 'vitest/config';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import tailwindcss from '@tailwindcss/vite';
 import wails from '@wailsio/runtime/plugins/vite';
-import advisoryException from '../config/advisory-exception.json' with { type: 'json' };
 
-const reviewedTooling = Object.keys(advisoryException.findings);
+// Build and test tooling. None of it belongs in the application: it handles
+// project files during a build and never sees chat text or attachments. The
+// build fails if any of it ends up in a bundle.
+const buildOnlyTooling = [
+  '@sveltejs/vite-plugin-svelte',
+  'fdir',
+  'picomatch',
+  'svelte-check',
+  'tinyglobby',
+  'vite',
+  'vitest',
+];
 
 export default defineConfig({
   server: {
@@ -17,7 +27,7 @@ export default defineConfig({
     tailwindcss(),
     wails('./bindings'),
     {
-      name: 'whatsup-keep-reviewed-tooling-out-of-bundles',
+      name: 'whatsup-keep-build-tooling-out-of-bundles',
       apply: 'build',
       generateBundle(_, bundle) {
         for (const output of Object.values(bundle)) {
@@ -29,7 +39,7 @@ export default defineConfig({
           ];
           for (const raw of ids) {
             const id = raw.replaceAll('\\', '/');
-            const name = reviewedTooling.find(
+            const name = buildOnlyTooling.find(
               (name) =>
                 id.includes(`/node_modules/${name}/`) ||
                 id === name ||
@@ -37,7 +47,7 @@ export default defineConfig({
             );
             if (name)
               this.error(
-                `Reviewed build tooling must stay out of the app bundle: ${name}`,
+                `Build tooling must stay out of the app bundle: ${name}`,
               );
           }
         }

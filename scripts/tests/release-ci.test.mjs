@@ -183,13 +183,20 @@ test('scan failures, missing race, SBOM substitution and updater flags fail even
   await assert.rejects(verifyReleasePackage(value.directory, value.context, 'win32-x64'), /SBOM provenance/);
 });
 
-test('expired or unapproved advisory exceptions cannot survive bundle assembly', async (t) => {
+test('a package built under any advisory exception cannot survive bundle assembly', async (t) => {
   const value = await fixture(t);
   await rewriteCovered(value, 'build-manifest.json', (manifest) => {
     manifest.checks.scans[1].exceptions = [{ advisory: 'https://example.invalid/unknown', expiresOn: '2020-01-01' }];
     return manifest;
   });
-  await assert.rejects(verifyReleasePackage(value.directory, value.context, 'win32-x64'), /unapproved or expired/);
+  await assert.rejects(verifyReleasePackage(value.directory, value.context, 'win32-x64'), /none is approved/);
+  // Even the exception that used to be approved, with a date still ahead.
+  await rewriteCovered(value, 'build-manifest.json', (manifest) => {
+    manifest.checks.scans[1].exceptions = [{ advisory: 'https://github.com/advisories/GHSA-fc5q-39xc-vjpf', package: 'picomatch',
+      version: '4.0.7', scope: 'frontend build and test tooling only', expiresOn: '2026-12-17' }];
+    return manifest;
+  });
+  await assert.rejects(verifyReleasePackage(value.directory, value.context, 'win32-x64'), /none is approved/);
 });
 
 test('all checked-in workflow actions use full commit SHAs', async () => {

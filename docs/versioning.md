@@ -1,6 +1,6 @@
 # Versions and compatibility
 
-WhatsUp's current version is **0.2.0**. A version
+WhatsUp's current version is **0.2.1**. A version
 identifies an application revision; it does not certify security, completeness
 or release approval.
 

@@ -333,6 +333,20 @@ export function SetCallCamera(contactID: string, callID: string, on: boolean, ov
 
 /**
  * SetCallMuted records and announces this side's mute state.
+ * 
+ * A mute takes effect here first: audio for the call is dropped from this
+ * point, and only then is the session asked to tell the other side. That
+ * request can wait behind a slow connection or fail, and neither may leave the
+ * person's speech going out after they pressed Mute.
+ * 
+ * An unmute goes the other way round. The hold stays while the session is
+ * asked, and is lifted only when the session answers that this call's
+ * microphone is on. An unmute that is slow or fails leaves the call muted, as
+ * does one overtaken by a later mute.
+ * 
+ * The request must name the call the session has answered right now. Any
+ * other, such as a late request from a call that is already over, is refused
+ * before anything is recorded, so it cannot disturb the current call's hold.
  */
 export function SetCallMuted(contactID: string, callID: string, muted: boolean): $CancellablePromise<$models.CallView> {
     return $Call.ByID(1919176666, contactID, callID, muted);
