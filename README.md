@@ -7,9 +7,7 @@ and video calls.
 There is no account to create and no server that stores your messages. Every
 conversation is between exactly two devices; there are no group chats.
 
-
 ![The Appearance page in Settings](docs/images/appearance-settings.png)
-
 
 > Current version: **0.2.0**. The Windows installer is not code-signed and
 > updates are installed by hand. The [security information](SECURITY.md)
@@ -131,8 +129,8 @@ Screenshots use fictional contacts, conversations and profile illustrations.
 
 | | |
 | --- | --- |
-| ![Arcade look with Pocket Green colors](docs/images/arcade-pocket-green.png) | ![Neon City look with Synthwave colors](docs/images/neon-synthwave.png) |
-| **Arcade** with Pocket Green | **Neon City** with Synthwave |
+| ![Arcade look with Pocket Green colors](docs/images/arcade-pocket-green.png) | ![Neon City look with GitHub Dark colors](docs/images/neon-github-dark.png) |
+| **Arcade** with Pocket Green | **Neon City** with GitHub Dark |
 | ![Terminal look with Mainframe colors](docs/images/terminal-mainframe.png) | ![Bubbly look with GitHub Light colors](docs/images/bubbly-github-light.png) |
 | **Terminal** with Mainframe | **Bubbly** with GitHub Light |
 

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test, type Page } from '@playwright/test';
@@ -5,6 +6,7 @@ import { unavailableStatus } from '../src/lib/backend';
 import { unavailablePairing } from '../src/lib/pairing';
 import type { ContactSummary } from '../src/lib/state/bridge';
 import type { ConversationMessage } from '../src/lib/messaging';
+import { defaultAppPreferences } from '../src/lib/state/preferences';
 import { serveDefaultAppPreferences } from './contact-events';
 
 test.skip(
@@ -35,9 +37,9 @@ function contact(
   unread = 0,
 ): ContactSummary {
   return {
-    peerProtocol: 0,
-    attachmentsSupported: false,
-    contactControlsSupported: false,
+    peerProtocol: 4,
+    attachmentsSupported: true,
+    contactControlsSupported: true,
     contactID,
     localName,
     unread,
@@ -45,7 +47,10 @@ function contact(
     state,
     path,
     revision: 1,
-    peerFingerprint: seed.repeat(64),
+    // A realistic-looking but synthetic key fingerprint for a fictional contact.
+    peerFingerprint: createHash('sha256')
+      .update(`readme screenshot ${seed}`)
+      .digest('hex'),
     peerDisplayName: '',
     canConnect: state !== 'connected',
     canSend: true,
@@ -69,7 +74,7 @@ const messages: ConversationMessage[] = lines.map(
 );
 
 async function setup(page: Page, look: Record<string, unknown>) {
-  await page.setViewportSize({ width: 1180, height: 740 });
+  await page.setViewportSize({ width: 1180, height: 800 });
   // Original synthetic illustrations, drawn only in the screenshot fixture.
   // They contain no photos, personal information, SVG or remote resources.
   const portraits = await page.evaluate(() =>
@@ -152,6 +157,33 @@ async function setup(page: Page, look: Record<string, unknown>) {
           })),
         },
       });
+    // Voice and video calls switched on, so the conversation header shows
+    // the call buttons as they look in everyday use.
+    if (method === 'GetAppPreferences')
+      return route.fulfill({
+        json: { ...defaultAppPreferences, voiceCalls: true, videoCalls: true },
+      });
+    if (method === 'GetCall') {
+      const peer = contacts.find((item) => item.contactID === args[0]);
+      return route.fulfill({
+        json: {
+          contactID: args[0],
+          state: 'idle',
+          callID: '',
+          peerRinging: false,
+          micMuted: false,
+          peerMicMuted: false,
+          activeSince: 0,
+          availability: peer?.state === 'connected' ? 'ready' : 'offline',
+          lastEnd: '',
+          lastOutgoing: false,
+          lastConnected: false,
+          video: false,
+          cameraOn: false,
+          peerCameraOn: false,
+        },
+      });
+    }
     if (await serveDefaultAppPreferences(route)) return;
     const selected = contacts.find((item) => item.contactID === args[0]);
     switch (method) {
@@ -200,7 +232,7 @@ async function setup(page: Page, look: Record<string, unknown>) {
 const looks = [
   ['bubbly-midnight', 'bubble', 'whatsup'],
   ['arcade-pocket-green', 'arcade', 'gameboy'],
-  ['neon-synthwave', 'neon', 'synthwave'],
+  ['neon-github-dark', 'neon', 'github-dark'],
   ['terminal-mainframe', 'terminal', 'matrix'],
   ['bubbly-github-light', 'bubble', 'github-light'],
 ] as const;
