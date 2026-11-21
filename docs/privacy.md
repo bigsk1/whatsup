@@ -48,6 +48,10 @@ or consent. Joiners review and consent to the service carried in the invitation
 before any map fetch. Opening an invitation form alone starts no networking.
 Launching in OS-only mode, going online or completing pairing reconnects contacts.
 
+To operate your own service, use the
+[DERP relay Docker template](https://github.com/bigsk1/derp-relay) and enter
+the HTTPS relay-map URL it serves when you create an invitation.
+
 Direct connectivity is preferred, with consented encrypted relay fallback. The
 service can observe IP addresses and availability. Setup/reconnection and network
 rediscovery depend on that service even if payload traffic later becomes direct.

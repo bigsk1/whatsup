@@ -37,6 +37,9 @@ The approved service is saved with each contact. Relay migration requires
 explicit authenticated consent on both sides, retaining identity pins. An
 operator may update its map; this is not permanent operator certificate pinning.
 
+You can operate the service yourself with the
+[DERP relay Docker template](https://github.com/bigsk1/derp-relay).
+
 ## Voice and video calls
 
 Voice calls are off until enabled and exist only between two approved, connected

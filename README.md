@@ -184,7 +184,8 @@ skips the app passphrase.
 3. **Use Tailcat public relay** fills an empty field with
    `https://tailcat.dev/derpmap.json`. It doesn't grant consent or fetch the map
    by itself. The public service is best effort and rate limited, and WhatsUp
-   can't promise its uptime. You can use another compatible service you trust.
+   can't promise its uptime. You can use another compatible service you trust
+   or [run your own relay](#connections-and-relays).
 4. Copy the invitation and send it privately to the person you're inviting. It
    expires after ten minutes and works only once. **Cancel** invalidates it
    immediately.
@@ -417,9 +418,11 @@ depends on the relay service you chose.
 Changing relay services needs approval on both devices and keeps identity pins in
 place. A contact can't silently switch providers while reconnecting.
 
-You can also run your own relay. This
-[step-by-step discussion](https://github.com/bigsk1/whatsup/discussions/2)
-walks through setting one up.
+To run your own relay on a VPS, use the
+[DERP relay Docker template](https://github.com/bigsk1/derp-relay). Enter the
+HTTPS `/derpmap.json` URL it serves when you create an invitation. The
+[manual setup guide](https://github.com/bigsk1/whatsup/discussions/2) walks
+through setting up a relay without Docker.
 
 Transfers over 100 MB need extra approval for relay bandwidth when WhatsUp has no
 recent sign of a direct connection. It's a precaution to limit relay bandwidth,
