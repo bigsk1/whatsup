@@ -37,3 +37,18 @@ test('the scheduled scan and the component checks share one list of advisory gat
   assert.equal(runner.split('replacementAdvisories(patchApprovals())').length - 1, 1);
   assert.equal(runner.split('await advisoryScans(scanner, wails)').length - 1, 2);
 });
+
+test('the scan generates bindings before it builds, and WSL returns its receipt', async () => {
+  const runner = await read('scripts/whatsup.mjs');
+  const body = runner.slice(runner.indexOf('async function advisoryScan()'), runner.indexOf('async function frontendScript('));
+  // The WSL snapshot excludes frontend/bindings, so a build without this
+  // step only works where an earlier command happened to leave them behind.
+  const generate = body.indexOf('await generateBindings();');
+  const build = body.indexOf("await frontendScript('build');");
+  assert.ok(generate > 0 && build > generate, 'bindings must be generated before the frontend build');
+  assert.ok((await read('scripts/wsl-excludes.txt')).split(/\r?\n/).includes('/frontend/bindings/'));
+  // The receipt named in a failure must reach the Windows workspace.
+  assert.ok(body.includes('advisory-scan-${process.platform}-${process.arch}.json'), 'the scan must write its receipt');
+  const copied = /^for report in ([^;]*); do$/m.exec(await read('scripts/wsl-run.sh'))?.[1].split(' ');
+  assert.ok(copied?.includes('advisory-scan-linux-x64.json'), 'WSL must copy the scan receipt back');
+});

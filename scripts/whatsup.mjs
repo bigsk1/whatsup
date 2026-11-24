@@ -295,6 +295,8 @@ async function pinnedTool(name, command, module, version) {
 // branch: no tests, packaging tools or browser. It prepares only what the
 // scanners read: the frozen graph, the two pinned Go tools, and built frontend
 // assets, which the root Go package embeds and so needs before it can load.
+// The frontend build needs the generated bindings, and the WSL snapshot leaves
+// them out, so they are generated here as every other build does.
 async function advisoryScan() {
   await requireApp(root);
   requireNativePlatform();
@@ -303,6 +305,7 @@ async function advisoryScan() {
   await frozenInstall();
   const wails = await pinnedTool('wails3', 'github.com/wailsapp/wails/v3/cmd/wails3', 'github.com/wailsapp/wails/v3', policy.wailsVersion);
   const scanner = await pinnedTool('govulncheck', 'golang.org/x/vuln/cmd/govulncheck', 'golang.org/x/vuln', policy.govulncheckVersion);
+  await generateBindings();
   await frontendScript('build');
   if (!existsSync(path.join(frontendDirectory, 'dist/index.html'))) throw new Error('The frontend build did not produce real bundled application assets');
   const scans = await advisoryScans(scanner, wails);
