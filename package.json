@@ -17,6 +17,7 @@
     "package": "node scripts/whatsup.mjs package",
     "verify:release": "node scripts/whatsup.mjs verify-release",
     "test:app": "node scripts/whatsup.mjs test-app",
+    "scan:advisories": "node scripts/whatsup.mjs advisory-scan",
     "test:credentials": "node scripts/whatsup.mjs test-credentials",
     "wsl": "node scripts/whatsup.mjs wsl",
     "build": "node scripts/whatsup.mjs build",

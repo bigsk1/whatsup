@@ -1,0 +1,81 @@
+name: Scheduled advisory scan (not release validation)
+
+on:
+  schedule:
+    # Daily at 06:23 UTC. GitHub pauses schedules in a public repository after
+    # 60 days without repository activity; re-enable this workflow under
+    # Actions if that happens.
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+  # A change to this workflow proves itself before it is merged.
+  pull_request:
+    paths:
+      - .github/workflows/advisories.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: advisories-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Advisory scan (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Disable Go local collection and telemetry upload
+        run: go telemetry off
+      - name: Linux native build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgtk-4-dev libwebkitgtk-6.0-dev build-essential pkg-config
+      - name: Scan the pinned dependency graph for published advisories
+        run: npm run scan:advisories
+
+  # Separate from the scan so that the only token able to write anything never
+  # meets dependency code: this job checks nothing out and runs one fixed script.
+  report:
+    name: Record a failed scheduled scan
+    needs: scan
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update one issue for the failed scan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title='Scheduled advisory scan failed'
+          body="The scheduled advisory scan did not pass: $RUN_URL
+
+          Either a published advisory now matches a pinned dependency, or a scan could not run. Both count as a failure. Read the failed step, then rerun the workflow once it is resolved and close this issue."
+          existing=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body" --assignee "$OWNER"
+          fi
+
+# This runs only the known-vulnerability scans of the component checks, against
+# the pinned dependency graph. It runs no tests and approves nothing. It knows
+# only what the npm, Go and OSV advisory databases carry: an upstream security
+# notice that never reaches them is not seen here.
