@@ -268,6 +268,11 @@ the Go modules and both npm dependency trees. No advisory is excepted: any
 finding fails those checks, and a failed or unreachable scan counts as a
 failure, not a clean result. An ordinary development build does not run them.
 
+The same scans also run every day against the main branch, so a newly
+published advisory is noticed without waiting for the next change. They know
+only what the npm, Go and OSV advisory databases carry. An upstream security
+notice that never reaches those databases is not seen by them.
+
 Earlier releases were built under a temporary exception for one advisory in
 the frontend build and test tooling:
 

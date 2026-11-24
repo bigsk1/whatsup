@@ -43,7 +43,7 @@ const commands = new Set([
   'doctor', 'tooling-test', 'setup', 'dev', 'test-app', 'test-credentials', 'native-check', 'wsl', 'build', 'build-review', 'check', 'update', 'package', 'verify-release',
   // Reviewed Wails Taskfiles delegate to these same cross-platform implementations.
   'native-build', 'native-package', 'frontend-dev', 'frontend-build', 'generate-bindings', 'run-native',
-  'release-preflight', 'release-collect', 'release-publish', 'ci-scope',
+  'release-preflight', 'release-collect', 'release-publish', 'ci-scope', 'advisory-scan',
 ]);
 
 function run(executable, args, { cwd = root, capture = false, timeout = 120000, env = {}, mutableGo = false, acceptedStatuses = [0] } = {}) {
@@ -262,6 +262,64 @@ async function npmAdvisoryScan(frontend) {
   return evaluateNpmAudit(report);
 }
 
+// Every advisory gate, each exactly once. The component checks and the
+// scheduled scan both call this, so the two cannot drift apart. A scan that
+// cannot run is recorded as failed, never as clean.
+async function advisoryScans(scanner, wails) {
+  const scans = [];
+  for (const [name, scan] of [
+    ['root npm audit', () => npmAdvisoryScan(false)],
+    ['frontend npm audit', () => npmAdvisoryScan(true)],
+    ['govulncheck', () => run(scanner, ['-test', './...'], { timeout: 600000 })],
+    ['Wails CLI binary', () => run(scanner, ['-mode=binary', wails], { timeout: 600000 })],
+    ['govulncheck binary', () => run(scanner, ['-mode=binary', scanner], { timeout: 600000 })],
+  ]) {
+    try { const result = await scan(); scans.push({ name, passed: true, ...(result?.exceptions ? { exceptions: result.exceptions } : {}) }); }
+    catch (error) { scans.push({ name, passed: false, error: error.message }); }
+  }
+  try {
+    const replacements = await replacementAdvisories(patchApprovals());
+    for (const entry of replacements) scans.push({ name: `${entry.module} upstream version advisories`, ...entry });
+  } catch (error) {
+    for (const approval of patchApprovals()) scans.push({ name: `${approval.module} upstream version advisories`, module: approval.module, version: approval.version, passed: false, error: error.message });
+  }
+  return scans;
+}
+
+async function pinnedTool(name, command, module, version) {
+  try { return requirePinnedTool(name, module, version); }
+  catch { await installTool(command, version, name); return cliPath(name); }
+}
+
+// The advisory gates on their own, for a scheduled run against the default
+// branch: no tests, packaging tools or browser. It prepares only what the
+// scanners read: the frozen graph, the two pinned Go tools, and built frontend
+// assets, which the root Go package embeds and so needs before it can load.
+// The frontend build needs the generated bindings, and the WSL snapshot leaves
+// them out, so they are generated here as every other build does.
+async function advisoryScan() {
+  await requireApp(root);
+  requireNativePlatform();
+  requireGo();
+  if (!policy.govulncheckVersion) throw new Error('Pin a reviewed current govulncheckVersion before scanning');
+  await frozenInstall();
+  const wails = await pinnedTool('wails3', 'github.com/wailsapp/wails/v3/cmd/wails3', 'github.com/wailsapp/wails/v3', policy.wailsVersion);
+  const scanner = await pinnedTool('govulncheck', 'golang.org/x/vuln/cmd/govulncheck', 'golang.org/x/vuln', policy.govulncheckVersion);
+  await generateBindings();
+  await frontendScript('build');
+  if (!existsSync(path.join(frontendDirectory, 'dist/index.html'))) throw new Error('The frontend build did not produce real bundled application assets');
+  const scans = await advisoryScans(scanner, wails);
+  assertTransportPins();
+  if (!validSecurityScans(scans)) throw new Error('The advisory scan did not run every required gate exactly once');
+  const report = path.join(root, '.local', `advisory-scan-${process.platform}-${process.arch}.json`);
+  await writeJson(report, {
+    recordedAt: new Date().toISOString(), platform: process.platform, arch: process.arch,
+    scope: 'advisory scans only', scans, patches: patchEvidence(),
+  });
+  if (scans.some((scan) => !scan.passed)) throw new Error(`Security scans failed: ${scans.filter((scan) => !scan.passed).map((scan) => scan.name).join(', ')}. No advisory is excepted. Local report: ${report}`);
+  console.log('Advisory scans found nothing for the pinned dependency graph on this platform. This ran no tests and does not establish release readiness; advisories that no database carries are not covered.');
+}
+
 async function frontendScript(name) {
   const manifest = await readJson(path.join(frontendDirectory, 'package.json'));
   requireFrontendScripts(manifest, [name]);
@@ -321,23 +379,7 @@ async function implementedCheck() {
     'github.com/wailsapp/wails/v3/pkg/application', 'github.com/wailsapp/wails/v3/internal/assetserver/webview',
     ...(process.platform === 'win32' ? ['github.com/wailsapp/wails/v3/internal/webview2/pkg/edge'] : [])], { timeout: goTestRunnerTimeout });
   if (!race) console.log('Windows Go unit tests passed WITHOUT the race detector: no configured CGO C compiler. Ubuntu race validation remains required.');
-  const scans = [];
-  for (const [name, scan] of [
-    ['root npm audit', () => npmAdvisoryScan(false)],
-    ['frontend npm audit', () => npmAdvisoryScan(true)],
-    ['govulncheck', () => run(scanner, ['-test', './...'], { timeout: 600000 })],
-    ['Wails CLI binary', () => run(scanner, ['-mode=binary', wails], { timeout: 600000 })],
-    ['govulncheck binary', () => run(scanner, ['-mode=binary', scanner], { timeout: 600000 })],
-  ]) {
-    try { const result = await scan(); scans.push({ name, passed: true, ...(result?.exceptions ? { exceptions: result.exceptions } : {}) }); }
-    catch (error) { scans.push({ name, passed: false, error: error.message }); }
-  }
-  try {
-    const replacements = await replacementAdvisories(patchApprovals());
-    for (const entry of replacements) scans.push({ name: `${entry.module} upstream version advisories`, ...entry });
-  } catch (error) {
-    for (const approval of patchApprovals()) scans.push({ name: `${approval.module} upstream version advisories`, module: approval.module, version: approval.version, passed: false, error: error.message });
-  }
+  const scans = await advisoryScans(scanner, wails);
   assertTransportPins();
   let sourceAfter = null;
   try { sourceAfter = await captureReviewSource(root); } catch { /* evidence remains unbound */ }
@@ -395,9 +437,9 @@ async function credentialCheck() {
 async function wslCheck() {
   if (process.platform !== 'win32') throw new Error('The WSL bridge runs from the authoritative Windows workspace');
   const requested = flags[0] ?? 'doctor';
-  const task = ({ 'test:app': 'test-app', 'test:credentials': 'test-credentials', 'test:native': 'native-check', 'build:review': 'build-review', test: 'tooling-test' })[requested] ?? requested;
-  if (!['doctor', 'setup', 'tooling-test', 'test-app', 'test-credentials', 'native-check', 'build', 'build-review', 'check', 'package'].includes(task)) {
-    throw new Error('WSL supports doctor, setup, test, test:app, test:credentials, test:native, build or build:review; use Ubuntu Desktop for native UI testing');
+  const task = ({ 'test:app': 'test-app', 'test:credentials': 'test-credentials', 'test:native': 'native-check', 'build:review': 'build-review', test: 'tooling-test', 'scan:advisories': 'advisory-scan' })[requested] ?? requested;
+  if (!['doctor', 'setup', 'tooling-test', 'test-app', 'test-credentials', 'native-check', 'build', 'build-review', 'check', 'package', 'advisory-scan'].includes(task)) {
+    throw new Error('WSL supports doctor, setup, test, test:app, test:credentials, test:native, scan:advisories, build or build:review; use Ubuntu Desktop for native UI testing');
   }
   if (['build-review', 'test-app', 'check', 'package'].includes(task)) {
     await mkdir(path.join(root, '.local'), { recursive: true });
@@ -731,6 +773,7 @@ try {
     run(wailsPath(), ['dev', '-config', 'build/config.yml'], { timeout: 0 });
   }
   if (command === 'test-app') await implementedCheck();
+  if (command === 'advisory-scan') await advisoryScan();
   if (command === 'test-credentials') await credentialCheck();
   if (command === 'native-check') await nativeCheck();
   if (command === 'wsl') await wslCheck();

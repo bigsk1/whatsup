@@ -1,20 +1,28 @@
+# Routine version updates are paused: open-pull-requests-limit 0 stops the
+# weekly version proposals and leaves Dependabot security updates working.
+# Versions are refreshed deliberately with `npm run update`, tested locally
+# and then pushed. Each entry stays so that a security update for it is
+# assigned for review.
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
+    assignees: [bigsk1]
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
+    assignees: [bigsk1]
   - package-ecosystem: npm
     directory: /frontend
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
+    assignees: [bigsk1]
     ignore:
       - dependency-name: typescript
         versions: ['>=7']
@@ -24,8 +32,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 0
+    assignees: [bigsk1]
 # Transport proposals must also update reviewedGoPins after source/API/security
 # review. The runner rejects a graph that silently differs from those pins.
-# Configuring update PRs does not itself enable repository vulnerability alerts;
-# enable dependency graph/Dependabot alerts in the eventual GitHub repository.
+# Dependabot cannot see github.com/tailscale/tailcat or the Wails module: both
+# are replaced with reviewed local trees. The project's own advisory scan
+# queries their upstream versions instead.
